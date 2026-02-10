@@ -75,6 +75,7 @@ class AgentOrchestrator:
         providers: dict[str, Any],
         tools: dict[str, Any],
         hooks: Any,
+        coordinator: Any = None,
     ) -> str:
         """Execute the agent loop with given prompt.
 
@@ -87,10 +88,15 @@ class AgentOrchestrator:
             providers: Available LLM providers
             tools: Available tools
             hooks: Hook registry for lifecycle events
+            coordinator: Module coordinator for hook result processing
+                and spawn capabilities (passed by kernel session)
 
         Returns:
             Final response string
         """
+        # Update coordinator if a fresh one is passed by the kernel
+        if coordinator is not None:
+            self._coordinator = coordinator
         if self._session is None:
             config = SessionConfig.from_dict(self._config)
             # Use the first available provider
