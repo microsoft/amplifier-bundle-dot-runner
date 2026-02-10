@@ -28,6 +28,7 @@ from amplifier_core.message_models import (
     ThinkingBlock,
     ToolSpec,
 )
+from amplifier_core.events import TOOL_POST
 from amplifier_core.models import ToolResult
 
 from .config import SessionConfig
@@ -514,15 +515,46 @@ class AgentSession:
         try:
             result = await tool.execute(tool_call.arguments)
             duration_ms = (time.monotonic() - start_time) * 1000
+
+            # Serialize result for the tool:post hook
+            raw_output = result.get_serialized_output()
+
+            # Emit tool:post for hooks (truncation, logging, etc.)
+            post_result = await self._hooks.emit(
+                TOOL_POST,
+                {
+                    "tool_name": tool_call.name,
+                    "tool_input": tool_call.arguments,
+                    "result": raw_output,
+                    "call_id": tool_call.id,
+                },
+            )
+
+            # If a hook modified the result (e.g. truncation), use the
+            # modified output for the LLM while preserving full output
+            # in the event stream.
+            llm_output = raw_output
+            if (
+                hasattr(post_result, "action")
+                and post_result.action == "modify"
+                and hasattr(post_result, "data")
+                and post_result.data
+                and "result" in post_result.data
+            ):
+                llm_output = post_result.data["result"]
+
+            # Emit agent:tool_call_end with FULL untruncated output
             await self._hooks.emit(
                 AGENT_TOOL_CALL_END,
                 {
                     "call_id": tool_call.id,
-                    "output": str(result.output) if result.output else "",
+                    "output": raw_output,
                     "duration_ms": duration_ms,
                 },
             )
-            return result
+
+            # Return result with potentially truncated output for LLM
+            return ToolResult(success=result.success, output=llm_output)
         except Exception as e:
             duration_ms = (time.monotonic() - start_time) * 1000
             error_msg = f"Tool error ({tool_call.name}): {e}"
