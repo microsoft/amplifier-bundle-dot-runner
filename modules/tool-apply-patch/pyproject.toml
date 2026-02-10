@@ -21,9 +21,6 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = true
 
-[tool.uv.sources]
-amplifier-core = { path = "../../../amplifier-core", editable = true }
-
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_module_tool_apply_patch"]
 
