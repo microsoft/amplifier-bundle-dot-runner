@@ -394,9 +394,20 @@ class TestOnlyMountedToolsInRequest:
 
         request = provider.complete.call_args[0][0]
         tool_names = [t.name for t in request.tools]
-        assert sorted(tool_names) == ["apply_patch", "bash", "read_file"]
+        # Mounted tools must be present
+        assert "apply_patch" in tool_names
+        assert "bash" in tool_names
+        assert "read_file" in tool_names
         # edit_file should NOT be here (not mounted in OpenAI profile)
         assert "edit_file" not in tool_names
+        # Subagent lifecycle tools are also registered by the orchestrator
+        subagent_tools = {"spawn_agent", "send_input", "wait", "close_agent"}
+        non_mounted_non_subagent = (
+            set(tool_names) - {"apply_patch", "bash", "read_file"} - subagent_tools
+        )
+        assert non_mounted_non_subagent == set(), (
+            f"Unexpected tools: {non_mounted_non_subagent}"
+        )
 
     @pytest.mark.asyncio
     async def test_only_mounted_tools_in_request_anthropic_profile(self):
@@ -426,8 +437,26 @@ class TestOnlyMountedToolsInRequest:
         assert "apply_patch" not in tool_names
 
     @pytest.mark.asyncio
-    async def test_no_tools_when_none_mounted(self):
-        """When no tools are mounted, request.tools is None."""
+    async def test_no_tools_when_none_mounted_and_subagents_disabled(self):
+        """When no tools are mounted and subagents disabled, request.tools is None."""
+        provider = AsyncMock()
+        provider.complete = AsyncMock(return_value=_text_response("ok"))
+        hooks = _make_hooks()
+        coordinator = MagicMock()
+
+        # Disable subagent tools by setting max_subagent_depth=0
+        orch = AgentOrchestrator(
+            coordinator=coordinator,
+            config={"max_tool_rounds_per_input": 1, "max_subagent_depth": 0},
+        )
+        await orch.execute("hello", MagicMock(), {"test": provider}, {}, hooks)
+
+        request = provider.complete.call_args[0][0]
+        assert request.tools is None
+
+    @pytest.mark.asyncio
+    async def test_only_subagent_tools_when_none_mounted(self):
+        """When no tools are mounted but subagents allowed, only subagent tools appear."""
         provider = AsyncMock()
         provider.complete = AsyncMock(return_value=_text_response("ok"))
         hooks = _make_hooks()
@@ -440,11 +469,12 @@ class TestOnlyMountedToolsInRequest:
         await orch.execute("hello", MagicMock(), {"test": provider}, {}, hooks)
 
         request = provider.complete.call_args[0][0]
-        assert request.tools is None
+        tool_names = sorted(t.name for t in request.tools)
+        assert tool_names == ["close_agent", "send_input", "spawn_agent", "wait"]
 
     @pytest.mark.asyncio
-    async def test_tool_count_matches_mounted_count(self):
-        """ChatRequest has exactly the number of tools that were mounted."""
+    async def test_tool_count_matches_mounted_plus_subagent(self):
+        """ChatRequest has mounted tools plus subagent lifecycle tools."""
         provider = AsyncMock()
         provider.complete = AsyncMock(return_value=_text_response("ok"))
         hooks = _make_hooks()
@@ -458,6 +488,29 @@ class TestOnlyMountedToolsInRequest:
         orch = AgentOrchestrator(
             coordinator=coordinator,
             config={"max_tool_rounds_per_input": 1},
+        )
+        await orch.execute("hello", MagicMock(), {"openai": provider}, tools, hooks)
+
+        request = provider.complete.call_args[0][0]
+        # 2 mounted + 4 subagent tools = 6
+        assert len(request.tools) == 6
+
+    @pytest.mark.asyncio
+    async def test_tool_count_exact_when_subagents_disabled(self):
+        """ChatRequest has exactly mounted tools when subagents disabled."""
+        provider = AsyncMock()
+        provider.complete = AsyncMock(return_value=_text_response("ok"))
+        hooks = _make_hooks()
+        coordinator = MagicMock()
+
+        tools = {
+            "apply_patch": _make_tool("apply_patch"),
+            "bash": _make_tool("bash"),
+        }
+
+        orch = AgentOrchestrator(
+            coordinator=coordinator,
+            config={"max_tool_rounds_per_input": 1, "max_subagent_depth": 0},
         )
         await orch.execute("hello", MagicMock(), {"openai": provider}, tools, hooks)
 

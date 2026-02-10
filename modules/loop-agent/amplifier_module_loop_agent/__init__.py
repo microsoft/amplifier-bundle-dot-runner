@@ -17,6 +17,7 @@ from typing import Any
 from .agent_session import AgentSession
 from .config import SessionConfig
 from .steering import FollowUpQueue, SteeringQueue
+from .subagent_tools import SubagentManager
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +96,22 @@ class AgentOrchestrator:
             # Use the first available provider
             provider_name = next(iter(providers.keys()))
             provider = providers[provider_name]
+
+            # Merge subagent lifecycle tools into the tools dict
+            all_tools = dict(tools)
+            if config.current_depth < config.max_subagent_depth:
+                subagent_mgr = SubagentManager(
+                    coordinator=self._coordinator,
+                    max_depth=config.max_subagent_depth,
+                    current_depth=config.current_depth,
+                )
+                for tool in subagent_mgr.create_tools():
+                    all_tools[tool.name] = tool
+
             self._session = AgentSession(
                 config=config,
                 provider=provider,
-                tools=tools,
+                tools=all_tools,
                 hooks=hooks,
                 steering_queue=self._steering_queue,
                 follow_up_queue=self._follow_up_queue,
