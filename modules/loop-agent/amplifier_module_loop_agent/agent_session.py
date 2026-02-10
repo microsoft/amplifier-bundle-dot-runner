@@ -13,6 +13,7 @@ The core loop follows the spec's exact cadence:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 import uuid
@@ -33,7 +34,9 @@ from .config import SessionConfig
 from .environment import build_environment_context
 from .system_prompt import build_system_prompt, discover_project_docs
 from .events import (
+    AGENT_ASSISTANT_TEXT_DELTA,
     AGENT_ASSISTANT_TEXT_END,
+    AGENT_ASSISTANT_TEXT_START,
     AGENT_CONTEXT_WARNING,
     AGENT_ERROR,
     AGENT_LOOP_DETECTION,
@@ -95,6 +98,118 @@ class AgentSession:
         self._current_depth = config.current_depth
         self._provider_name = provider_name
         self._model = model
+        self._use_streaming = self._detect_streaming_support()
+
+    # ------------------------------------------------------------------
+    # Streaming detection
+    # ------------------------------------------------------------------
+
+    def _detect_streaming_support(self) -> bool:
+        """Check if the provider supports streaming via an async generator.
+
+        Uses inspect.isasyncgenfunction to distinguish real async generator
+        .stream() methods from auto-generated mock attributes.  This is
+        safe with both production providers and test mocks.
+        """
+        stream_fn = getattr(self._provider, "stream", None)
+        return stream_fn is not None and inspect.isasyncgenfunction(stream_fn)
+
+    # ------------------------------------------------------------------
+    # Provider call dispatch (streaming vs non-streaming)
+    # ------------------------------------------------------------------
+
+    async def _call_provider(self, request: ChatRequest) -> dict[str, Any]:
+        """Call the provider, choosing streaming or non-streaming path.
+
+        Returns a normalised dict with keys:
+          text, reasoning, reasoning_signature, tool_calls (list[dict]),
+          raw_tool_calls (original ToolCall objects for execution),
+          usage (Usage object or None), usage_data (dict for events).
+        """
+        if self._use_streaming:
+            return await self._call_provider_streaming(request)
+        return await self._call_provider_complete(request)
+
+    async def _call_provider_complete(self, request: ChatRequest) -> dict[str, Any]:
+        """Non-streaming path: call provider.complete() and extract fields."""
+        response: ChatResponse = await self._provider.complete(request)
+
+        text = self._extract_text(response)
+        reasoning = self._extract_reasoning(response)
+        reasoning_sig = self._extract_reasoning_signature(response)
+        usage = response.usage
+        usage_data = usage.model_dump() if usage else {}
+
+        tool_calls: list[dict[str, Any]] = []
+        raw_tool_calls: list[Any] = []
+        if response.tool_calls:
+            raw_tool_calls = list(response.tool_calls)
+            tool_calls = [
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in response.tool_calls
+            ]
+
+        return {
+            "text": text,
+            "reasoning": reasoning,
+            "reasoning_signature": reasoning_sig,
+            "tool_calls": tool_calls,
+            "raw_tool_calls": raw_tool_calls,
+            "usage": usage,
+            "usage_data": usage_data,
+        }
+
+    async def _call_provider_streaming(self, request: ChatRequest) -> dict[str, Any]:
+        """Streaming path: consume provider.stream(), emitting delta events.
+
+        Emits ASSISTANT_TEXT_START before any deltas, ASSISTANT_TEXT_DELTA
+        for each content chunk, and ASSISTANT_TEXT_END with the full text
+        when the stream completes.
+        """
+        await self._hooks.emit(AGENT_ASSISTANT_TEXT_START, {})
+
+        full_text = ""
+        tool_calls: list[dict[str, Any]] = []
+        usage_data: dict[str, Any] = {}
+
+        async for chunk in self._provider.stream(request):
+            content = chunk.get("content")
+            if content:
+                full_text += content
+                await self._hooks.emit(AGENT_ASSISTANT_TEXT_DELTA, {"delta": content})
+            chunk_tool_calls = chunk.get("tool_calls")
+            if chunk_tool_calls:
+                tool_calls.extend(chunk_tool_calls)
+            chunk_usage = chunk.get("usage")
+            if chunk_usage:
+                usage_data = chunk_usage
+
+        # Emit text end with full assembled text
+        await self._hooks.emit(AGENT_ASSISTANT_TEXT_END, {"text": full_text})
+
+        # Build ToolCall-like objects for the execution path
+        raw_tool_calls: list[Any] = []
+        if tool_calls:
+            from types import SimpleNamespace
+
+            raw_tool_calls = [
+                SimpleNamespace(
+                    id=tc["id"],
+                    name=tc["name"],
+                    arguments=tc["arguments"],
+                )
+                for tc in tool_calls
+            ]
+
+        return {
+            "text": full_text,
+            "reasoning": None,
+            "reasoning_signature": None,
+            "tool_calls": tool_calls,
+            "raw_tool_calls": raw_tool_calls,
+            "usage": None,
+            "usage_data": usage_data,
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -151,9 +266,9 @@ class AgentSession:
             # Emit provider:request before LLM call
             await self._hooks.emit(PROVIDER_REQUEST, {})
 
-            # Call LLM (single-shot, no SDK-level tool loop)
+            # Call LLM — streaming or non-streaming based on provider capability
             try:
-                response = await self._provider.complete(request)
+                call_result = await self._call_provider(request)
             except LLMError as e:
                 await self._emit_provider_error(e)
                 await self._emit_error(str(e))
@@ -169,30 +284,32 @@ class AgentSession:
                 await self._emit_session_end()
                 raise
 
+            text = call_result["text"]
+            reasoning = call_result["reasoning"]
+            reasoning_sig = call_result["reasoning_signature"]
+            tool_calls = call_result["tool_calls"]
+            usage = call_result["usage"]
+            usage_data = call_result["usage_data"]
+
             # Emit provider:response after LLM call with usage data
-            usage_data = response.usage.model_dump() if response.usage else {}
             await self._hooks.emit(PROVIDER_RESPONSE, {"usage": usage_data})
 
             # Check context window usage (spec Section 5.5)
             await self._check_context_usage()
 
-            # Extract text, reasoning, and thinking signature
-            text = self._extract_text(response)
-            reasoning = self._extract_reasoning(response)
-            reasoning_sig = self._extract_reasoning_signature(response)
             if text:
                 last_text = text
 
             # Record assistant turn
             tool_calls_data = []
-            if response.tool_calls:
+            if tool_calls:
                 tool_calls_data = [
                     {
-                        "id": tc.id,
-                        "name": tc.name,
-                        "arguments": tc.arguments,
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
                     }
-                    for tc in response.tool_calls
+                    for tc in tool_calls
                 ]
             self._history.append(
                 AssistantTurn(
@@ -200,31 +317,35 @@ class AgentSession:
                     tool_calls=tool_calls_data,
                     reasoning=reasoning,
                     reasoning_signature=reasoning_sig,
-                    usage=response.usage,
+                    usage=usage,
                 )
             )
 
             # Emit assistant_text_end (spec EVENT-003)
-            text_end_data: dict[str, Any] = {"text": text}
-            if reasoning:
-                text_end_data["reasoning"] = reasoning
-            await self._hooks.emit(AGENT_ASSISTANT_TEXT_END, text_end_data)
+            # (Streaming path already emitted START/DELTA/END; non-streaming
+            # emits only END here.)
+            if not self._use_streaming:
+                text_end_data: dict[str, Any] = {"text": text}
+                if reasoning:
+                    text_end_data["reasoning"] = reasoning
+                await self._hooks.emit(AGENT_ASSISTANT_TEXT_END, text_end_data)
 
             # Natural completion: no tool calls -> done
-            if not response.tool_calls:
+            if not tool_calls:
                 self._state_machine.complete()  # PROCESSING -> IDLE
                 await self._emit_session_end()
                 # Process follow-up queue after loop completes
                 return await self._process_follow_ups(text)
 
             # Execute tools in parallel
-            results = await self._execute_tool_calls(response.tool_calls)
+            raw_tool_calls = call_result["raw_tool_calls"]
+            results = await self._execute_tool_calls(raw_tool_calls)
             self._history.append(ToolResultsTurn(results=results))
             round_count += 1
 
             # Record tool calls for loop detection
             if self._config.enable_loop_detection:
-                for tc in response.tool_calls:
+                for tc in raw_tool_calls:
                     self._loop_detector.record(tc.name, tc.arguments)
 
             # Drain steering after each tool round (spec STEER-002)
@@ -241,6 +362,33 @@ class AgentSession:
         return await self._process_follow_ups(last_text)
 
     # ------------------------------------------------------------------
+    # Provider name resolution (spec Section 3: Provider-Aligned Toolsets)
+    # ------------------------------------------------------------------
+
+    # Canonical provider IDs for flexible matching
+    _KNOWN_PROVIDERS = ("anthropic", "openai", "gemini")
+
+    def _resolve_provider_id(self) -> str | None:
+        """Resolve raw provider name to a canonical provider ID.
+
+        Bundle composition may yield provider names like
+        "provider-anthropic" or "Provider-OpenAI".  This method
+        normalises them to a canonical ID ("anthropic", "openai",
+        "gemini") so that project doc discovery and environment
+        context use the correct provider-specific behaviour.
+
+        Returns None when the provider cannot be identified.
+        """
+        raw = self._provider_name
+        if not raw:
+            return None
+        lower = raw.lower()
+        for canonical in self._KNOWN_PROVIDERS:
+            if canonical in lower:
+                return canonical
+        return None
+
+    # ------------------------------------------------------------------
     # System prompt assembly (spec PROV-002: rebuilt every LLM call)
     # ------------------------------------------------------------------
 
@@ -255,6 +403,9 @@ class AgentSession:
           5. User override (not yet wired — reserved for future use)
         """
         import os
+
+        # Resolve canonical provider ID for doc filtering
+        provider_id = self._resolve_provider_id()
 
         # Layer 1: Base prompt
         base_prompt = self._config.system_prompt or "You are a coding agent."
@@ -274,10 +425,10 @@ class AgentSession:
             tool_lines.append(f"- **{tool.name}**: {desc}")
         tool_descriptions = "\n".join(tool_lines)
 
-        # Layer 4: Project docs
+        # Layer 4: Project docs (uses resolved canonical provider ID)
         project_docs = discover_project_docs(
             working_dir=working_dir,
-            provider_id=self._provider_name or None,
+            provider_id=provider_id,
         )
 
         return build_system_prompt(

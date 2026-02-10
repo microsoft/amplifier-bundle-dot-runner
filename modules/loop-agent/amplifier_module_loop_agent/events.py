@@ -20,7 +20,9 @@ AGENT_SESSION_END = "agent:session_end"
 # User input
 AGENT_USER_INPUT = "agent:user_input"
 
-# Assistant output
+# Assistant output (streaming events: EVT-006, EVT-007, EVT-008)
+AGENT_ASSISTANT_TEXT_START = "agent:assistant_text_start"
+AGENT_ASSISTANT_TEXT_DELTA = "agent:assistant_text_delta"
 AGENT_ASSISTANT_TEXT_END = "agent:assistant_text_end"
 
 # Tool execution
@@ -41,7 +43,9 @@ AGENT_TURN_LIMIT = "agent:turn_limit"
 AGENT_ERROR = "agent:error"
 
 __all__ = [
+    "AGENT_ASSISTANT_TEXT_DELTA",
     "AGENT_ASSISTANT_TEXT_END",
+    "AGENT_ASSISTANT_TEXT_START",
     "AGENT_CONTEXT_WARNING",
     "AGENT_ERROR",
     "AGENT_LOOP_DETECTION",
