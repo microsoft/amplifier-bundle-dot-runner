@@ -34,6 +34,8 @@ class SessionConfig:
     max_subagent_depth: int = 1
     current_depth: int = 0  # Current subagent depth (set by parent for child sessions)
     context_window_size: int = 0  # 0 = unknown/unlimited
+    system_prompt: str = ""  # Base system prompt (layer 1)
+    working_dir: str = ""  # Working directory for environment context and project docs
 
     @classmethod
     def from_dict(cls, config: dict) -> SessionConfig:
