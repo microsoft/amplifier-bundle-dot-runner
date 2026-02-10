@@ -93,7 +93,8 @@ class AgentOrchestrator:
         if self._session is None:
             config = SessionConfig.from_dict(self._config)
             # Use the first available provider
-            provider = next(iter(providers.values()))
+            provider_name = next(iter(providers.keys()))
+            provider = providers[provider_name]
             self._session = AgentSession(
                 config=config,
                 provider=provider,
@@ -101,6 +102,7 @@ class AgentOrchestrator:
                 hooks=hooks,
                 steering_queue=self._steering_queue,
                 follow_up_queue=self._follow_up_queue,
+                provider_name=provider_name,
             )
             # Register subagent depth on coordinator for tool-delegate
             self._coordinator.register_capability(

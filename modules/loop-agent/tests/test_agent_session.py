@@ -247,8 +247,9 @@ async def test_session_persists_across_calls():
     assert provs["test"].complete.call_count == 2
     # Second call's request should include history from first call
     second_request = provs["test"].complete.call_args_list[1][0][0]
-    # user1 + assistant1 + user2 = 3 messages
-    assert len(second_request.messages) == 3
+    # system + user1 + assistant1 + user2 = 4 messages
+    assert len(second_request.messages) == 4
+    assert second_request.messages[0].role == "system"
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,8 @@ from amplifier_core.message_models import (
 from amplifier_core.models import ToolResult
 
 from .config import SessionConfig
+from .environment import build_environment_context
+from .system_prompt import build_system_prompt, discover_project_docs
 from .events import (
     AGENT_ASSISTANT_TEXT_END,
     AGENT_CONTEXT_WARNING,
@@ -76,6 +78,8 @@ class AgentSession:
         hooks: Any,
         steering_queue: SteeringQueue | None = None,
         follow_up_queue: FollowUpQueue | None = None,
+        provider_name: str = "",
+        model: str = "",
     ) -> None:
         self._config = config
         self._provider = provider
@@ -89,6 +93,8 @@ class AgentSession:
         self._follow_up_queue = follow_up_queue or FollowUpQueue()
         self._loop_detector = LoopDetector(window_size=config.loop_detection_window)
         self._current_depth = config.current_depth
+        self._provider_name = provider_name
+        self._model = model
 
     # ------------------------------------------------------------------
     # Public API
@@ -235,6 +241,53 @@ class AgentSession:
         return await self._process_follow_ups(last_text)
 
     # ------------------------------------------------------------------
+    # System prompt assembly (spec PROV-002: rebuilt every LLM call)
+    # ------------------------------------------------------------------
+
+    def _build_system_prompt_text(self) -> str:
+        """Assemble the 5-layer system prompt.
+
+        Layers:
+          1. Base prompt from config
+          2. Environment context (working dir, platform, git, model)
+          3. Tool descriptions (from mounted tools)
+          4. Project docs (AGENTS.md, provider-specific files)
+          5. User override (not yet wired — reserved for future use)
+        """
+        import os
+
+        # Layer 1: Base prompt
+        base_prompt = self._config.system_prompt or "You are a coding agent."
+
+        # Layer 2: Environment context
+        working_dir = self._config.working_dir or os.getcwd()
+        environment = build_environment_context(
+            working_dir=working_dir,
+            provider_name=self._provider_name or None,
+            model=self._model or None,
+        )
+
+        # Layer 3: Tool descriptions
+        tool_lines: list[str] = []
+        for tool in self._tools.values():
+            desc = getattr(tool, "description", "") or ""
+            tool_lines.append(f"- **{tool.name}**: {desc}")
+        tool_descriptions = "\n".join(tool_lines)
+
+        # Layer 4: Project docs
+        project_docs = discover_project_docs(
+            working_dir=working_dir,
+            provider_id=self._provider_name or None,
+        )
+
+        return build_system_prompt(
+            base_prompt=base_prompt,
+            environment=environment,
+            tool_descriptions=tool_descriptions,
+            project_docs=project_docs,
+        )
+
+    # ------------------------------------------------------------------
     # History -> Messages conversion
     # ------------------------------------------------------------------
 
@@ -243,8 +296,18 @@ class AgentSession:
 
         Delegates to the messages module which handles system-first
         ordering, content blocks, and ThinkingBlock preservation.
+        Then prepends the system prompt as the first message.
         """
-        return convert_history_to_messages(self._history)
+        messages = convert_history_to_messages(self._history)
+
+        # Rebuild system prompt every iteration (spec PROV-002)
+        system_text = self._build_system_prompt_text()
+        system_msg = Message(role="system", content=system_text)
+
+        # Prepend system message, removing any existing system messages
+        # (they'll be rebuilt fresh each time)
+        non_system = [m for m in messages if m.role != "system"]
+        return [system_msg] + non_system
 
     # ------------------------------------------------------------------
     # Tool definitions
