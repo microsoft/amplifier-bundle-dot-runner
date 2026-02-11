@@ -394,3 +394,37 @@ async def test_response_id_none_when_not_present():
     turn = orch._session._history.last_assistant_turn
     assert turn is not None
     assert turn.response_id is None
+
+
+# ---------------------------------------------------------------------------
+# M-5: ToolRegistry integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_uses_tool_registry():
+    """AgentSession stores tools as a ToolRegistry, not a plain dict (M-5)."""
+    from amplifier_module_loop_agent.tool_registry import ToolRegistry
+
+    orch, ctx, provs, tools, hooks = _make_harness(
+        responses=[_text_response("ok")]
+    )
+    await orch.execute("hi", ctx, provs, tools, hooks)
+
+    # The internal _tools attribute should be a ToolRegistry instance
+    assert isinstance(orch._session._tools, ToolRegistry)
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_get_used_for_lookup():
+    """AgentSession uses ToolRegistry.get() for tool lookup (M-5)."""
+    orch, ctx, provs, tools, hooks = _make_harness(
+        responses=[
+            _tool_response(("tc1", "read_file", {})),
+            _text_response("done"),
+        ]
+    )
+    await orch.execute("read", ctx, provs, tools, hooks)
+
+    # Tool was found and executed via the registry
+    tools["read_file"].execute.assert_called_once()

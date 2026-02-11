@@ -57,6 +57,7 @@ from .loop_detection import LoopDetector
 from .messages import convert_history_to_messages
 from .state import SessionState, SessionStateMachine
 from .steering import FollowUpQueue, SteeringQueue
+from .tool_registry import ToolRegistry
 from .turns import (
     AssistantTurn,
     SessionHistory,
@@ -79,7 +80,7 @@ class AgentSession:
         self,
         config: SessionConfig,
         provider: Any,
-        tools: dict[str, Any],
+        tools: dict[str, Any] | ToolRegistry,
         hooks: Any,
         steering_queue: SteeringQueue | None = None,
         follow_up_queue: FollowUpQueue | None = None,
@@ -89,7 +90,9 @@ class AgentSession:
     ) -> None:
         self._config = config
         self._provider = provider
-        self._tools = tools
+        self._tools: ToolRegistry = (
+            tools if isinstance(tools, ToolRegistry) else ToolRegistry.from_dict(tools)
+        )
         self._hooks = hooks
         self._coordinator = coordinator
         self._state_machine = SessionStateMachine()
