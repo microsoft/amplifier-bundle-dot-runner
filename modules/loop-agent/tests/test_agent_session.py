@@ -359,3 +359,38 @@ async def test_tool_choice_is_auto():
     await orch.execute("hi", ctx, provs, tools, hooks)
     request = provs["test"].complete.call_args_list[0][0][0]
     assert request.tool_choice == "auto"
+
+
+# ---------------------------------------------------------------------------
+# M-1: response_id capture
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_response_id_captured_on_assistant_turn():
+    """response_id from provider response is stored on AssistantTurn (M-1)."""
+    response = ChatResponse(
+        content=[{"type": "text", "text": "hello"}],
+        tool_calls=None,
+        usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
+        response_id="resp_abc123",
+    )
+    orch, ctx, provs, tools, hooks = _make_harness(responses=[response])
+    await orch.execute("hi", ctx, provs, tools, hooks)
+
+    turn = orch._session._history.last_assistant_turn
+    assert turn is not None
+    assert turn.response_id == "resp_abc123"
+
+
+@pytest.mark.asyncio
+async def test_response_id_none_when_not_present():
+    """response_id stays None when provider doesn't include one (M-1)."""
+    orch, ctx, provs, tools, hooks = _make_harness(
+        responses=[_text_response("ok")]
+    )
+    await orch.execute("hi", ctx, provs, tools, hooks)
+
+    turn = orch._session._history.last_assistant_turn
+    assert turn is not None
+    assert turn.response_id is None

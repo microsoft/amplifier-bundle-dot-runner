@@ -135,6 +135,26 @@ class AgentSession:
             return await self._call_provider_streaming(request)
         return await self._call_provider_complete(request)
 
+    @staticmethod
+    def _extract_response_id(response: ChatResponse) -> str | None:
+        """Extract response_id from a ChatResponse.
+
+        Checks for a top-level ``response_id`` extra field first, then
+        falls back to ``metadata.response_id``.  Returns None when the
+        provider does not supply one.
+        """
+        # Pydantic extra fields (provider passes response_id= directly)
+        rid = getattr(response, "response_id", None)
+        if rid is not None:
+            return str(rid)
+        # Fallback: metadata dict
+        meta = getattr(response, "metadata", None)
+        if meta and isinstance(meta, dict):
+            rid = meta.get("response_id")
+            if rid is not None:
+                return str(rid)
+        return None
+
     async def _call_provider_complete(self, request: ChatRequest) -> dict[str, Any]:
         """Non-streaming path: call provider.complete() and extract fields."""
         response: ChatResponse = await self._provider.complete(request)
@@ -144,6 +164,7 @@ class AgentSession:
         reasoning_sig = self._extract_reasoning_signature(response)
         usage = response.usage
         usage_data = usage.model_dump() if usage else {}
+        response_id = self._extract_response_id(response)
 
         tool_calls: list[dict[str, Any]] = []
         raw_tool_calls: list[Any] = []
@@ -162,6 +183,7 @@ class AgentSession:
             "raw_tool_calls": raw_tool_calls,
             "usage": usage,
             "usage_data": usage_data,
+            "response_id": response_id,
         }
 
     async def _call_provider_streaming(self, request: ChatRequest) -> dict[str, Any]:
@@ -238,6 +260,7 @@ class AgentSession:
             "raw_tool_calls": raw_tool_calls,
             "usage": None,
             "usage_data": usage_data,
+            "response_id": None,  # Streaming path: no ChatResponse object
         }
 
     # ------------------------------------------------------------------
@@ -331,6 +354,7 @@ class AgentSession:
             tool_calls = call_result["tool_calls"]
             usage = call_result["usage"]
             usage_data = call_result["usage_data"]
+            response_id = call_result.get("response_id")
 
             # Emit provider:response after LLM call with usage data
             await self._hooks.emit(PROVIDER_RESPONSE, {"usage": usage_data})
@@ -359,6 +383,7 @@ class AgentSession:
                     reasoning=reasoning,
                     reasoning_signature=reasoning_sig,
                     usage=usage,
+                    response_id=response_id,
                 )
             )
 
