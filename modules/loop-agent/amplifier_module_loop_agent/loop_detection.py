@@ -55,10 +55,10 @@ class LoopDetector:
                     all_match = False
                     break
             if all_match:
+                # Spec Section 2.10: exact prescribed warning text.
                 return (
-                    f"Loop pattern detected: the same {pattern_len} tool "
-                    f"call(s) have repeated {self._window_size // pattern_len} "
-                    f"times. Try a different approach."
+                    f"Loop detected: the last {self._window_size} tool calls "
+                    "follow a repeating pattern. Try a different approach."
                 )
 
         return None

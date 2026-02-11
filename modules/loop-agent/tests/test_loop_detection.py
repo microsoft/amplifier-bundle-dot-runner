@@ -91,6 +91,19 @@ class TestLoopDetector:
         d.record("grep", {"pattern": "foo"})
         assert d.check() is None
 
+    def test_message_matches_spec_verbatim(self):
+        """Loop detection warning must match spec Section 2.10 exactly (M-2)."""
+        window = 10
+        d = LoopDetector(window_size=window)
+        for _ in range(window):
+            d.record("read_file", {"path": "a.py"})
+        result = d.check()
+        expected = (
+            f"Loop detected: the last {window} tool calls follow a "
+            "repeating pattern. Try a different approach."
+        )
+        assert result == expected
+
     def test_detects_pattern_length_1(self):
         """Same call repeated N times triggers detection (DETECT-006)."""
         d = LoopDetector(window_size=10)
