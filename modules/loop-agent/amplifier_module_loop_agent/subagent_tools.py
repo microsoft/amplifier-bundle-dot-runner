@@ -52,7 +52,7 @@ class SubagentManager:
     """Manages interactive subagent lifecycle.
 
     Holds state for all spawned agents and creates the four lifecycle
-    tools. Requires a coordinator with a spawn() method for actual
+    tools. Uses the coordinator's ``session.spawn`` capability for actual
     execution when wait() is called.
     """
 
@@ -66,6 +66,19 @@ class SubagentManager:
         self._max_depth = max_depth
         self._current_depth = current_depth
         self._agents: dict[str, SubagentState] = {}
+        self._spawn_fn: Any | None = None
+        self._spawn_checked: bool = False
+
+    def _get_spawn_fn(self) -> Any | None:
+        """Lazily resolve the session.spawn capability."""
+        if not self._spawn_checked:
+            if hasattr(self._coordinator, "get_capability"):
+                try:
+                    self._spawn_fn = self._coordinator.get_capability("session.spawn")
+                except Exception:
+                    pass
+            self._spawn_checked = True
+        return self._spawn_fn
 
     def create_tools(self) -> list[Any]:
         """Return the 4 subagent tools for registration."""
@@ -272,6 +285,18 @@ class WaitTool(_SubagentTool):
                 output=state.result or "",
             )
 
+        # Resolve the spawn capability
+        spawn_fn = self._manager._get_spawn_fn()
+        if spawn_fn is None:
+            return ToolResult(
+                success=False,
+                output=(
+                    "session.spawn capability not available. "
+                    "Subagent execution requires an app host that "
+                    "registers this capability (e.g. amplifier CLI)."
+                ),
+            )
+
         # Build the instruction from task + pending messages
         instruction_parts = [state.task]
         if state.pending_messages:
@@ -280,31 +305,57 @@ class WaitTool(_SubagentTool):
                 instruction_parts.append(f"- {msg}")
         instruction = "\n".join(instruction_parts)
 
-        # Build spawn kwargs
-        spawn_kwargs: dict[str, Any] = {
-            "instruction": instruction,
-        }
-        if state.working_dir:
-            spawn_kwargs["working_dir"] = state.working_dir
-        if state.max_turns:
-            spawn_kwargs["max_turns"] = state.max_turns
+        # Obtain parent_session and agent_configs from coordinator
+        coordinator = self._manager._coordinator
+        parent_session = getattr(coordinator, "session", None)
+        coordinator_config = getattr(coordinator, "config", None) or {}
+        agent_configs: dict[str, Any] = coordinator_config.get("agents", {})
 
-        # Execute via coordinator
+        # Build spawn kwargs matching session.spawn signature
+        spawn_kwargs: dict[str, Any] = {
+            "agent_name": state.agent_id,
+            "instruction": instruction,
+            "parent_session": parent_session,
+            "agent_configs": agent_configs,
+        }
+        # Pass max_turns via orchestrator_config if set
+        if state.max_turns:
+            spawn_kwargs["orchestrator_config"] = {
+                "max_turns": state.max_turns,
+            }
+
+        # Execute via session.spawn capability
         state.status = "running"
         try:
-            result = await self._manager._coordinator.spawn(**spawn_kwargs)
+            result = await spawn_fn(**spawn_kwargs)
+
+            # spawn returns {"output": str, "session_id": str}
+            output = (
+                result.get("output", "")
+                if isinstance(result, dict)
+                else str(result)
+            )
+            session_id = (
+                result.get("session_id")
+                if isinstance(result, dict)
+                else None
+            )
+
             state.status = "completed"
-            state.result = str(result)
+            state.result = output
             state.pending_messages.clear()
 
-            logger.info("Subagent %s completed", agent_id)
+            logger.info(
+                "Subagent %s completed (session=%s)", agent_id, session_id
+            )
             return ToolResult(
                 success=True,
                 output=json.dumps(
                     {
                         "agent_id": agent_id,
                         "status": "completed",
-                        "output": state.result,
+                        "output": output,
+                        "session_id": session_id,
                     }
                 ),
             )
