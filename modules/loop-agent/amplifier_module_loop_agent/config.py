@@ -36,6 +36,7 @@ class SessionConfig:
     context_window_size: int = 0  # 0 = unknown/unlimited
     system_prompt: str = ""  # Base system prompt (layer 1)
     working_dir: str = ""  # Working directory for environment context and project docs
+    max_tool_rounds_per_provider: dict[str, int] = field(default_factory=dict)
     supports_parallel_tool_calls: bool = True  # False = sequential tool execution
 
     @classmethod
@@ -43,6 +44,12 @@ class SessionConfig:
         """Construct from a config dictionary, ignoring unknown keys."""
         known = {f.name for f in fields(cls)}
         return cls(**{k: v for k, v in config.items() if k in known})
+
+    def get_max_tool_rounds(self, provider: str) -> int:
+        """Get max tool rounds for a provider, with global fallback (M-4)."""
+        return self.max_tool_rounds_per_provider.get(
+            provider, self.max_tool_rounds_per_input
+        )
 
     def get_tool_output_limit(self, tool_name: str) -> int:
         """Get character output limit for a tool, with fallback default."""

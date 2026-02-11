@@ -80,3 +80,31 @@ def test_get_tool_line_limit_default():
     limit = c.get_tool_line_limit("read_file")
     assert isinstance(limit, int)
     assert limit > 0
+
+
+# --- M-4: per-provider max_tool_rounds_per_input ---
+
+
+def test_max_tool_rounds_per_provider_override():
+    """get_max_tool_rounds returns provider-specific override (M-4)."""
+    c = SessionConfig.from_dict({
+        "max_tool_rounds_per_input": 200,
+        "max_tool_rounds_per_provider": {"anthropic": 50, "openai": 100},
+    })
+    assert c.get_max_tool_rounds("anthropic") == 50
+    assert c.get_max_tool_rounds("openai") == 100
+
+
+def test_max_tool_rounds_per_provider_fallback():
+    """get_max_tool_rounds falls back to global default for unknown provider (M-4)."""
+    c = SessionConfig.from_dict({
+        "max_tool_rounds_per_input": 200,
+        "max_tool_rounds_per_provider": {"anthropic": 50},
+    })
+    assert c.get_max_tool_rounds("gemini") == 200
+
+
+def test_max_tool_rounds_no_provider_config():
+    """get_max_tool_rounds returns global default when no per-provider config (M-4)."""
+    c = SessionConfig()
+    assert c.get_max_tool_rounds("any_provider") == 200
