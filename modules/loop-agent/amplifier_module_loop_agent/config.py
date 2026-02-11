@@ -36,6 +36,7 @@ class SessionConfig:
     context_window_size: int = 0  # 0 = unknown/unlimited
     system_prompt: str = ""  # Base system prompt (layer 1)
     working_dir: str = ""  # Working directory for environment context and project docs
+    supports_parallel_tool_calls: bool = True  # False = sequential tool execution
 
     @classmethod
     def from_dict(cls, config: dict) -> SessionConfig:
