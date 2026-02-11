@@ -121,6 +121,7 @@ class AgentOrchestrator:
                 hooks=hooks,
                 steering_queue=self._steering_queue,
                 follow_up_queue=self._follow_up_queue,
+                coordinator=self._coordinator,
                 provider_name=provider_name,
             )
             # Register subagent depth on coordinator for tool-delegate

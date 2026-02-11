@@ -82,6 +82,7 @@ class AgentSession:
         hooks: Any,
         steering_queue: SteeringQueue | None = None,
         follow_up_queue: FollowUpQueue | None = None,
+        coordinator: Any = None,
         provider_name: str = "",
         model: str = "",
     ) -> None:
@@ -89,6 +90,7 @@ class AgentSession:
         self._provider = provider
         self._tools = tools
         self._hooks = hooks
+        self._coordinator = coordinator
         self._state_machine = SessionStateMachine()
         self._history = SessionHistory()
         self._session_id = str(uuid.uuid4())
@@ -243,6 +245,12 @@ class AgentSession:
         last_text = ""
 
         while round_count < self._config.max_tool_rounds_per_input:
+            # Checkpoint 1: Graceful cancellation at top of loop
+            if self._is_cancelled():
+                self._state_machine.complete()
+                await self._emit_session_end()
+                return await self._process_follow_ups(last_text)
+
             # Check session-wide turn limit
             if (
                 self._config.max_turns > 0
@@ -284,6 +292,12 @@ class AgentSession:
                 self._state_machine.fatal_error()
                 await self._emit_session_end()
                 raise
+
+            # Checkpoint 2: Immediate cancellation after provider call
+            if self._is_immediate_cancel():
+                self._state_machine.complete()
+                await self._emit_session_end()
+                return await self._process_follow_ups(last_text)
 
             text = call_result["text"]
             reasoning = call_result["reasoning"]
@@ -483,14 +497,44 @@ class AgentSession:
     # ------------------------------------------------------------------
 
     async def _execute_tool_calls(self, tool_calls: list) -> list[ToolResult]:
-        """Execute tool calls in parallel with asyncio.gather."""
-        results = await asyncio.gather(
-            *[self._execute_single_tool(tc) for tc in tool_calls]
-        )
-        return list(results)
+        """Execute tool calls in parallel with cancellation support."""
+        try:
+            results = await asyncio.gather(
+                *[self._execute_single_tool(tc) for tc in tool_calls]
+            )
+            return list(results)
+        except asyncio.CancelledError:
+            # Immediate cancel during tool execution:
+            # Synthesize cancelled results for ALL tool calls to maintain
+            # tool_use/tool_result pairing (provider API contract)
+            logger.info("Tool execution cancelled - synthesizing cancelled results")
+            return [
+                ToolResult(
+                    success=False,
+                    output="Tool execution was cancelled by user",
+                )
+                for _ in tool_calls
+            ]
 
     async def _execute_single_tool(self, tool_call: Any) -> ToolResult:
         """Execute a single tool call. Never raises — errors become results."""
+        # Register tool with cancellation token for visibility
+        if self._coordinator:
+            cancellation = getattr(self._coordinator, "cancellation", None)
+            if cancellation and hasattr(cancellation, "register_tool_start"):
+                cancellation.register_tool_start(tool_call.id, tool_call.name)
+
+        try:
+            return await self._execute_single_tool_inner(tool_call)
+        finally:
+            # Unregister tool from cancellation token
+            if self._coordinator:
+                cancellation = getattr(self._coordinator, "cancellation", None)
+                if cancellation and hasattr(cancellation, "register_tool_complete"):
+                    cancellation.register_tool_complete(tool_call.id)
+
+    async def _execute_single_tool_inner(self, tool_call: Any) -> ToolResult:
+        """Inner tool execution logic. Never raises — errors become results."""
         await self._hooks.emit(
             AGENT_TOOL_CALL_START,
             {"tool_name": tool_call.name, "call_id": tool_call.id},
@@ -623,6 +667,30 @@ class AgentSession:
             # IDLE → CLOSED
             self._state_machine.close()
         await self._emit_session_end()
+
+    # ------------------------------------------------------------------
+    # Cancellation checks (spec Section 2.4, C-5)
+    # ------------------------------------------------------------------
+
+    def _is_cancelled(self) -> bool:
+        """Check if graceful cancellation has been requested."""
+        if self._coordinator is None:
+            return False
+        cancellation = getattr(self._coordinator, "cancellation", None)
+        if cancellation is None:
+            return False
+        # Use 'is True' to avoid MagicMock truthiness in tests
+        return getattr(cancellation, "is_cancelled", False) is True
+
+    def _is_immediate_cancel(self) -> bool:
+        """Check if immediate (force) cancellation has been requested."""
+        if self._coordinator is None:
+            return False
+        cancellation = getattr(self._coordinator, "cancellation", None)
+        if cancellation is None:
+            return False
+        # Use 'is True' to avoid MagicMock truthiness in tests
+        return getattr(cancellation, "is_immediate", False) is True
 
     # ------------------------------------------------------------------
     # Error event helpers
