@@ -532,24 +532,38 @@ class AgentSession:
     # ------------------------------------------------------------------
 
     async def _execute_tool_calls(self, tool_calls: list) -> list[ToolResult]:
-        """Execute tool calls in parallel with cancellation support."""
-        try:
-            results = await asyncio.gather(
-                *[self._execute_single_tool(tc) for tc in tool_calls]
-            )
-            return list(results)
-        except asyncio.CancelledError:
-            # Immediate cancel during tool execution:
-            # Synthesize cancelled results for ALL tool calls to maintain
-            # tool_use/tool_result pairing (provider API contract)
-            logger.info("Tool execution cancelled - synthesizing cancelled results")
-            return [
-                ToolResult(
-                    success=False,
-                    output="Tool execution was cancelled by user",
+        """Execute tool calls, parallel or sequential based on config.
+
+        Uses asyncio.gather() when supports_parallel_tool_calls is True
+        AND there are multiple tool calls. Otherwise executes sequentially
+        to preserve ordering guarantees (spec Section 3.2).
+        """
+        use_parallel = self._config.supports_parallel_tool_calls and len(tool_calls) > 1
+
+        if use_parallel:
+            try:
+                results = await asyncio.gather(
+                    *[self._execute_single_tool(tc) for tc in tool_calls]
                 )
-                for _ in tool_calls
-            ]
+                return list(results)
+            except asyncio.CancelledError:
+                # Immediate cancel during tool execution:
+                # Synthesize cancelled results for ALL tool calls to maintain
+                # tool_use/tool_result pairing (provider API contract)
+                logger.info("Tool execution cancelled - synthesizing cancelled results")
+                return [
+                    ToolResult(
+                        success=False,
+                        output="Tool execution was cancelled by user",
+                    )
+                    for _ in tool_calls
+                ]
+        else:
+            results: list[ToolResult] = []
+            for tc in tool_calls:
+                result = await self._execute_single_tool(tc)
+                results.append(result)
+            return results
 
     async def _execute_single_tool(self, tool_call: Any) -> ToolResult:
         """Execute a single tool call. Never raises — errors become results."""
