@@ -38,6 +38,7 @@ from .events import (
     AGENT_ASSISTANT_TEXT_DELTA,
     AGENT_ASSISTANT_TEXT_END,
     AGENT_ASSISTANT_TEXT_START,
+    AGENT_AWAITING_INPUT,
     AGENT_CONTEXT_WARNING,
     AGENT_ERROR,
     AGENT_LOOP_DETECTION,
@@ -345,12 +346,22 @@ class AgentSession:
                     text_end_data["reasoning"] = reasoning
                 await self._hooks.emit(AGENT_ASSISTANT_TEXT_END, text_end_data)
 
-            # Natural completion: no tool calls -> done
+            # Natural completion: no tool calls
             if not tool_calls:
-                self._state_machine.complete()  # PROCESSING -> IDLE
-                await self._emit_session_end()
-                # Process follow-up queue after loop completes
-                return await self._process_follow_ups(text)
+                # Detect if the model is asking the user a question
+                if self._looks_like_question(text):
+                    self._state_machine.await_input()  # PROCESSING -> AWAITING_INPUT
+                    await self._hooks.emit(
+                        AGENT_AWAITING_INPUT,
+                        {"text": text, "session_id": self._session_id},
+                    )
+                    # Do NOT emit session_end or process follow-ups.
+                    # Host decides: answer via resume_with_input() or close.
+                    return text
+                else:
+                    self._state_machine.complete()  # PROCESSING -> IDLE
+                    await self._emit_session_end()
+                    return await self._process_follow_ups(text)
 
             # Execute tools in parallel
             raw_tool_calls = call_result["raw_tool_calls"]
@@ -687,6 +698,55 @@ class AgentSession:
                 },
             )
             return ToolResult(success=False, output=error_msg)
+
+    # ------------------------------------------------------------------
+    # Question detection (spec Section 2.3: AWAITING_INPUT)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _looks_like_question(text: str) -> bool:
+        """Detect if model text looks like a question directed at the user.
+
+        Heuristic: strip trailing whitespace, markdown formatting, and
+        code fences. If the cleaned text ends with '?', treat it as a
+        question. This intentionally errs on the side of caution --
+        only text that clearly ends as a question triggers AWAITING_INPUT.
+        """
+        if not text or not text.strip():
+            return False
+
+        cleaned = text.rstrip()
+        lines = cleaned.split("\n")
+
+        # Walk backwards past empty lines and code fences
+        for line in reversed(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("```"):
+                continue
+            return stripped.endswith("?")
+
+        return False
+
+    async def resume_with_input(self, answer: str) -> str:
+        """Resume from AWAITING_INPUT state with the user's answer.
+
+        Transitions AWAITING_INPUT -> PROCESSING -> IDLE and then calls
+        process_input() with the user's answer as the new prompt.
+
+        Args:
+            answer: The user's response to the agent's question.
+
+        Returns:
+            The agent's response after processing the answer.
+
+        Raises:
+            InvalidTransitionError: If not in AWAITING_INPUT state.
+        """
+        self._state_machine.resume_input()  # AWAITING_INPUT -> PROCESSING
+        self._state_machine.complete()  # PROCESSING -> IDLE
+        return await self.process_input(answer)
 
     # ------------------------------------------------------------------
     # Content extraction
