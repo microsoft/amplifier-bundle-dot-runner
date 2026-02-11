@@ -21,14 +21,38 @@ from amplifier_module_loop_agent.subagent_tools import (
 # ---------------------------------------------------------------------------
 
 
-def _make_coordinator(spawn_result: str = "Agent completed task."):
-    """Create a mock coordinator with spawn capability."""
+def _make_coordinator(spawn_result=None, session=None, agents=None):
+    """Create a mock coordinator with session.spawn capability.
+
+    Uses coordinator.get_capability("session.spawn") — the canonical
+    Amplifier pattern — instead of the nonexistent coordinator.spawn().
+    The spawn function returns a dict: {"output": str, "session_id": str}.
+    """
+    if spawn_result is None:
+        spawn_result = {"output": "Agent completed task.", "session_id": "child-001"}
+
     coordinator = MagicMock()
+    coordinator.session = session
 
-    async def fake_spawn(**kwargs):
-        return spawn_result
+    config: dict = {}
+    if agents is not None:
+        config["agents"] = agents
+    coordinator.config = config
 
-    coordinator.spawn = AsyncMock(side_effect=fake_spawn)
+    mock_spawn = AsyncMock(return_value=spawn_result)
+    coordinator.get_capability = MagicMock(return_value=mock_spawn)
+
+    # Stash on coordinator for test assertions
+    coordinator._mock_spawn = mock_spawn
+    return coordinator
+
+
+def _make_coordinator_no_spawn():
+    """Create a mock coordinator WITHOUT session.spawn capability."""
+    coordinator = MagicMock()
+    coordinator.session = None
+    coordinator.config = {}
+    coordinator.get_capability = MagicMock(return_value=None)
     return coordinator
 
 
@@ -82,14 +106,14 @@ class TestSpawnAgent:
 
     @pytest.mark.asyncio
     async def test_spawn_does_not_execute_immediately(self):
-        """spawn_agent stores task but does NOT call coordinator.spawn yet."""
+        """spawn_agent stores task but does NOT call session.spawn yet."""
         coordinator = _make_coordinator()
         mgr = SubagentManager(coordinator=coordinator)
         tool = _find_tool(mgr, "spawn_agent")
 
         await tool.execute({"task": "Plan the feature"})
-        # Spawn should NOT have been called yet
-        coordinator.spawn.assert_not_called()
+        # session.spawn should NOT have been called yet
+        coordinator._mock_spawn.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_spawn_stores_state(self):
@@ -210,8 +234,10 @@ class TestWait:
 
     @pytest.mark.asyncio
     async def test_wait_triggers_execution(self):
-        """wait triggers the actual spawn and returns output."""
-        coordinator = _make_coordinator(spawn_result="Task completed successfully.")
+        """wait triggers execution via session.spawn capability and returns output."""
+        coordinator = _make_coordinator(
+            spawn_result={"output": "Task completed successfully.", "session_id": "s1"},
+        )
         mgr = SubagentManager(coordinator=coordinator)
         spawn_tool = _find_tool(mgr, "spawn_agent")
         wait_tool = _find_tool(mgr, "wait")
@@ -222,8 +248,9 @@ class TestWait:
         result = await wait_tool.execute({"agent_id": agent_id})
         assert result.success
         assert "Task completed successfully." in result.output
-        # Coordinator.spawn should have been called now
-        coordinator.spawn.assert_called_once()
+        # session.spawn should have been resolved via get_capability
+        coordinator.get_capability.assert_called_with("session.spawn")
+        coordinator._mock_spawn.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_wait_marks_agent_completed(self):
@@ -235,8 +262,9 @@ class TestWait:
 
         spawn_result = await spawn_tool.execute({"task": "Work"})
         agent_id = _extract_agent_id(spawn_result.output)
-        await wait_tool.execute({"agent_id": agent_id})
+        result = await wait_tool.execute({"agent_id": agent_id})
 
+        assert result.success
         assert mgr._agents[agent_id].status == "completed"
 
     @pytest.mark.asyncio
@@ -256,8 +284,8 @@ class TestWait:
         })
         await wait_tool.execute({"agent_id": agent_id})
 
-        # The instruction passed to spawn should include the task and the message
-        call_kwargs = coordinator.spawn.call_args
+        # The instruction passed to session.spawn should include the task and message
+        call_kwargs = coordinator._mock_spawn.call_args
         instruction = call_kwargs.kwargs.get(
             "instruction", call_kwargs[1].get("instruction", "")
         )
@@ -277,7 +305,9 @@ class TestWait:
     @pytest.mark.asyncio
     async def test_wait_on_already_completed_returns_cached(self):
         """wait on an already-completed agent returns cached result."""
-        coordinator = _make_coordinator(spawn_result="Result 1")
+        coordinator = _make_coordinator(
+            spawn_result={"output": "Result 1", "session_id": "s1"},
+        )
         mgr = SubagentManager(coordinator=coordinator)
         spawn_tool = _find_tool(mgr, "spawn_agent")
         wait_tool = _find_tool(mgr, "wait")
@@ -291,13 +321,17 @@ class TestWait:
         result = await wait_tool.execute({"agent_id": agent_id})
         assert result.success
         assert "Result 1" in result.output
-        assert coordinator.spawn.call_count == 1  # Only called once
+        assert coordinator._mock_spawn.call_count == 1  # Only called once
 
     @pytest.mark.asyncio
     async def test_wait_handles_spawn_failure(self):
-        """wait returns failure when spawn raises an exception."""
+        """wait returns failure when session.spawn raises an exception."""
         coordinator = MagicMock()
-        coordinator.spawn = AsyncMock(side_effect=RuntimeError("Provider error"))
+        coordinator.session = None
+        coordinator.config = {}
+        mock_spawn = AsyncMock(side_effect=RuntimeError("Provider error"))
+        coordinator.get_capability = MagicMock(return_value=mock_spawn)
+
         mgr = SubagentManager(coordinator=coordinator)
         spawn_tool = _find_tool(mgr, "spawn_agent")
         wait_tool = _find_tool(mgr, "wait")
@@ -309,6 +343,70 @@ class TestWait:
         assert not result.success
         assert "error" in result.output.lower() or "Provider error" in result.output
         assert mgr._agents[agent_id].status == "failed"
+
+    @pytest.mark.asyncio
+    async def test_wait_returns_error_when_no_spawn_capability(self):
+        """wait returns a clear error if session.spawn capability is not available."""
+        coordinator = _make_coordinator_no_spawn()
+        mgr = SubagentManager(coordinator=coordinator)
+
+        spawn_tool = _find_tool(mgr, "spawn_agent")
+        spawn_result = await spawn_tool.execute({"task": "Do something"})
+        agent_id = _extract_agent_id(spawn_result.output)
+
+        wait_tool = _find_tool(mgr, "wait")
+        wait_result = await wait_tool.execute({"agent_id": agent_id})
+
+        assert not wait_result.success
+        assert "session.spawn capability not available" in wait_result.output
+
+    @pytest.mark.asyncio
+    async def test_wait_passes_correct_spawn_kwargs(self):
+        """wait passes agent_name, instruction, parent_session, agent_configs."""
+        coordinator = _make_coordinator(
+            spawn_result={"output": "done", "session_id": "child-123"},
+            session="parent-session-abc",
+            agents={"test-agent": {"bundle": "test:profile"}},
+        )
+        mgr = SubagentManager(coordinator=coordinator)
+        spawn_tool = _find_tool(mgr, "spawn_agent")
+        wait_tool = _find_tool(mgr, "wait")
+
+        spawn_result = await spawn_tool.execute({"task": "Write hello.py"})
+        agent_id = _extract_agent_id(spawn_result.output)
+        await wait_tool.execute({"agent_id": agent_id})
+
+        # Verify get_capability was called
+        coordinator.get_capability.assert_called_with("session.spawn")
+        coordinator._mock_spawn.assert_called_once()
+
+        # Verify spawn kwargs match session.spawn signature
+        call_kwargs = coordinator._mock_spawn.call_args[1]
+        assert call_kwargs["instruction"] == "Write hello.py"
+        assert call_kwargs["parent_session"] == "parent-session-abc"
+        assert call_kwargs["agent_configs"] == {"test-agent": {"bundle": "test:profile"}}
+        assert "agent_name" in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_wait_returns_session_id_from_spawn(self):
+        """wait returns session_id from the spawn result dict."""
+        import json
+        coordinator = _make_coordinator(
+            spawn_result={"output": "Task done", "session_id": "child-999"},
+        )
+        mgr = SubagentManager(coordinator=coordinator)
+        spawn_tool = _find_tool(mgr, "spawn_agent")
+        wait_tool = _find_tool(mgr, "wait")
+
+        spawn_result = await spawn_tool.execute({"task": "Work"})
+        agent_id = _extract_agent_id(spawn_result.output)
+        result = await wait_tool.execute({"agent_id": agent_id})
+
+        assert result.success
+        result_data = json.loads(result.output)
+        assert result_data["session_id"] == "child-999"
+        assert result_data["output"] == "Task done"
+        assert result_data["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------
