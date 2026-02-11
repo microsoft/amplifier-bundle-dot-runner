@@ -162,6 +162,77 @@ class TestSpawnAgent:
         assert state.working_dir == "/tmp/work"
         assert state.max_turns == 25
 
+    @pytest.mark.asyncio
+    async def test_spawn_accepts_model_param(self):
+        """spawn_agent accepts optional model parameter (M-8)."""
+        coordinator = _make_coordinator()
+        mgr = SubagentManager(coordinator=coordinator)
+        tool = _find_tool(mgr, "spawn_agent")
+
+        result = await tool.execute({
+            "task": "Analyze code",
+            "model": "claude-sonnet-4-20250514",
+        })
+        assert result.success
+        agent_id = _extract_agent_id(result.output)
+        state = mgr._agents[agent_id]
+        assert state.model == "claude-sonnet-4-20250514"
+
+    @pytest.mark.asyncio
+    async def test_spawn_model_in_schema(self):
+        """spawn_agent input_schema includes model property (M-8)."""
+        coordinator = _make_coordinator()
+        mgr = SubagentManager(coordinator=coordinator)
+        tool = _find_tool(mgr, "spawn_agent")
+        assert "model" in tool.input_schema["properties"]
+
+
+# ---------------------------------------------------------------------------
+# M-8: model passed through as provider_preferences on wait
+# ---------------------------------------------------------------------------
+
+
+class TestModelPassthrough:
+    """Tests that model parameter flows from spawn_agent to session.spawn."""
+
+    @pytest.mark.asyncio
+    async def test_wait_passes_provider_preferences_when_model_set(self):
+        """wait passes provider_preferences when model is set (M-8)."""
+        coordinator = _make_coordinator(
+            spawn_result={"output": "done", "session_id": "s1"},
+        )
+        mgr = SubagentManager(coordinator=coordinator)
+        spawn_tool = _find_tool(mgr, "spawn_agent")
+        wait_tool = _find_tool(mgr, "wait")
+
+        spawn_result = await spawn_tool.execute({
+            "task": "Work",
+            "model": "gpt-4o",
+        })
+        agent_id = _extract_agent_id(spawn_result.output)
+        await wait_tool.execute({"agent_id": agent_id})
+
+        call_kwargs = coordinator._mock_spawn.call_args[1]
+        assert "provider_preferences" in call_kwargs
+        assert call_kwargs["provider_preferences"] == [{"model": "gpt-4o"}]
+
+    @pytest.mark.asyncio
+    async def test_wait_omits_provider_preferences_when_no_model(self):
+        """wait does not pass provider_preferences when model is empty (M-8)."""
+        coordinator = _make_coordinator(
+            spawn_result={"output": "done", "session_id": "s1"},
+        )
+        mgr = SubagentManager(coordinator=coordinator)
+        spawn_tool = _find_tool(mgr, "spawn_agent")
+        wait_tool = _find_tool(mgr, "wait")
+
+        spawn_result = await spawn_tool.execute({"task": "Work"})
+        agent_id = _extract_agent_id(spawn_result.output)
+        await wait_tool.execute({"agent_id": agent_id})
+
+        call_kwargs = coordinator._mock_spawn.call_args[1]
+        assert "provider_preferences" not in call_kwargs
+
 
 # ---------------------------------------------------------------------------
 # send_input tests
