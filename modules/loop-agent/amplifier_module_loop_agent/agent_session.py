@@ -533,6 +533,67 @@ class AgentSession:
                 if cancellation and hasattr(cancellation, "register_tool_complete"):
                     cancellation.register_tool_complete(tool_call.id)
 
+    @staticmethod
+    def _validate_tool_arguments(
+        tool: Any, arguments: dict[str, Any] | None
+    ) -> str | None:
+        """Validate tool arguments against the tool's input_schema.
+
+        Checks required field presence and basic type conformance.
+        Returns None on success or an error message string describing
+        all validation failures.
+
+        This is a lightweight validator (no jsonschema dependency).
+        """
+        schema = getattr(tool, "input_schema", None)
+        if not schema or not isinstance(schema, dict):
+            return None  # No schema to validate against
+
+        args = arguments or {}
+
+        errors: list[str] = []
+
+        # Check required fields
+        required = schema.get("required", [])
+        properties = schema.get("properties", {})
+        for field_name in required:
+            if field_name not in args:
+                field_schema = properties.get(field_name, {})
+                field_type = field_schema.get("type", "any")
+                field_desc = field_schema.get("description", "")
+                hint = f" ({field_desc})" if field_desc else ""
+                errors.append(
+                    f"Missing required field '{field_name}' (type: {field_type}){hint}"
+                )
+
+        # Basic type checking for present fields
+        _JSON_SCHEMA_TYPE_MAP = {
+            "string": str,
+            "integer": int,
+            "number": (int, float),
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+        }
+        for field_name, value in args.items():
+            if field_name in properties:
+                expected_type_str = properties[field_name].get("type")
+                if expected_type_str and expected_type_str in _JSON_SCHEMA_TYPE_MAP:
+                    expected_type = _JSON_SCHEMA_TYPE_MAP[expected_type_str]
+                    if not isinstance(value, expected_type):
+                        errors.append(
+                            f"Field '{field_name}' expected type "
+                            f"'{expected_type_str}', got '{type(value).__name__}'"
+                        )
+
+        if errors:
+            error_list = "; ".join(errors)
+            return (
+                f"Validation error for tool '{tool.name}': {error_list}. "
+                f"Please fix the arguments and try again."
+            )
+        return None
+
     async def _execute_single_tool_inner(self, tool_call: Any) -> ToolResult:
         """Inner tool execution logic. Never raises — errors become results."""
         await self._hooks.emit(
@@ -555,6 +616,20 @@ class AgentSession:
                 },
             )
             return ToolResult(success=False, output=error_msg)
+
+        # Validate arguments against tool's JSON Schema (spec Section 3.8 step 2)
+        validation_error = self._validate_tool_arguments(tool, tool_call.arguments)
+        if validation_error is not None:
+            duration_ms = (time.monotonic() - start_time) * 1000
+            await self._hooks.emit(
+                AGENT_TOOL_CALL_END,
+                {
+                    "call_id": tool_call.id,
+                    "error": validation_error,
+                    "duration_ms": duration_ms,
+                },
+            )
+            return ToolResult(success=False, output=validation_error)
 
         try:
             result = await tool.execute(tool_call.arguments)
