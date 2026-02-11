@@ -103,6 +103,7 @@ class AgentSession:
         self._provider_name = provider_name
         self._model = model
         self._use_streaming = self._detect_streaming_support()
+        self._follow_up_depth = 0  # Tracks recursion depth for SESSION_END timing
 
     # ------------------------------------------------------------------
     # Streaming detection
@@ -384,7 +385,7 @@ class AgentSession:
                     return text
                 else:
                     self._state_machine.complete()  # PROCESSING -> IDLE
-                    await self._emit_session_end()
+                    # SESSION_END emitted after follow-ups are fully drained
                     return await self._process_follow_ups(text)
 
             # Execute tools in parallel
@@ -407,8 +408,7 @@ class AgentSession:
         # Round limit reached
         await self._hooks.emit(AGENT_TURN_LIMIT, {"round_count": round_count})
         self._state_machine.complete()  # PROCESSING -> IDLE
-        await self._emit_session_end()
-        # Process follow-up queue after loop completes
+        # SESSION_END emitted after follow-ups are fully drained
         return await self._process_follow_ups(last_text)
 
     # ------------------------------------------------------------------
@@ -896,15 +896,24 @@ class AgentSession:
     async def _process_follow_ups(self, last_result: str) -> str:
         """Process queued follow-up messages after the loop completes.
 
-        Recursively calls process_input() for each follow-up message.
-        Returns the result of the last processed message (or the
-        original result if no follow-ups are pending).
+        Calls process_input() for each follow-up message. Emits
+        SESSION_END only from the outermost call, after the entire
+        follow-up queue is fully drained (spec Section 2.5).
         """
         result = last_result
-        next_msg = self._follow_up_queue.drain()
-        while next_msg is not None:
-            result = await self.process_input(next_msg)
+        self._follow_up_depth += 1
+        try:
             next_msg = self._follow_up_queue.drain()
+            while next_msg is not None:
+                result = await self.process_input(next_msg)
+                next_msg = self._follow_up_queue.drain()
+        finally:
+            self._follow_up_depth -= 1
+
+        # Emit SESSION_END only from the outermost follow-up call
+        if self._follow_up_depth == 0:
+            await self._emit_session_end()
+
         return result
 
     # ------------------------------------------------------------------
