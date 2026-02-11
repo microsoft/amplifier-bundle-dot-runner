@@ -168,28 +168,52 @@ class AgentSession:
 
         Emits ASSISTANT_TEXT_START before any deltas, ASSISTANT_TEXT_DELTA
         for each content chunk, and ASSISTANT_TEXT_END with the full text
-        when the stream completes.
+        and reasoning when the stream completes.
+
+        Captures both text content and reasoning/thinking content from
+        stream chunks to preserve reasoning for thinking-enabled models
+        (Claude extended thinking, OpenAI o-series).
         """
         await self._hooks.emit(AGENT_ASSISTANT_TEXT_START, {})
 
         full_text = ""
+        full_reasoning = ""
+        reasoning_signature: str | None = None
         tool_calls: list[dict[str, Any]] = []
         usage_data: dict[str, Any] = {}
 
         async for chunk in self._provider.stream(request):
+            # Accumulate text content
             content = chunk.get("content")
             if content:
                 full_text += content
                 await self._hooks.emit(AGENT_ASSISTANT_TEXT_DELTA, {"delta": content})
+
+            # Accumulate reasoning/thinking content
+            thinking = chunk.get("thinking") or chunk.get("reasoning")
+            if thinking:
+                full_reasoning += thinking
+
+            # Capture reasoning signature (for multi-turn Anthropic thinking)
+            chunk_sig = chunk.get("reasoning_signature") or chunk.get("signature")
+            if chunk_sig:
+                reasoning_signature = chunk_sig
+
+            # Accumulate tool calls
             chunk_tool_calls = chunk.get("tool_calls")
             if chunk_tool_calls:
                 tool_calls.extend(chunk_tool_calls)
+
+            # Capture usage data
             chunk_usage = chunk.get("usage")
             if chunk_usage:
                 usage_data = chunk_usage
 
-        # Emit text end with full assembled text
-        await self._hooks.emit(AGENT_ASSISTANT_TEXT_END, {"text": full_text})
+        # Emit text end with full assembled text and reasoning
+        text_end_data: dict[str, Any] = {"text": full_text}
+        if full_reasoning:
+            text_end_data["reasoning"] = full_reasoning
+        await self._hooks.emit(AGENT_ASSISTANT_TEXT_END, text_end_data)
 
         # Build ToolCall-like objects for the execution path
         raw_tool_calls: list[Any] = []
@@ -207,8 +231,8 @@ class AgentSession:
 
         return {
             "text": full_text,
-            "reasoning": None,
-            "reasoning_signature": None,
+            "reasoning": full_reasoning if full_reasoning else None,
+            "reasoning_signature": reasoning_signature,
             "tool_calls": tool_calls,
             "raw_tool_calls": raw_tool_calls,
             "usage": None,
