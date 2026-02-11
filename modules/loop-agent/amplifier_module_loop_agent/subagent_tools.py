@@ -39,6 +39,7 @@ class SubagentState:
     status: str = "pending"  # pending | running | completed | failed | closed
     working_dir: str = ""
     max_turns: int = 50
+    model: str = ""  # M-8: optional model override for subagent
     pending_messages: list[str] = field(default_factory=list)
     result: str | None = None
 
@@ -141,6 +142,13 @@ class SpawnAgentTool(_SubagentTool):
                 "type": "integer",
                 "description": "Turn limit for the subagent (default: 50).",
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override the model for the subagent "
+                    "(e.g. 'claude-sonnet-4-20250514', 'gpt-4o')."
+                ),
+            },
         },
         "required": ["task"],
     }
@@ -169,6 +177,7 @@ class SpawnAgentTool(_SubagentTool):
             task=task,
             working_dir=arguments.get("working_dir", ""),
             max_turns=int(arguments.get("max_turns", 50)),
+            model=arguments.get("model", ""),
         )
         self._manager._agents[agent_id] = state
 
@@ -323,6 +332,9 @@ class WaitTool(_SubagentTool):
             spawn_kwargs["orchestrator_config"] = {
                 "max_turns": state.max_turns,
             }
+        # Pass model as provider_preferences if set (M-8)
+        if state.model:
+            spawn_kwargs["provider_preferences"] = [{"model": state.model}]
 
         # Execute via session.spawn capability
         state.status = "running"
@@ -331,23 +343,15 @@ class WaitTool(_SubagentTool):
 
             # spawn returns {"output": str, "session_id": str}
             output = (
-                result.get("output", "")
-                if isinstance(result, dict)
-                else str(result)
+                result.get("output", "") if isinstance(result, dict) else str(result)
             )
-            session_id = (
-                result.get("session_id")
-                if isinstance(result, dict)
-                else None
-            )
+            session_id = result.get("session_id") if isinstance(result, dict) else None
 
             state.status = "completed"
             state.result = output
             state.pending_messages.clear()
 
-            logger.info(
-                "Subagent %s completed (session=%s)", agent_id, session_id
-            )
+            logger.info("Subagent %s completed (session=%s)", agent_id, session_id)
             return ToolResult(
                 success=True,
                 output=json.dumps(
