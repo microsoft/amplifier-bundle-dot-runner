@@ -107,6 +107,7 @@ class AgentSession:
         self._model = model
         self._use_streaming = self._detect_streaming_support()
         self._follow_up_depth = 0  # Tracks recursion depth for SESSION_END timing
+        self._tracked_processes: set[Any] = set()  # M-7: running tool subprocesses
 
     # ------------------------------------------------------------------
     # Streaming detection
@@ -851,14 +852,38 @@ class AgentSession:
     # Graceful shutdown (spec SHUT-001 through SHUT-009)
     # ------------------------------------------------------------------
 
-    async def shutdown(self) -> None:
+    # ------------------------------------------------------------------
+    # Process tracking (M-7)
+    # ------------------------------------------------------------------
+
+    def register_process(self, process: Any) -> None:
+        """Track a running tool subprocess for shutdown cleanup."""
+        self._tracked_processes.add(process)
+
+    def unregister_process(self, process: Any) -> None:
+        """Remove a completed subprocess from tracking."""
+        self._tracked_processes.discard(process)
+
+    _DEFAULT_PROCESS_TIMEOUT = 2.0  # seconds before SIGKILL
+
+    async def shutdown(self, *, process_timeout: float | None = None) -> None:
         """Gracefully shut down the session.
 
-        Spec ERR-015: Cancel in-flight work, emit session_end,
+        Spec ERR-015 / M-7: Cancel in-flight work, terminate tracked
+        tool subprocesses (SIGTERM then SIGKILL), emit session_end,
         transition to CLOSED. Idempotent — safe to call multiple times.
         """
         if self._state_machine.state == SessionState.CLOSED:
             return
+
+        # Terminate tracked tool subprocesses (M-7)
+        timeout = (
+            process_timeout
+            if process_timeout is not None
+            else self._DEFAULT_PROCESS_TIMEOUT
+        )
+        await self._terminate_tracked_processes(timeout)
+
         # Transition to CLOSED from any non-CLOSED state
         if self._state_machine.state == SessionState.PROCESSING:
             self._state_machine.fatal_error()
@@ -868,6 +893,38 @@ class AgentSession:
             # IDLE → CLOSED
             self._state_machine.close()
         await self._emit_session_end()
+
+    async def _terminate_tracked_processes(self, timeout: float) -> None:
+        """Send SIGTERM to tracked processes, then SIGKILL after timeout."""
+        processes = list(self._tracked_processes)
+        self._tracked_processes.clear()
+
+        for proc in processes:
+            # Skip already-exited processes
+            if getattr(proc, "returncode", None) is not None:
+                continue
+            try:
+                proc.terminate()
+                logger.info(
+                    "Sent SIGTERM to tool process %s",
+                    getattr(proc, "pid", "?"),
+                )
+            except (OSError, ProcessLookupError):
+                continue
+
+            # Wait for graceful exit, then force-kill
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=timeout)
+            except (asyncio.TimeoutError, Exception):
+                try:
+                    proc.kill()
+                    logger.warning(
+                        "Sent SIGKILL to tool process %s after %.1fs timeout",
+                        getattr(proc, "pid", "?"),
+                        timeout,
+                    )
+                except (OSError, ProcessLookupError):
+                    pass
 
     # ------------------------------------------------------------------
     # Cancellation checks (spec Section 2.4, C-5)
