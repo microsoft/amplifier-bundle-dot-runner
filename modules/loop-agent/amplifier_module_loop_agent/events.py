@@ -16,6 +16,7 @@ from amplifier_core.events import (
 # Agent session lifecycle
 AGENT_SESSION_START = "agent:session_start"
 AGENT_SESSION_END = "agent:session_end"
+AGENT_AWAITING_INPUT = "agent:awaiting_input"
 
 # User input
 AGENT_USER_INPUT = "agent:user_input"
@@ -46,6 +47,7 @@ __all__ = [
     "AGENT_ASSISTANT_TEXT_DELTA",
     "AGENT_ASSISTANT_TEXT_END",
     "AGENT_ASSISTANT_TEXT_START",
+    "AGENT_AWAITING_INPUT",
     "AGENT_CONTEXT_WARNING",
     "AGENT_ERROR",
     "AGENT_LOOP_DETECTION",
