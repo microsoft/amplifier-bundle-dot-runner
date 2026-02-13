@@ -1,0 +1,10 @@
+[project]
+name = "amplifier-module-hooks-pipeline-progress"
+version = "0.1.0"
+description = "Pipeline progress display hook for Attractor"
+requires-python = ">=3.11"
+dependencies = ["amplifier-core"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
