@@ -1,21 +1,24 @@
 """Tool registry for the coding agent loop (M-5).
 
 Wraps the plain dict[str, Tool] with register(), get(), list(), has()
-methods and enforces unique tool names.  Replaces direct dict access
-in agent_session.py.
+methods.  Name collisions use latest-wins (spec Section 3.7).
+Replaces direct dict access in agent_session.py.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRegistry:
-    """Registry of named tools with unique-name enforcement.
+    """Registry of named tools with latest-wins override semantics.
 
     Supports the dict-like access patterns used by AgentSession
     (values(), bool, len, get) while adding register() with
-    duplicate detection and list()/has() query helpers.
+    latest-wins override and list()/has() query helpers.
     """
 
     def __init__(self) -> None:
@@ -37,14 +40,14 @@ class ToolRegistry:
     # ------------------------------------------------------------------
 
     def register(self, tool: Any) -> None:
-        """Register a single tool.  Raises ValueError on duplicate name."""
+        """Register a single tool.  Latest-wins on name collision (spec §3.7)."""
         name = tool.name
         if name in self._tools:
-            raise ValueError(f"Tool '{name}' already registered")
+            logger.debug("Tool '%s' overridden (latest-wins)", name)
         self._tools[name] = tool
 
     def register_bulk(self, tools: list[Any]) -> None:
-        """Register multiple tools.  Raises on first duplicate."""
+        """Register multiple tools.  Latest-wins on name collisions."""
         for tool in tools:
             self.register(tool)
 
