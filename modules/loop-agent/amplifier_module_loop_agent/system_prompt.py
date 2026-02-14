@@ -22,15 +22,28 @@ from pathlib import Path
 # Budget for project docs (spec: 32KB)
 _PROJECT_DOCS_BUDGET = 32 * 1024
 
-# Provider-specific doc files
+# Provider-specific doc files (individual files checked per directory)
 _PROVIDER_DOC_FILES: dict[str, list[str]] = {
     "anthropic": ["CLAUDE.md"],
-    "openai": [".codex/instructions.md"],
+    "openai": ["CODEX.md", ".codex/instructions.md"],
     "gemini": ["GEMINI.md"],
+}
+
+# Provider-specific directories (all .md files inside are loaded)
+_PROVIDER_DOC_DIRS: dict[str, list[str]] = {
+    "anthropic": [".claude"],
 }
 
 # Always loaded regardless of provider
 _UNIVERSAL_DOC_FILES = ["AGENTS.md"]
+
+# Basename patterns used by _filter_project_docs for path-based filtering
+_PROVIDER_PATH_MARKERS: dict[str, list[str]] = {
+    "anthropic": ["CLAUDE.md", ".claude/", ".claude\\"],
+    "openai": ["CODEX.md", ".codex/", ".codex\\"],
+    "gemini": ["GEMINI.md"],
+}
+_UNIVERSAL_PATH_MARKERS = ["AGENTS.md"]
 
 
 def build_system_prompt(
@@ -84,6 +97,60 @@ def build_system_prompt(
     return "\n\n".join(sections)
 
 
+def _filter_project_docs(
+    paths: list[str],
+    provider_name: str | None,
+) -> list[str]:
+    """Filter discovered project doc paths based on the active provider.
+
+    Keeps paths that match:
+      - Universal docs (AGENTS.md) — always included
+      - Provider-specific files/directories — only for the matching provider
+
+    Paths containing provider-specific markers for OTHER providers are excluded.
+
+    Args:
+        paths: List of file path strings to filter.
+        provider_name: Active provider ("anthropic", "openai", "gemini") or None.
+
+    Returns:
+        Filtered list of paths matching the active provider plus universal docs.
+    """
+    if not paths:
+        return []
+
+    result: list[str] = []
+    for path in paths:
+        # Normalise to forward slashes for consistent matching
+        normalised = path.replace("\\", "/")
+
+        # Check universal markers first
+        if any(marker in normalised for marker in _UNIVERSAL_PATH_MARKERS):
+            result.append(path)
+            continue
+
+        # Check if path belongs to ANY provider
+        matched_provider: str | None = None
+        for prov, markers in _PROVIDER_PATH_MARKERS.items():
+            # Use forward-slash normalised markers
+            for marker in markers:
+                norm_marker = marker.replace("\\", "/")
+                if norm_marker in normalised:
+                    matched_provider = prov
+                    break
+            if matched_provider:
+                break
+
+        # Include only if it matches the active provider
+        if matched_provider is not None and matched_provider == provider_name:
+            result.append(path)
+        elif matched_provider is None:
+            # Unknown file — exclude (not a recognized doc pattern)
+            pass
+
+    return result
+
+
 def discover_project_docs(
     working_dir: str,
     provider_id: str | None = None,
@@ -119,7 +186,13 @@ def discover_project_docs(
     dirs_to_check = _path_chain(root, working_dir)
     collected: list[str] = []
 
+    # Provider-specific directories to scan for .md files
+    provider_dirs: list[str] = []
+    if provider_id and provider_id in _PROVIDER_DOC_DIRS:
+        provider_dirs = _PROVIDER_DOC_DIRS[provider_id]
+
     for directory in dirs_to_check:
+        # Check individual recognized files
         for filename in recognized:
             filepath = os.path.join(directory, filename)
             if os.path.isfile(filepath):
@@ -131,6 +204,22 @@ def discover_project_docs(
                     collected.append(f"{header}\n\n{content}")
                 except OSError:
                     continue
+
+        # Scan provider-specific directories for .md files
+        for dirname in provider_dirs:
+            dirpath = Path(directory) / dirname
+            if dirpath.is_dir():
+                for md_file in sorted(dirpath.glob("*.md")):
+                    if md_file.is_file():
+                        try:
+                            content = md_file.read_text(
+                                encoding="utf-8", errors="replace"
+                            )
+                            rel = os.path.relpath(str(md_file), root)
+                            header = f"### {md_file.name} ({rel})"
+                            collected.append(f"{header}\n\n{content}")
+                        except OSError:
+                            continue
 
     if not collected:
         return ""
