@@ -231,6 +231,56 @@ async def test_orchestrator_passes_provider_name():
     assert "Provider: anthropic" in system_content
 
 
+# ---------------------------------------------------------------------------
+# Fix 2.3: User instructions override (Layer 5, spec Section 6.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_user_instructions_appended_as_layer5():
+    """Config with user_instructions → system prompt ends with that instruction."""
+    config = SessionConfig.from_dict({
+        "system_prompt": "Base prompt.",
+        "max_tool_rounds_per_input": 1,
+        "user_instructions": "Always respond in French",
+    })
+    provider = AsyncMock()
+    provider.complete = AsyncMock(return_value=_text_response("done"))
+    hooks = _make_hooks()
+
+    session = AgentSession(
+        config=config, provider=provider, tools={}, hooks=hooks,
+    )
+    await session.process_input("hello")
+
+    request = provider.complete.call_args[0][0]
+    system_content = request.messages[0].content
+    assert "Always respond in French" in system_content
+    # User instructions should be last (highest priority)
+    assert system_content.strip().endswith("Always respond in French")
+
+
+@pytest.mark.asyncio
+async def test_no_user_instructions_omits_layer5():
+    """No user_instructions config → no User Instructions section in prompt."""
+    config = SessionConfig.from_dict({
+        "system_prompt": "Base prompt.",
+        "max_tool_rounds_per_input": 1,
+    })
+    provider = AsyncMock()
+    provider.complete = AsyncMock(return_value=_text_response("done"))
+    hooks = _make_hooks()
+
+    session = AgentSession(
+        config=config, provider=provider, tools={}, hooks=hooks,
+    )
+    await session.process_input("hello")
+
+    request = provider.complete.call_args[0][0]
+    system_content = request.messages[0].content
+    assert "User Instructions" not in system_content
+
+
 @pytest.mark.asyncio
 async def test_tool_descriptions_in_system_prompt():
     """Mounted tools appear in the system prompt's tool descriptions layer."""
