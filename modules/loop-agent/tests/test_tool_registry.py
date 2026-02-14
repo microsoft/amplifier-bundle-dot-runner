@@ -1,7 +1,7 @@
 """Tests for ToolRegistry (M-5).
 
 The ToolRegistry wraps the plain dict[str, Tool] with register(), get(),
-list(), has() methods and enforces unique tool names.
+list(), has() methods.  Name collisions use latest-wins (spec Section 3.7).
 """
 
 import pytest
@@ -55,12 +55,28 @@ class TestRegister:
         reg.register(tool)
         assert reg.has("bash")
 
-    def test_register_duplicate_raises(self):
+    def test_register_duplicate_latest_wins(self):
+        """Spec Section 3.7: name collisions resolved by latest-wins."""
         reg = ToolRegistry()
-        tool = _make_tool("bash")
-        reg.register(tool)
-        with pytest.raises(ValueError, match="already registered"):
-            reg.register(tool)
+        tool_a = _make_tool("foo")
+        tool_a.description = "original"
+        tool_b = _make_tool("foo")
+        tool_b.description = "replacement"
+        reg.register(tool_a)
+        reg.register(tool_b)  # Should NOT raise
+        assert reg.get("foo") is tool_b
+        assert len(reg) == 1  # Still one tool, not two
+
+    def test_register_duplicate_bulk_latest_wins(self):
+        """Bulk register with duplicate names: last tool wins."""
+        reg = ToolRegistry()
+        tool_a = _make_tool("x")
+        tool_a.description = "first"
+        tool_b = _make_tool("x")
+        tool_b.description = "second"
+        reg.register_bulk([tool_a, tool_b])
+        assert reg.get("x") is tool_b
+        assert len(reg) == 1
 
     def test_register_bulk(self):
         reg = ToolRegistry()
