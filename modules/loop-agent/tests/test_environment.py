@@ -43,6 +43,11 @@ class TestBuildEnvironmentContext:
         )
         assert "claude-sonnet-4-20250514" in ctx
 
+    def test_contains_os_version(self, tmp_path: Path) -> None:
+        """Spec Section 6.3: environment block includes OS version."""
+        ctx = build_environment_context(working_dir=str(tmp_path))
+        assert "OS version:" in ctx
+
     def test_non_git_dir_says_not_git(self, tmp_path: Path) -> None:
         ctx = build_environment_context(working_dir=str(tmp_path))
         assert "Is git repository: false" in ctx
