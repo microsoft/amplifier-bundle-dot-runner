@@ -501,7 +501,7 @@ class AgentSession:
           2. Environment context (working dir, platform, git, model)
           3. Tool descriptions (from mounted tools)
           4. Project docs (AGENTS.md, provider-specific files)
-          5. User override (not yet wired — reserved for future use)
+          5. User instructions override (highest priority, spec §6.2)
         """
         import os
 
@@ -532,11 +532,15 @@ class AgentSession:
             provider_id=provider_id,
         )
 
+        # Layer 5: User instructions override
+        user_override = self._config.user_instructions or None
+
         return build_system_prompt(
             base_prompt=base_prompt,
             environment=environment,
             tool_descriptions=tool_descriptions,
             project_docs=project_docs,
+            user_override=user_override,
         )
 
     # ------------------------------------------------------------------
