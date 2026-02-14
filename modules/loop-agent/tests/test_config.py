@@ -68,6 +68,65 @@ def test_get_tool_output_limit_default():
     assert limit > 0
 
 
+# --- Per-tool truncation defaults (spec Section 5.2) ---
+
+
+def test_per_tool_output_limit_read_file():
+    """read_file default char limit is 50,000 (spec Section 5.2)."""
+    c = SessionConfig()
+    assert c.get_tool_output_limit("read_file") == 50_000
+
+
+def test_per_tool_output_limit_shell():
+    """shell default char limit is 30,000 (spec Section 5.2)."""
+    c = SessionConfig()
+    assert c.get_tool_output_limit("shell") == 30_000
+
+
+def test_per_tool_output_limit_bash():
+    """bash default char limit is 30,000 (spec Section 5.2)."""
+    c = SessionConfig()
+    assert c.get_tool_output_limit("bash") == 30_000
+
+
+def test_per_tool_output_limit_grep():
+    """grep default char limit is 20,000 (spec Section 5.2)."""
+    c = SessionConfig()
+    assert c.get_tool_output_limit("grep") == 20_000
+
+
+def test_per_tool_output_limit_glob():
+    """glob default char limit is 20,000 (spec Section 5.2)."""
+    c = SessionConfig()
+    assert c.get_tool_output_limit("glob") == 20_000
+
+
+def test_per_tool_output_limit_edit_file():
+    """edit_file default char limit is 10,000 (spec Section 5.2)."""
+    c = SessionConfig()
+    assert c.get_tool_output_limit("edit_file") == 10_000
+
+
+def test_per_tool_output_limit_write_file():
+    """write_file default char limit is 1,000 (spec Section 5.2)."""
+    c = SessionConfig()
+    assert c.get_tool_output_limit("write_file") == 1_000
+
+
+def test_per_tool_output_limit_unknown_tool_gets_fallback():
+    """Unknown tool gets a reasonable fallback, not None or crash."""
+    c = SessionConfig()
+    limit = c.get_tool_output_limit("unknown_tool_xyz")
+    assert isinstance(limit, int)
+    assert limit > 0
+
+
+def test_per_tool_output_limit_explicit_override_wins():
+    """Explicit tool_output_limits override per-tool defaults."""
+    c = SessionConfig.from_dict({"tool_output_limits": {"bash": 99_999}})
+    assert c.get_tool_output_limit("bash") == 99_999
+
+
 def test_get_tool_line_limit_override():
     """get_tool_line_limit returns explicit override when set."""
     c = SessionConfig.from_dict({"tool_line_limits": {"read_file": 100}})
@@ -87,20 +146,24 @@ def test_get_tool_line_limit_default():
 
 def test_max_tool_rounds_per_provider_override():
     """get_max_tool_rounds returns provider-specific override (M-4)."""
-    c = SessionConfig.from_dict({
-        "max_tool_rounds_per_input": 200,
-        "max_tool_rounds_per_provider": {"anthropic": 50, "openai": 100},
-    })
+    c = SessionConfig.from_dict(
+        {
+            "max_tool_rounds_per_input": 200,
+            "max_tool_rounds_per_provider": {"anthropic": 50, "openai": 100},
+        }
+    )
     assert c.get_max_tool_rounds("anthropic") == 50
     assert c.get_max_tool_rounds("openai") == 100
 
 
 def test_max_tool_rounds_per_provider_fallback():
     """get_max_tool_rounds falls back to global default for unknown provider (M-4)."""
-    c = SessionConfig.from_dict({
-        "max_tool_rounds_per_input": 200,
-        "max_tool_rounds_per_provider": {"anthropic": 50},
-    })
+    c = SessionConfig.from_dict(
+        {
+            "max_tool_rounds_per_input": 200,
+            "max_tool_rounds_per_provider": {"anthropic": 50},
+        }
+    )
     assert c.get_max_tool_rounds("gemini") == 200
 
 
