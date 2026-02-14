@@ -10,7 +10,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 
-_DEFAULT_OUTPUT_LIMIT = 50_000
+# Per-tool character limits from spec Section 5.2
+_TOOL_OUTPUT_DEFAULTS: dict[str, int] = {
+    "read_file": 50_000,
+    "shell": 30_000,
+    "bash": 30_000,
+    "grep": 20_000,
+    "glob": 20_000,
+    "edit_file": 10_000,
+    "apply_patch": 10_000,
+    "write_file": 1_000,
+    "spawn_agent": 20_000,
+}
+_FALLBACK_OUTPUT_LIMIT = 30_000  # For tools not in the table above
+
 _DEFAULT_LINE_LIMIT = 2_000
 
 
@@ -52,8 +65,14 @@ class SessionConfig:
         )
 
     def get_tool_output_limit(self, tool_name: str) -> int:
-        """Get character output limit for a tool, with fallback default."""
-        return self.tool_output_limits.get(tool_name, _DEFAULT_OUTPUT_LIMIT)
+        """Get character output limit for a tool, with per-tool defaults.
+
+        Lookup order: explicit tool_output_limits override → spec per-tool
+        default (Section 5.2) → fallback for unknown tools.
+        """
+        if tool_name in self.tool_output_limits:
+            return self.tool_output_limits[tool_name]
+        return _TOOL_OUTPUT_DEFAULTS.get(tool_name, _FALLBACK_OUTPUT_LIMIT)
 
     def get_tool_line_limit(self, tool_name: str) -> int:
         """Get line output limit for a tool, with fallback default."""
