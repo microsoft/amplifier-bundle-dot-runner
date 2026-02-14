@@ -1,0 +1,500 @@
+"""Pipeline runner tool module for Amplifier.
+
+Exposes a `run_pipeline` tool that lets an interactive agent invoke
+DOT graph pipelines at runtime via session.spawn.
+"""
+
+# Amplifier module metadata
+__amplifier_module_type__ = "tool"
+
+import json
+import logging
+import time
+from typing import Any
+
+__all__ = ["PipelineRunTool", "mount"]
+
+logger = logging.getLogger(__name__)
+
+# Optional import of loop-pipeline for provider validation
+try:
+    from amplifier_module_loop_pipeline.dot_parser import parse_dot
+    from amplifier_module_loop_pipeline.stylesheet import parse_stylesheet
+
+    HAS_PIPELINE = True
+except ImportError:
+    HAS_PIPELINE = False
+
+
+class PipelineRunTool:
+    """Invoke a DOT graph pipeline at runtime.
+
+    The LLM calls this tool with a DOT pipeline definition (file path
+    or inline source) and a goal. The tool spawns a child session
+    running the pipeline orchestrator, waits for completion, and
+    returns the result.
+    """
+
+    name = "run_pipeline"
+    description = (
+        "Run a DOT graph pipeline. Provide a pipeline definition via "
+        "'dot_file' (path to a .dot file, supports @attractor:... mentions) "
+        "or 'dot_source' (inline DOT digraph string), plus a 'goal' "
+        "describing the task. The pipeline executes as a child session "
+        "and returns the result when complete."
+    )
+
+    def __init__(self, config: dict[str, Any], coordinator: Any = None) -> None:
+        self.config = config
+        self.coordinator = coordinator
+
+    @property
+    def input_schema(self) -> dict:
+        """Return JSON schema for tool parameters."""
+        return {
+            "type": "object",
+            "properties": {
+                "dot_file": {
+                    "type": "string",
+                    "description": (
+                        "Path to a .dot pipeline file. Supports @mention "
+                        "syntax (e.g. @attractor:examples/pipelines/01-simple-linear.dot)."
+                    ),
+                },
+                "dot_source": {
+                    "type": "string",
+                    "description": "Inline DOT digraph string.",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": (
+                        "The goal or task description for the pipeline. "
+                        "This replaces $goal in node prompts."
+                    ),
+                },
+                "provider": {
+                    "type": "string",
+                    "description": (
+                        "Override the default provider for all nodes "
+                        "(e.g. 'anthropic', 'openai', 'gemini'). Optional."
+                    ),
+                },
+            },
+            "required": ["goal"],
+        }
+
+    # -----------------------------------------------------------------
+    # DOT source resolution
+    # -----------------------------------------------------------------
+
+    def _resolve_dot_source(
+        self,
+        dot_file: str | None,
+        dot_source: str | None,
+    ) -> str:
+        """Resolve DOT source from file path or inline string.
+
+        Resolution priority:
+        1. dot_source (inline string) — used as-is if provided
+        2. dot_file (file path) — read from disk; supports @mention syntax
+
+        Args:
+            dot_file: Path to a .dot file (supports @mention syntax).
+            dot_source: Inline DOT digraph string.
+
+        Returns:
+            The DOT source string.
+
+        Raises:
+            FileNotFoundError: If dot_file path does not exist.
+            ValueError: If @mention path cannot be resolved.
+        """
+        from pathlib import Path
+
+        # Priority 1: inline source
+        if dot_source:
+            return dot_source
+
+        # Priority 2: file path
+        if not dot_file:
+            raise ValueError("Either dot_file or dot_source must be provided")
+
+        # Handle @mention syntax
+        if dot_file.startswith("@"):
+            if self.coordinator is None:
+                raise ValueError(
+                    "Cannot resolve @mention path without a coordinator. "
+                    "The mention_resolver capability is required."
+                )
+            mention_resolver = self.coordinator.get_capability("mention_resolver")
+            if mention_resolver is None:
+                raise ValueError(
+                    "Cannot resolve @mention path: mention_resolver capability "
+                    "not available. Ensure the bundle is properly configured."
+                )
+            resolved_path = mention_resolver.resolve(dot_file)
+            if resolved_path is None:
+                raise FileNotFoundError(
+                    f"Could not resolve @mention path: {dot_file}"
+                )
+            file_path = Path(resolved_path)
+        else:
+            file_path = Path(dot_file)
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"DOT file not found: {file_path}")
+
+        return file_path.read_text()
+
+    # -----------------------------------------------------------------
+    # Provider validation
+    # -----------------------------------------------------------------
+
+    def _extract_required_providers(self, dot_source: str) -> set[str]:
+        """Parse a DOT source and extract all required LLM providers.
+
+        Checks two sources:
+        1. model_stylesheet rules — each rule with an llm_provider declaration
+        2. Node-level llm_provider attributes — explicit per-node settings
+
+        Structural nodes (Mdiamond/start, Msquare/exit) are excluded since
+        they don't invoke an LLM.
+
+        Args:
+            dot_source: The DOT digraph source string.
+
+        Returns:
+            Set of provider names (e.g. {"anthropic", "openai"}).
+        """
+        if not HAS_PIPELINE:
+            logger.debug(
+                "loop-pipeline not available; skipping provider extraction"
+            )
+            return set()
+
+        graph = parse_dot(dot_source)
+        providers: set[str] = set()
+
+        # Source 1: model_stylesheet rules
+        if graph.model_stylesheet:
+            rules = parse_stylesheet(graph.model_stylesheet)
+            for rule in rules:
+                provider = rule.properties.get("llm_provider")
+                if provider:
+                    providers.add(provider)
+
+        # Source 2: explicit node attributes
+        structural_shapes = {"Mdiamond", "Msquare", "point"}
+        for node in graph.nodes.values():
+            if node.shape in structural_shapes:
+                continue
+            provider = node.attrs.get("llm_provider")
+            if provider:
+                providers.add(provider)
+
+        return providers
+
+    def _check_missing_providers(
+        self,
+        required: set[str],
+        available: set[str],
+    ) -> set[str]:
+        """Check which required providers are missing from available set.
+
+        Args:
+            required: Provider names required by the pipeline.
+            available: Provider names available in the agent configuration.
+
+        Returns:
+            Set of missing provider names (empty if all present).
+        """
+        return required - available
+
+    def _get_available_providers(self) -> set[str]:
+        """Get available provider names from coordinator config.
+
+        Reads the agent configs from the coordinator to determine which
+        provider profiles are registered. Falls back to the profiles
+        mapping in config if available.
+
+        Returns:
+            Set of available provider name strings.
+        """
+        available: set[str] = set()
+
+        if self.coordinator is None:
+            return available
+
+        # Check config for explicit profiles mapping
+        profiles = self.config.get("profiles", {})
+        if isinstance(profiles, dict):
+            available.update(profiles.keys())
+
+        # Also check coordinator's agent configs for auto-discovery
+        coordinator_config = getattr(self.coordinator, "config", None) or {}
+        agents = coordinator_config.get("agents", {})
+        for agent_name in agents:
+            available.add(agent_name)
+
+        return available
+
+    # -----------------------------------------------------------------
+    # Progress reporting
+    # -----------------------------------------------------------------
+
+    def _show_progress(self, message: str) -> None:
+        """Show a progress message via DisplaySystem side-channel.
+
+        Silently no-ops if DisplaySystem is not available.
+        """
+        if self.coordinator is None:
+            return
+        display_system = getattr(self.coordinator, "display_system", None)
+        if display_system is not None and hasattr(display_system, "show_message"):
+            try:
+                display_system.show_message(message)
+            except Exception:
+                logger.debug("Failed to show progress message", exc_info=True)
+
+    async def _emit_event(self, event_name: str, data: dict[str, Any]) -> None:
+        """Emit a hook event.
+
+        Silently no-ops if hooks are not available.
+        """
+        if self.coordinator is None:
+            return
+        hooks = getattr(self.coordinator, "hooks", None)
+        if hooks is not None and hasattr(hooks, "emit"):
+            try:
+                await hooks.emit(event_name, data)
+            except Exception:
+                logger.debug(
+                    "Failed to emit event %s", event_name, exc_info=True
+                )
+
+    # -----------------------------------------------------------------
+    # Main execution
+    # -----------------------------------------------------------------
+
+    async def execute(self, input: dict[str, Any]) -> Any:
+        """Execute the run_pipeline tool."""
+        from amplifier_core import ToolResult
+
+        # --- Input validation ---
+        goal = input.get("goal", "").strip()
+        if not goal:
+            return ToolResult(
+                success=False,
+                error={"message": "goal is required and must be non-empty"},
+            )
+
+        dot_file = input.get("dot_file")
+        dot_source = input.get("dot_source")
+        if not dot_file and not dot_source:
+            return ToolResult(
+                success=False,
+                error={
+                    "message": (
+                        "Either dot_file or dot_source is required. "
+                        "Provide a path to a .dot file or an inline DOT "
+                        "digraph string."
+                    )
+                },
+            )
+
+        # --- Resolve DOT source ---
+        try:
+            dot_source_resolved = self._resolve_dot_source(
+                dot_file=dot_file,
+                dot_source=dot_source,
+            )
+        except FileNotFoundError as e:
+            return ToolResult(
+                success=False,
+                error={"message": f"DOT file not found: {e}"},
+            )
+        except ValueError as e:
+            return ToolResult(
+                success=False,
+                error={"message": str(e)},
+            )
+
+        # --- Parse and validate providers ---
+        try:
+            required_providers = self._extract_required_providers(
+                dot_source_resolved
+            )
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                error={"message": f"Failed to parse DOT source: {e}"},
+            )
+
+        if required_providers:
+            available_providers = self._get_available_providers()
+            missing = self._check_missing_providers(
+                required_providers, available_providers
+            )
+            if missing:
+                return ToolResult(
+                    success=False,
+                    error={
+                        "message": (
+                            "Pipeline requires providers not available in "
+                            f"this session: {', '.join(sorted(missing))}. "
+                            "Available: "
+                            f"{', '.join(sorted(available_providers)) or 'none'}. "
+                            "Configure the missing providers in the "
+                            "pipeline-runner agent."
+                        ),
+                        "missing_providers": sorted(missing),
+                        "available_providers": sorted(available_providers),
+                    },
+                )
+
+        # --- Get session.spawn capability ---
+        spawn_fn = None
+        if self.coordinator is not None and hasattr(
+            self.coordinator, "get_capability"
+        ):
+            spawn_fn = self.coordinator.get_capability("session.spawn")
+
+        if spawn_fn is None:
+            return ToolResult(
+                success=False,
+                error={
+                    "message": (
+                        "session.spawn capability is not available. "
+                        "Pipeline execution requires the ability to spawn "
+                        "child sessions. Ensure you are running in an "
+                        "environment that supports session spawning "
+                        "(e.g. the CLI)."
+                    )
+                },
+            )
+
+        # --- Resolve runner agent name ---
+        runner_agent = self.config.get(
+            "runner_agent", "attractor-pipeline-runner"
+        )
+
+        # --- Build orchestrator config for the child session ---
+        orchestrator_config: dict[str, Any] = {
+            "dot_source": dot_source_resolved,
+        }
+
+        # Forward profiles from our config if present
+        profiles = self.config.get("profiles")
+        if profiles:
+            orchestrator_config["profiles"] = profiles
+
+        # --- Build spawn kwargs ---
+        parent_session = getattr(self.coordinator, "session", None)
+        coordinator_config = getattr(self.coordinator, "config", None) or {}
+        agent_configs = coordinator_config.get("agents", {})
+
+        spawn_kwargs: dict[str, Any] = {
+            "agent_name": runner_agent,
+            "instruction": goal,
+            "parent_session": parent_session,
+            "agent_configs": agent_configs,
+            "orchestrator_config": orchestrator_config,
+        }
+
+        # --- Progress: pipeline starting ---
+        self._show_progress(
+            f"[PIPELINE] Starting pipeline (runner: {runner_agent})..."
+        )
+        await self._emit_event(
+            "pipeline:tool:start",
+            {
+                "goal": goal,
+                "runner_agent": runner_agent,
+                "dot_file": dot_file,
+            },
+        )
+
+        # --- Execute spawn ---
+        start_time = time.monotonic()
+
+        try:
+            result = await spawn_fn(**spawn_kwargs)
+        except Exception as e:
+            logger.warning("Pipeline spawn failed: %s", e)
+            await self._emit_event(
+                "pipeline:tool:complete",
+                {
+                    "status": "error",
+                    "error": str(e),
+                },
+            )
+            return ToolResult(
+                success=False,
+                error={
+                    "message": f"Pipeline execution failed: {e}",
+                    "type": type(e).__name__,
+                },
+            )
+
+        duration = round(time.monotonic() - start_time, 1)
+
+        # --- Parse result ---
+        output = (
+            result.get("output", "")
+            if isinstance(result, dict)
+            else str(result)
+        )
+        session_id = (
+            result.get("session_id", "unknown")
+            if isinstance(result, dict)
+            else "unknown"
+        )
+
+        # Try to parse structured outcome from pipeline output
+        pipeline_status = "success"
+        pipeline_notes = ""
+        if isinstance(output, str) and output.strip().startswith("{"):
+            try:
+                parsed = json.loads(output)
+                pipeline_status = parsed.get("status", "success")
+                pipeline_notes = parsed.get("notes", "")
+            except (json.JSONDecodeError, AttributeError):
+                pipeline_notes = output[:500] if output else "Pipeline completed"
+        else:
+            # Plain text output — use as notes
+            pipeline_notes = (
+                output[:500] if output else "Pipeline completed"
+            )
+
+        # --- Progress: pipeline complete ---
+        self._show_progress(
+            f"[PIPELINE] Pipeline complete: {pipeline_status} ({duration}s)"
+        )
+        await self._emit_event(
+            "pipeline:tool:complete",
+            {
+                "status": pipeline_status,
+                "session_id": session_id,
+                "duration_seconds": duration,
+                "notes": pipeline_notes,
+            },
+        )
+
+        return ToolResult(
+            success=True,
+            output={
+                "status": pipeline_status,
+                "session_id": session_id,
+                "notes": pipeline_notes,
+                "duration_seconds": duration,
+                "runner_agent": runner_agent,
+            },
+        )
+
+
+async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
+    """Mount the run_pipeline tool."""
+    config = config or {}
+    tool = PipelineRunTool(config, coordinator)
+    await coordinator.mount("tools", tool, name=tool.name)
+    logger.info("Mounted run_pipeline tool")
