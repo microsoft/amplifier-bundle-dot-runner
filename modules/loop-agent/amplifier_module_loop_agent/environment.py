@@ -32,6 +32,7 @@ def build_environment_context(
     lines: list[str] = []
     lines.append(f"Working directory: {working_dir}")
     lines.append(f"Platform: {platform.system().lower()}")
+    lines.append(f"OS version: {platform.platform()}")
     lines.append(f"Today's date: {date.today().isoformat()}")
 
     # Git context
