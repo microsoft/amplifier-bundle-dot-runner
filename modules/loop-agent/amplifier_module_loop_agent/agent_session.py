@@ -28,7 +28,12 @@ from amplifier_core.message_models import (
     ThinkingBlock,
     ToolSpec,
 )
-from amplifier_core.events import TOOL_POST
+from amplifier_core.events import (
+    CONTENT_BLOCK_END,
+    CONTENT_BLOCK_START,
+    TOOL_POST,
+    TOOL_PRE,
+)
 from amplifier_core.models import ToolResult
 
 from .config import SessionConfig
@@ -363,6 +368,23 @@ class AgentSession:
             # Emit provider:response after LLM call with usage data
             await self._hooks.emit(PROVIDER_RESPONSE, {"usage": usage_data})
 
+            # Emit content_block events for thinking blocks (core events
+            # consumed by hooks-streaming-ui for real-time display)
+            if reasoning:
+                await self._hooks.emit(
+                    CONTENT_BLOCK_START,
+                    {"block_type": "thinking", "block_index": 0},
+                )
+                await self._hooks.emit(
+                    CONTENT_BLOCK_END,
+                    {
+                        "block_index": 0,
+                        "total_blocks": 1,
+                        "block": {"type": "thinking", "thinking": reasoning},
+                        "usage": usage_data,
+                    },
+                )
+
             # Check context window usage (spec Section 5.5)
             await self._check_context_usage()
 
@@ -674,6 +696,12 @@ class AgentSession:
 
     async def _execute_single_tool_inner(self, tool_call: Any) -> ToolResult:
         """Inner tool execution logic. Never raises — errors become results."""
+        # Core tool:pre event (consumed by hooks-streaming-ui for display)
+        await self._hooks.emit(
+            TOOL_PRE,
+            {"tool_name": tool_call.name, "tool_input": tool_call.arguments},
+        )
+        # Agent-specific event (for orchestrator-level tracking)
         await self._hooks.emit(
             AGENT_TOOL_CALL_START,
             {"tool_name": tool_call.name, "call_id": tool_call.id},
