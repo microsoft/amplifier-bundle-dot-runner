@@ -51,6 +51,7 @@ from .events import (
     AGENT_SESSION_START,
     AGENT_STEERING_INJECTED,
     AGENT_TOOL_CALL_END,
+    AGENT_TOOL_CALL_OUTPUT_DELTA,
     AGENT_TOOL_CALL_START,
     AGENT_TURN_LIMIT,
     AGENT_USER_INPUT,
@@ -772,6 +773,17 @@ class AgentSession:
             ):
                 llm_output = post_result.data["result"]
 
+            # Emit tool output delta for UI streaming (spec TOOL_CALL_OUTPUT_DELTA)
+            await self._hooks.emit(
+                AGENT_TOOL_CALL_OUTPUT_DELTA,
+                {
+                    "tool_name": tool_call.name,
+                    "tool_call_id": tool_call.id,
+                    "delta": raw_output,
+                    "is_final": True,
+                },
+            )
+
             # Emit agent:tool_call_end with FULL untruncated output
             await self._hooks.emit(
                 AGENT_TOOL_CALL_END,
@@ -788,6 +800,16 @@ class AgentSession:
             duration_ms = (time.monotonic() - start_time) * 1000
             error_msg = f"Tool error ({tool_call.name}): {e}"
             logger.error(error_msg)
+            # Emit tool output delta even on errors
+            await self._hooks.emit(
+                AGENT_TOOL_CALL_OUTPUT_DELTA,
+                {
+                    "tool_name": tool_call.name,
+                    "tool_call_id": tool_call.id,
+                    "delta": error_msg,
+                    "is_final": True,
+                },
+            )
             await self._hooks.emit(
                 AGENT_TOOL_CALL_END,
                 {

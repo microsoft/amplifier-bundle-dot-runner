@@ -29,6 +29,7 @@ AGENT_ASSISTANT_TEXT_END = "agent:assistant_text_end"
 # Tool execution
 AGENT_TOOL_CALL_START = "agent:tool_call_start"
 AGENT_TOOL_CALL_END = "agent:tool_call_end"
+AGENT_TOOL_CALL_OUTPUT_DELTA = "agent:tool_call_output_delta"
 
 # Steering
 AGENT_STEERING_INJECTED = "agent:steering_injected"
@@ -55,6 +56,7 @@ __all__ = [
     "AGENT_SESSION_START",
     "AGENT_STEERING_INJECTED",
     "AGENT_TOOL_CALL_END",
+    "AGENT_TOOL_CALL_OUTPUT_DELTA",
     "AGENT_TOOL_CALL_START",
     "AGENT_TURN_LIMIT",
     "AGENT_USER_INPUT",
