@@ -134,9 +134,7 @@ class PipelineRunTool:
                 )
             resolved_path = mention_resolver.resolve(dot_file)
             if resolved_path is None:
-                raise FileNotFoundError(
-                    f"Could not resolve @mention path: {dot_file}"
-                )
+                raise FileNotFoundError(f"Could not resolve @mention path: {dot_file}")
             file_path = Path(resolved_path)
         else:
             file_path = Path(dot_file)
@@ -167,9 +165,7 @@ class PipelineRunTool:
             Set of provider names (e.g. {"anthropic", "openai"}).
         """
         if not HAS_PIPELINE:
-            logger.debug(
-                "loop-pipeline not available; skipping provider extraction"
-            )
+            logger.debug("loop-pipeline not available; skipping provider extraction")
             return set()
 
         graph = parse_dot(dot_source)
@@ -268,9 +264,7 @@ class PipelineRunTool:
             try:
                 await hooks.emit(event_name, data)
             except Exception:
-                logger.debug(
-                    "Failed to emit event %s", event_name, exc_info=True
-                )
+                logger.debug("Failed to emit event %s", event_name, exc_info=True)
 
     # -----------------------------------------------------------------
     # Main execution
@@ -321,9 +315,7 @@ class PipelineRunTool:
 
         # --- Parse and validate providers ---
         try:
-            required_providers = self._extract_required_providers(
-                dot_source_resolved
-            )
+            required_providers = self._extract_required_providers(dot_source_resolved)
         except Exception as e:
             return ToolResult(
                 success=False,
@@ -354,9 +346,7 @@ class PipelineRunTool:
 
         # --- Get session.spawn capability ---
         spawn_fn = None
-        if self.coordinator is not None and hasattr(
-            self.coordinator, "get_capability"
-        ):
+        if self.coordinator is not None and hasattr(self.coordinator, "get_capability"):
             spawn_fn = self.coordinator.get_capability("session.spawn")
 
         if spawn_fn is None:
@@ -374,9 +364,7 @@ class PipelineRunTool:
             )
 
         # --- Resolve runner agent name ---
-        runner_agent = self.config.get(
-            "runner_agent", "attractor-pipeline-runner"
-        )
+        runner_agent = self.config.get("runner_agent", "attractor-pipeline-runner")
 
         # --- Build orchestrator config for the child session ---
         orchestrator_config: dict[str, Any] = {
@@ -402,9 +390,7 @@ class PipelineRunTool:
         }
 
         # --- Progress: pipeline starting ---
-        self._show_progress(
-            f"[PIPELINE] Starting pipeline (runner: {runner_agent})..."
-        )
+        self._show_progress(f"[PIPELINE] Starting pipeline (runner: {runner_agent})...")
         await self._emit_event(
             "pipeline:tool:start",
             {
@@ -439,11 +425,7 @@ class PipelineRunTool:
         duration = round(time.monotonic() - start_time, 1)
 
         # --- Parse result ---
-        output = (
-            result.get("output", "")
-            if isinstance(result, dict)
-            else str(result)
-        )
+        output = result.get("output", "") if isinstance(result, dict) else str(result)
         session_id = (
             result.get("session_id", "unknown")
             if isinstance(result, dict)
@@ -453,18 +435,33 @@ class PipelineRunTool:
         # Try to parse structured outcome from pipeline output
         pipeline_status = "success"
         pipeline_notes = ""
+        nodes_completed = 0
+        node_statuses: dict[str, str] = {}
+
         if isinstance(output, str) and output.strip().startswith("{"):
             try:
                 parsed = json.loads(output)
                 pipeline_status = parsed.get("status", "success")
-                pipeline_notes = parsed.get("notes", "")
+                pipeline_notes = parsed.get("notes") or ""
+                nodes_completed = parsed.get("nodes_completed", 0)
+                node_statuses = parsed.get("node_statuses", {})
             except (json.JSONDecodeError, AttributeError):
-                pipeline_notes = output[:500] if output else "Pipeline completed"
+                pipeline_notes = output[:500] if output else ""
         else:
             # Plain text output — use as notes
-            pipeline_notes = (
-                output[:500] if output else "Pipeline completed"
-            )
+            pipeline_notes = output[:500] if output else ""
+
+        # Synthesize a summary if notes are still empty
+        if not pipeline_notes.strip():
+            summary_parts = [f"Pipeline finished with status: {pipeline_status}."]
+            if nodes_completed:
+                summary_parts.append(f"{nodes_completed} nodes executed.")
+            if node_statuses:
+                summary_parts.append(
+                    "Node results: "
+                    + ", ".join(f"{k}={v}" for k, v in node_statuses.items())
+                )
+            pipeline_notes = " ".join(summary_parts)
 
         # --- Progress: pipeline complete ---
         self._show_progress(
@@ -488,6 +485,10 @@ class PipelineRunTool:
                 "notes": pipeline_notes,
                 "duration_seconds": duration,
                 "runner_agent": runner_agent,
+                "message": (
+                    "Pipeline execution complete. The pipeline has finished "
+                    "synchronously — no further action is needed for this pipeline."
+                ),
             },
         )
 

@@ -1,11 +1,12 @@
 """Tests for tool-pipeline-run."""
 
+import json
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from amplifier_module_tool_pipeline_run import PipelineRunTool
 
@@ -59,7 +60,9 @@ async def test_no_dot_source_rejected():
     tool = PipelineRunTool(config={})
     result = await tool.execute({"goal": "test goal"})
     assert not result.success
-    assert "dot_file" in result.error["message"] or "dot_source" in result.error["message"]
+    assert (
+        "dot_file" in result.error["message"] or "dot_source" in result.error["message"]
+    )
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -162,7 +165,7 @@ def test_dot_source_takes_precedence_over_dot_file():
 # ---------------------------------------------------------------------------
 
 # DOT source with model_stylesheet that requires anthropic and openai
-DOT_WITH_STYLESHEET = '''digraph Test {
+DOT_WITH_STYLESHEET = """digraph Test {
     graph [
         goal="test",
         model_stylesheet="
@@ -175,23 +178,23 @@ DOT_WITH_STYLESHEET = '''digraph Test {
     impl [prompt="Implement"]
     done [shape=Msquare]
     start -> plan -> impl -> done
-}'''
+}"""
 
 # DOT source with explicit llm_provider on a node (no stylesheet)
-DOT_WITH_NODE_PROVIDER = '''digraph Test {
+DOT_WITH_NODE_PROVIDER = """digraph Test {
     start [shape=Mdiamond]
     impl [llm_provider="gemini", prompt="Implement"]
     done [shape=Msquare]
     start -> impl -> done
-}'''
+}"""
 
 # DOT source with no providers specified at all
-DOT_NO_PROVIDERS = '''digraph Test {
+DOT_NO_PROVIDERS = """digraph Test {
     start [shape=Mdiamond]
     impl [prompt="Implement"]
     done [shape=Msquare]
     start -> impl -> done
-}'''
+}"""
 
 
 def test_extract_required_providers_from_stylesheet():
@@ -240,12 +243,12 @@ def test_validate_providers_some_missing():
 # Spawn execution
 # ---------------------------------------------------------------------------
 
-SIMPLE_DOT = '''digraph Test {
+SIMPLE_DOT = """digraph Test {
     start [shape=Mdiamond]
     impl [prompt="Do the thing"]
     done [shape=Msquare]
     start -> impl -> done
-}'''
+}"""
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -476,8 +479,8 @@ async def test_no_crash_without_display_or_hooks():
     )
 
     mock_coordinator = MagicMock(spec=[])  # empty spec = no attributes
-    mock_coordinator.get_capability = (
-        lambda name: mock_spawn if name == "session.spawn" else None
+    mock_coordinator.get_capability = lambda name: (
+        mock_spawn if name == "session.spawn" else None
     )
     mock_coordinator.config = {"agents": {"attractor-pipeline-runner": {}}}
     mock_coordinator.session = MagicMock()
@@ -494,3 +497,154 @@ async def test_no_crash_without_display_or_hooks():
         }
     )
     assert result.success
+
+
+# ---------------------------------------------------------------------------
+# Pipeline output parsing (Bug 1 Fix B)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_null_notes_produces_meaningful_output():
+    """Tool synthesizes a summary when pipeline returns null notes."""
+    pipeline_output = json.dumps(
+        {
+            "status": "success",
+            "notes": None,
+            "failure_reason": None,
+            "nodes_completed": 3,
+            "node_statuses": {
+                "plan": "success",
+                "implement": "success",
+                "test": "success",
+            },
+        }
+    )
+    mock_spawn = AsyncMock(
+        return_value={
+            "output": pipeline_output,
+            "session_id": "child-null-notes",
+        }
+    )
+
+    mock_coordinator = MagicMock()
+
+    def get_cap(name):
+        if name == "session.spawn":
+            return mock_spawn
+        return None
+
+    mock_coordinator.get_capability = get_cap
+    mock_coordinator.config = {"agents": {"attractor-pipeline-runner": {}}}
+    mock_coordinator.session = MagicMock()
+
+    tool = PipelineRunTool(
+        config={"runner_agent": "attractor-pipeline-runner"},
+        coordinator=mock_coordinator,
+    )
+    result = await tool.execute(
+        {
+            "goal": "test goal",
+            "dot_source": SIMPLE_DOT,
+        }
+    )
+
+    assert result.success
+    notes = result.output["notes"]
+    assert notes  # Must not be empty
+    assert len(notes) > 10  # Must be meaningful
+    assert "3 nodes executed" in notes
+    assert "plan=success" in notes
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_empty_string_notes_synthesizes_summary():
+    """Tool synthesizes a summary when pipeline returns empty-string notes."""
+    pipeline_output = json.dumps(
+        {
+            "status": "success",
+            "notes": "",
+            "failure_reason": None,
+            "nodes_completed": 2,
+            "node_statuses": {"a": "success", "b": "fail"},
+        }
+    )
+    mock_spawn = AsyncMock(
+        return_value={
+            "output": pipeline_output,
+            "session_id": "child-empty-notes",
+        }
+    )
+
+    mock_coordinator = MagicMock()
+
+    def get_cap(name):
+        if name == "session.spawn":
+            return mock_spawn
+        return None
+
+    mock_coordinator.get_capability = get_cap
+    mock_coordinator.config = {"agents": {"attractor-pipeline-runner": {}}}
+    mock_coordinator.session = MagicMock()
+
+    tool = PipelineRunTool(
+        config={"runner_agent": "attractor-pipeline-runner"},
+        coordinator=mock_coordinator,
+    )
+    result = await tool.execute(
+        {
+            "goal": "test goal",
+            "dot_source": SIMPLE_DOT,
+        }
+    )
+
+    assert result.success
+    notes = result.output["notes"]
+    assert notes  # Must not be empty
+    assert "2 nodes executed" in notes
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_result_includes_message_field():
+    """Tool result includes a 'message' field signaling pipeline completion."""
+    pipeline_output = json.dumps(
+        {
+            "status": "success",
+            "notes": "All good",
+            "failure_reason": None,
+            "nodes_completed": 1,
+            "node_statuses": {"impl": "success"},
+        }
+    )
+    mock_spawn = AsyncMock(
+        return_value={
+            "output": pipeline_output,
+            "session_id": "child-msg",
+        }
+    )
+
+    mock_coordinator = MagicMock()
+
+    def get_cap(name):
+        if name == "session.spawn":
+            return mock_spawn
+        return None
+
+    mock_coordinator.get_capability = get_cap
+    mock_coordinator.config = {"agents": {"attractor-pipeline-runner": {}}}
+    mock_coordinator.session = MagicMock()
+
+    tool = PipelineRunTool(
+        config={"runner_agent": "attractor-pipeline-runner"},
+        coordinator=mock_coordinator,
+    )
+    result = await tool.execute(
+        {
+            "goal": "test goal",
+            "dot_source": SIMPLE_DOT,
+        }
+    )
+
+    assert result.success
+    assert "message" in result.output
+    assert "complete" in result.output["message"].lower()
