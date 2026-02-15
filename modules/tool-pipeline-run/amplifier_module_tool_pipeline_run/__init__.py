@@ -79,6 +79,15 @@ class PipelineRunTool:
                         "(e.g. 'anthropic', 'openai', 'gemini'). Optional."
                     ),
                 },
+                "params": {
+                    "type": "object",
+                    "description": (
+                        "Key-value parameters for $param expansion in node prompts. "
+                        'Example: {"language": "Python", "framework": "FastAPI"} '
+                        "expands $language and $framework in prompts."
+                    ),
+                    "additionalProperties": {"type": "string"},
+                },
             },
             "required": ["goal"],
         }
@@ -375,6 +384,11 @@ class PipelineRunTool:
         profiles = self.config.get("profiles")
         if profiles:
             orchestrator_config["profiles"] = profiles
+
+        # Forward params for $param expansion
+        params = input.get("params")
+        if params:
+            orchestrator_config["params"] = params
 
         # --- Build spawn kwargs ---
         parent_session = getattr(self.coordinator, "session", None)
