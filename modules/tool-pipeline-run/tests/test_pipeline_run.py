@@ -648,3 +648,93 @@ async def test_result_includes_message_field():
     assert result.success
     assert "message" in result.output
     assert "complete" in result.output["message"].lower()
+
+
+# ---------------------------------------------------------------------------
+# $param support (Task 3.2)
+# ---------------------------------------------------------------------------
+
+
+def test_input_schema_includes_params():
+    """Tool input schema should include a 'params' property."""
+    tool = PipelineRunTool(config={})
+    schema = tool.input_schema
+    assert "params" in schema["properties"]
+    assert schema["properties"]["params"]["type"] == "object"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_params_forwarded_in_orchestrator_config():
+    """Params from tool input are forwarded to orchestrator_config in spawn."""
+    spawn_kwargs_capture = {}
+
+    async def mock_spawn(**kwargs):
+        spawn_kwargs_capture.update(kwargs)
+        return {
+            "output": '{"status": "success", "notes": "done"}',
+            "session_id": "child-params",
+        }
+
+    mock_coordinator = MagicMock()
+
+    def get_cap(name):
+        if name == "session.spawn":
+            return mock_spawn
+        return None
+
+    mock_coordinator.get_capability = get_cap
+    mock_coordinator.config = {"agents": {"attractor-pipeline-runner": {}}}
+    mock_coordinator.session = MagicMock()
+
+    tool = PipelineRunTool(
+        config={"runner_agent": "attractor-pipeline-runner"},
+        coordinator=mock_coordinator,
+    )
+    await tool.execute(
+        {
+            "goal": "build a web app",
+            "dot_source": SIMPLE_DOT,
+            "params": {"language": "Python", "framework": "FastAPI"},
+        }
+    )
+
+    orch_config = spawn_kwargs_capture["orchestrator_config"]
+    assert orch_config["params"] == {"language": "Python", "framework": "FastAPI"}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_no_params_omits_key_from_orchestrator_config():
+    """When no params are provided, orchestrator_config has no params key."""
+    spawn_kwargs_capture = {}
+
+    async def mock_spawn(**kwargs):
+        spawn_kwargs_capture.update(kwargs)
+        return {
+            "output": '{"status": "success", "notes": "done"}',
+            "session_id": "child-no-params",
+        }
+
+    mock_coordinator = MagicMock()
+
+    def get_cap(name):
+        if name == "session.spawn":
+            return mock_spawn
+        return None
+
+    mock_coordinator.get_capability = get_cap
+    mock_coordinator.config = {"agents": {"attractor-pipeline-runner": {}}}
+    mock_coordinator.session = MagicMock()
+
+    tool = PipelineRunTool(
+        config={"runner_agent": "attractor-pipeline-runner"},
+        coordinator=mock_coordinator,
+    )
+    await tool.execute(
+        {
+            "goal": "build a thing",
+            "dot_source": SIMPLE_DOT,
+        }
+    )
+
+    orch_config = spawn_kwargs_capture["orchestrator_config"]
+    assert "params" not in orch_config
