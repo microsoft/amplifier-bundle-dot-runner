@@ -498,6 +498,7 @@ class PipelineRunTool:
                 "session_id": session_id,
                 "notes": pipeline_notes,
                 "duration_seconds": duration,
+                "nodes_completed": nodes_completed,
                 "runner_agent": runner_agent,
                 "message": (
                     "Pipeline execution complete. The pipeline has finished "
