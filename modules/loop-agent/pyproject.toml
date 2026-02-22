@@ -28,14 +28,17 @@ allow-direct-references = true
 [dependency-groups]
 dev = [
     "amplifier-core",
+    "unified-llm-client",
     "pytest>=8.0.0",
     "pytest-asyncio>=1.0.0",
 ]
 
 [tool.uv.sources]
 amplifier-core = { path = "../../../amplifier-core", editable = true }
+unified-llm-client = { path = "../../../unified-llm-client", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
+pythonpath = [".", "../../../unified-llm-client"]

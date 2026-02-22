@@ -114,6 +114,28 @@ class AgentOrchestrator:
                 for tool in subagent_mgr.create_tools():
                     all_tools[tool.name] = tool
 
+            # Wrap provider with unified-llm adapter if configured
+            if self._config.get("use_unified_llm"):
+                try:
+                    from .unified_provider_adapter import UnifiedProviderAdapter
+
+                    model = self._config.get("model", "")
+                    provider = UnifiedProviderAdapter(
+                        provider_name=provider_name,
+                        model=model,
+                    )
+                    logger.info(
+                        "Using UnifiedProviderAdapter for %s/%s",
+                        provider_name,
+                        model,
+                    )
+                except (ImportError, Exception) as e:
+                    logger.warning(
+                        "Failed to create UnifiedProviderAdapter, "
+                        "using native provider: %s",
+                        e,
+                    )
+
             self._session = AgentSession(
                 config=config,
                 provider=provider,
