@@ -8,6 +8,7 @@ authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
 dependencies = [
+    "amplifier-core",
 ]
 
 [project.entry-points."amplifier.modules"]
