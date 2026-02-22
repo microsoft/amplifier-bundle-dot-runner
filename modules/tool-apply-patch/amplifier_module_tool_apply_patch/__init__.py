@@ -72,21 +72,24 @@ class ApplyPatchTool:
 
         patch_text = input.get("patch")
         if not patch_text:
+            error_msg = "patch parameter is required"
             return ToolResult(
-                success=False, error={"message": "patch parameter is required"}
+                success=False, output=error_msg, error={"message": error_msg}
             )
 
         # Parse the patch
         try:
             operations = parse_v4a_patch(patch_text)
         except ValueError as e:
+            error_msg = f"Patch parse error: {e}"
             return ToolResult(
-                success=False, error={"message": f"Patch parse error: {e}"}
+                success=False, output=error_msg, error={"message": error_msg}
             )
 
         if not operations:
+            error_msg = "Patch contains no operations"
             return ToolResult(
-                success=False, error={"message": "Patch contains no operations"}
+                success=False, output=error_msg, error={"message": error_msg}
             )
 
         # Apply each operation
@@ -99,11 +102,11 @@ class ApplyPatchTool:
                 files_modified.append(op.path)
                 summaries.append(result)
             except Exception as e:
+                error_msg = f"Error applying {op.operation} to {op.path}: {e}"
                 return ToolResult(
                     success=False,
-                    error={
-                        "message": f"Error applying {op.operation} to {op.path}: {e}"
-                    },
+                    output=error_msg,
+                    error={"message": error_msg},
                 )
 
         summary = "; ".join(summaries)
