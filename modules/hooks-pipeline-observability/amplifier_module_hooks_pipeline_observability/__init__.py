@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from .aggregator import StateAggregator
+from .status_bar import StatusBarContributor
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,9 @@ async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
 
     Registers:
     1. StateAggregator — subscribes to all 17 pipeline events, maintains PipelineRunState
-    2. pipeline.state contribution channel — makes state queryable
-    3. observability.events contribution — ensures pipeline events are discoverable
+    2. StatusBarContributor — compact system-reminder for context injection
+    3. pipeline.state contribution channel — makes state queryable
+    4. observability.events contribution — ensures pipeline events are discoverable
     """
     hooks = coordinator.get("hooks")
     aggregator = StateAggregator()
@@ -70,6 +72,14 @@ async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
     for event_name, handler_name in _AGGREGATOR_HANDLER_MAP.items():
         handler = getattr(aggregator, handler_name)
         hooks.register(event_name, handler, name="pipeline-observability")
+
+    # Status bar contributor for context injection
+    status_bar = StatusBarContributor(aggregator)
+    coordinator.register_contributor(
+        "system-reminders",
+        "pipeline-status",
+        status_bar.contribute,
+    )
 
     # Register pipeline.state contribution channel
     coordinator.register_contributor(
@@ -85,4 +95,4 @@ async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
         lambda: _PIPELINE_EVENTS,
     )
 
-    logger.info("Mounted hooks-pipeline-observability (aggregator + event persistence)")
+    logger.info("Mounted hooks-pipeline-observability (aggregator + status bar)")
