@@ -91,10 +91,10 @@ async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
     )
 
     # Register pipeline events for observability.events discovery (Layer 3)
-    coordinator.register_contributor(
-        "observability.events",
-        "hooks-pipeline-observability",
-        lambda: _PIPELINE_EVENTS,
-    )
+    # hooks-logging reads via get_capability(), so we must use register_capability()
+    # Append to any existing events already registered by other modules
+    existing_events = coordinator.get_capability("observability.events") or []
+    existing_events.extend(_PIPELINE_EVENTS)
+    coordinator.register_capability("observability.events", existing_events)
 
     logger.info("Mounted hooks-pipeline-observability (aggregator + status bar)")
