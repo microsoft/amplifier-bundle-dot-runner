@@ -1,6 +1,6 @@
 """Status bar contributor — compact system-reminder for context injection.
 
-Reads from the StateAggregator and formats a <=6-line summary of the
+Reads from the StateAggregator and formats a <=7-line summary of the
 current pipeline execution state.
 """
 
@@ -23,7 +23,7 @@ class StatusBarContributor:
         self._aggregator = aggregator
 
     def contribute(self) -> str:
-        """Return a compact <=6-line pipeline status string."""
+        """Return a compact <=7-line pipeline status string."""
         state = self._aggregator.get_state()
         if state is None:
             return ""
@@ -62,7 +62,18 @@ class StatusBarContributor:
         if completed_parts:
             lines.append("Done: " + ", ".join(completed_parts))
 
-        # Line 4: Current node with elapsed
+        # Line 4: Remaining nodes (only when some are unvisited)
+        visited = set(state.execution_path)
+        if state.nodes:
+            remaining_names = [nid for nid in state.nodes if nid not in visited]
+            if remaining_names:
+                lines.append("Remaining: " + ", ".join(remaining_names))
+        else:
+            remaining_count = state.nodes_total - len(visited)
+            if remaining_count > 0:
+                lines.append(f"Remaining: {remaining_count} nodes")
+
+        # Line 5: Current node with elapsed
         if state.current_node and state.status == "running":
             runs = state.node_runs.get(state.current_node, [])
             if runs and runs[-1].status == "running":
