@@ -14,6 +14,7 @@ from typing import Any
 
 from .models import (
     BranchInfo,
+    EdgeDecision,
     EdgeInfo,
     GoalGateCheck,
     HumanInteraction,
@@ -115,6 +116,14 @@ class StateAggregator:
         )
         self.state.branches_taken.append(edge)
 
+        decision = EdgeDecision(
+            from_node=data.get("from_node", ""),
+            evaluated_edges=[],  # Not available from event payload
+            selected_edge=edge,
+            reason=data.get("edge_label", "default"),
+        )
+        self.state.edge_decisions.append(decision)
+
     # -- Checkpoint --------------------------------------------------------
 
     async def handle_checkpoint(self, event: str, data: dict[str, Any]) -> None:
@@ -145,6 +154,7 @@ class StateAggregator:
         """Handle pipeline:error — record error."""
         if self.state is None:
             return
+        self.state.status = "failed"
         self.state.errors.append(
             {
                 "node_id": data.get("node_id", ""),

@@ -32,6 +32,7 @@ _PIPELINE_EVENTS = [
     "pipeline:interview_timeout",
     "pipeline:stage_retrying",
     "pipeline:stage_failed",
+    "provider:response",
 ]
 
 # Map event names to StateAggregator handler method names
@@ -53,6 +54,7 @@ _AGGREGATOR_HANDLER_MAP: dict[str, str] = {
     "pipeline:interview_timeout": "handle_interview_timeout",
     "pipeline:stage_retrying": "handle_stage_retrying",
     "pipeline:stage_failed": "handle_stage_failed",
+    "provider:response": "handle_provider_response",
 }
 
 
@@ -60,7 +62,7 @@ async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
     """Mount pipeline observability hooks into the Amplifier coordinator.
 
     Registers:
-    1. StateAggregator — subscribes to all 17 pipeline events, maintains PipelineRunState
+    1. StateAggregator — subscribes to all 18 observability events, maintains PipelineRunState
     2. StatusBarContributor — compact system-reminder for context injection
     3. pipeline.state contribution channel — makes state queryable
     4. observability.events contribution — ensures pipeline events are discoverable

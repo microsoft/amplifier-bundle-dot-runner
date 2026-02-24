@@ -28,7 +28,7 @@ async def test_mount_registers_all_pipeline_hooks():
     # Collect all registered event names
     registered_events = [c.args[0] for c in hooks_mock.register.call_args_list]
 
-    # All 17 pipeline events must be registered
+    # All 18 events (17 pipeline + 1 provider) must be registered
     expected_events = [
         "pipeline:start",
         "pipeline:complete",
@@ -47,6 +47,7 @@ async def test_mount_registers_all_pipeline_hooks():
         "pipeline:interview_timeout",
         "pipeline:stage_retrying",
         "pipeline:stage_failed",
+        "provider:response",
     ]
     for event in expected_events:
         assert event in registered_events, f"Missing handler for {event}"
