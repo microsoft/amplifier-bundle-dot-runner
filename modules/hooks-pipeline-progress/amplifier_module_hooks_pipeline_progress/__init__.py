@@ -10,6 +10,8 @@ import logging
 import time
 from typing import Any
 
+from amplifier_core import HookResult
+
 logger = logging.getLogger(__name__)
 
 # Amplifier module metadata
@@ -58,7 +60,9 @@ class PipelineProgressHook:
 
     # -- Pipeline lifecycle ------------------------------------------------
 
-    async def handle_pipeline_start(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_pipeline_start(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         self._start_time = time.time()
         goal = data.get("goal", "")
         node_count = data.get("node_count", 0)
@@ -66,8 +70,11 @@ class PipelineProgressHook:
         logger.info(
             "[PIPELINE] Starting: %s (%d nodes, %d edges)", goal, node_count, edge_count
         )
+        return HookResult()
 
-    async def handle_pipeline_complete(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_pipeline_complete(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         status = data.get("status", "")
         total = time.time() - self._start_time if self._start_time else 0
         logger.info("[PIPELINE] Complete: %s (%.1fs total)", status, total)
@@ -82,18 +89,22 @@ class PipelineProgressHook:
                 _fmt_num(self._total_tokens_out),
                 _fmt_num(self._total_tokens_cached),
             )
+        return HookResult()
 
     # -- Node lifecycle ----------------------------------------------------
 
-    async def handle_node_start(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_node_start(self, event: str, data: dict[str, Any]) -> HookResult:
         node_id = data.get("node_id", "")
         handler = data.get("handler_type", "")
         attempt = data.get("attempt", 1)
         self._node_starts[node_id] = time.time()
         attempt_str = f" (attempt {attempt})" if attempt > 1 else ""
         logger.info("[PIPELINE] \u25b6 %s [%s]%s", node_id, handler, attempt_str)
+        return HookResult()
 
-    async def handle_node_complete(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_node_complete(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         status = data.get("status", "")
         start = self._node_starts.get(node_id)
@@ -106,24 +117,31 @@ class PipelineProgressHook:
             symbol = "?"
         logger.info("[PIPELINE] %s %s: %s%s", symbol, node_id, status, duration)
         self._nodes_completed += 1
+        return HookResult()
 
     # -- Edge routing ------------------------------------------------------
 
-    async def handle_edge_selected(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_edge_selected(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         from_node = data.get("from_node", "")
         to_node = data.get("to_node", "")
         label = data.get("edge_label", "")
         logger.info("[PIPELINE] -> edge: %s --[%s]--> %s", from_node, label, to_node)
+        return HookResult()
 
     # -- Checkpoint --------------------------------------------------------
 
-    async def handle_checkpoint(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_checkpoint(self, event: str, data: dict[str, Any]) -> HookResult:
         node_id = data.get("node_id", "")
         logger.debug("[PIPELINE] Checkpoint at %s", node_id)
+        return HookResult()
 
     # -- Goal gates --------------------------------------------------------
 
-    async def handle_goal_gate_check(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_goal_gate_check(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         satisfied = data.get("satisfied", [])
         unsatisfied = data.get("unsatisfied", [])
         total = len(satisfied) + len(unsatisfied)
@@ -133,20 +151,24 @@ class PipelineProgressHook:
             total,
             len(unsatisfied),
         )
+        return HookResult()
 
     # -- Errors ------------------------------------------------------------
 
-    async def handle_error(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_error(self, event: str, data: dict[str, Any]) -> HookResult:
         node_id = data.get("node_id", "")
         error_type = data.get("error_type", "")
         message = data.get("message", "")
         logger.error(
             "[PIPELINE] \u2717 Error at %s (%s): %s", node_id, error_type, message
         )
+        return HookResult()
 
     # -- Parallel execution ------------------------------------------------
 
-    async def handle_parallel_started(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_parallel_started(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         branch_count = data.get("branch_count", 0)
         logger.info(
@@ -154,19 +176,21 @@ class PipelineProgressHook:
             node_id,
             branch_count,
         )
+        return HookResult()
 
     async def handle_parallel_branch_started(
         self, event: str, data: dict[str, Any]
-    ) -> None:
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         branch_node_id = data.get("branch_node_id", "")
         logger.info(
             "[PIPELINE]   \u251c\u2500 Branch started: %s/%s", node_id, branch_node_id
         )
+        return HookResult()
 
     async def handle_parallel_branch_completed(
         self, event: str, data: dict[str, Any]
-    ) -> None:
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         branch_node_id = data.get("branch_node_id", "")
         status = data.get("status", "")
@@ -178,8 +202,11 @@ class PipelineProgressHook:
             branch_node_id,
             status,
         )
+        return HookResult()
 
-    async def handle_parallel_completed(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_parallel_completed(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         result_count = data.get("result_count", 0)
         branch_count = data.get("branch_count", 0)
@@ -189,28 +216,40 @@ class PipelineProgressHook:
             result_count,
             branch_count,
         )
+        return HookResult()
 
     # -- Human interaction -------------------------------------------------
 
-    async def handle_interview_started(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_interview_started(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         prompt = data.get("prompt", "")
-        logger.info("[PIPELINE] \u2709 Human gate: %s — %s", node_id, prompt)
+        logger.info("[PIPELINE] \u2709 Human gate: %s \u2014 %s", node_id, prompt)
+        return HookResult()
 
     async def handle_interview_completed(
         self, event: str, data: dict[str, Any]
-    ) -> None:
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         answer = data.get("answer", "")
-        logger.info("[PIPELINE] \u2709 Human gate answered: %s — %s", node_id, answer)
+        logger.info(
+            "[PIPELINE] \u2709 Human gate answered: %s \u2014 %s", node_id, answer
+        )
+        return HookResult()
 
-    async def handle_interview_timeout(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_interview_timeout(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         logger.warning("[PIPELINE] \u2709 Human gate timeout: %s", node_id)
+        return HookResult()
 
     # -- Retry lifecycle ---------------------------------------------------
 
-    async def handle_stage_retrying(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_stage_retrying(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         node_id = data.get("node_id", "")
         attempt = data.get("attempt", 0)
         max_attempts = data.get("max_attempts", 0)
@@ -222,15 +261,19 @@ class PipelineProgressHook:
             max_attempts,
             delay_ms,
         )
+        return HookResult()
 
-    async def handle_stage_failed(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_stage_failed(self, event: str, data: dict[str, Any]) -> HookResult:
         node_id = data.get("node_id", "")
         attempts = data.get("attempts", 0)
         logger.error("[PIPELINE] \u2717 %s failed after %d attempts", node_id, attempts)
+        return HookResult()
 
     # -- Provider events ---------------------------------------------------
 
-    async def handle_provider_response(self, event: str, data: dict[str, Any]) -> None:
+    async def handle_provider_response(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
         model = data.get("model", "unknown")
         tokens_in = data.get("tokens_in", 0)
         tokens_out = data.get("tokens_out", 0)
@@ -252,6 +295,7 @@ class PipelineProgressHook:
             cached_part,
             duration_ms / 1000,
         )
+        return HookResult()
 
 
 def _fmt_num(n: int) -> str:
