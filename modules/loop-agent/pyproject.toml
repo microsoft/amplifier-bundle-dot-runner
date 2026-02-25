@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
-dependencies = []
+dependencies = ["amplifier-core>=0.1.0"]
 
 [project.entry-points."amplifier.modules"]
 loop-agent = "amplifier_module_loop_agent:mount"
@@ -33,9 +33,7 @@ dev = [
     "pytest-asyncio>=1.0.0",
 ]
 
-[tool.uv.sources]
-amplifier-core = { path = "../../../amplifier-core", editable = true }
-unified-llm-client = { path = "../../../unified-llm-client", editable = true }
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
