@@ -77,9 +77,11 @@ async def test_mount_registers_observability_events():
 
     await mount(coordinator)
 
-    contrib_calls = coordinator.register_contributor.call_args_list
-    channel_names = [c.args[0] for c in contrib_calls]
-    assert "observability.events" in channel_names
+    # observability.events is registered via register_capability (not register_contributor)
+    # to ensure hooks-logging can discover pipeline events via get_capability()
+    coordinator.register_capability.assert_called_once()
+    cap_args = coordinator.register_capability.call_args
+    assert cap_args.args[0] == "observability.events"
 
 
 @pytest.mark.asyncio(loop_scope="session")
