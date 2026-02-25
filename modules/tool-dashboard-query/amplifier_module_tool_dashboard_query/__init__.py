@@ -73,6 +73,12 @@ class DashboardQueryTool:
             self._client = httpx.AsyncClient(base_url=self._base_url)
         return self._client
 
+    async def close(self) -> None:
+        """Close the underlying HTTP client, releasing connections."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
     @property
     def input_schema(self) -> dict:
         """Return JSON schema for tool parameters."""

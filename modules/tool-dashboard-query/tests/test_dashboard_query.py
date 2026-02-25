@@ -260,3 +260,29 @@ async def test_tool_name_and_schema():
     assert "goal" in schema["properties"]
     assert "question_id" in schema["properties"]
     assert "answer" in schema["properties"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_close_shuts_down_client():
+    """close() closes the underlying httpx client and resets to None."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json_response({"ok": True})
+
+    tool = _make_tool(handler)
+    # Force client creation
+    client = tool._get_client()
+    assert client is not None
+
+    await tool.close()
+    assert tool._client is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_close_when_no_client_is_noop():
+    """close() on a tool that never created a client is a safe no-op."""
+    tool = DashboardQueryTool(config={})
+    assert tool._client is None
+
+    await tool.close()  # should not raise
+    assert tool._client is None
