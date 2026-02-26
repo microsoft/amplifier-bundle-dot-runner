@@ -672,3 +672,119 @@ async def test_handlers_safe_before_start():
         "provider:response", {"tokens_in": 0, "tokens_out": 0}
     )
     assert agg.state is None  # Still None — nothing crashed
+
+
+# -- dot_source in pipeline:start -----------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_handle_pipeline_start_reads_dot_source():
+    """pipeline:start with dot_source should populate the state field."""
+    agg = StateAggregator()
+    await agg.handle_pipeline_start(
+        "pipeline:start",
+        {
+            "graph_name": "my-graph",
+            "node_count": 2,
+            "edge_count": 1,
+            "goal": "test",
+            "dot_source": "digraph { start -> exit }",
+        },
+    )
+    assert agg.state is not None
+    assert agg.state.dot_source == "digraph { start -> exit }"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_handle_pipeline_start_dot_source_defaults_to_empty():
+    """pipeline:start without dot_source should default to empty string."""
+    agg = StateAggregator()
+    await agg.handle_pipeline_start(
+        "pipeline:start",
+        {
+            "graph_name": "g",
+            "node_count": 1,
+            "edge_count": 0,
+            "goal": "test",
+        },
+    )
+    assert agg.state.dot_source == ""
+
+
+# -- notes/failure_reason in pipeline:node_complete -----------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_handle_node_complete_reads_notes():
+    """pipeline:node_complete with notes should set outcome_notes on NodeRun."""
+    agg = StateAggregator()
+    await agg.handle_pipeline_start(
+        "pipeline:start",
+        {"graph_name": "g", "node_count": 2, "edge_count": 1, "goal": "test"},
+    )
+    await agg.handle_node_start(
+        "pipeline:node_start",
+        {"node_id": "plan", "handler_type": "codergen", "attempt": 1},
+    )
+    await agg.handle_node_complete(
+        "pipeline:node_complete",
+        {
+            "node_id": "plan",
+            "status": "success",
+            "duration_ms": 500,
+            "notes": "All good",
+            "failure_reason": None,
+        },
+    )
+    run = agg.state.node_runs["plan"][0]
+    assert run.outcome_notes == "All good"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_handle_node_complete_reads_failure_reason():
+    """pipeline:node_complete with failure_reason should set outcome_notes."""
+    agg = StateAggregator()
+    await agg.handle_pipeline_start(
+        "pipeline:start",
+        {"graph_name": "g", "node_count": 2, "edge_count": 1, "goal": "test"},
+    )
+    await agg.handle_node_start(
+        "pipeline:node_start",
+        {"node_id": "build", "handler_type": "codergen", "attempt": 1},
+    )
+    await agg.handle_node_complete(
+        "pipeline:node_complete",
+        {
+            "node_id": "build",
+            "status": "fail",
+            "duration_ms": 200,
+            "notes": None,
+            "failure_reason": "timeout",
+        },
+    )
+    run = agg.state.node_runs["build"][0]
+    assert run.outcome_notes == "timeout"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_handle_node_complete_no_notes_leaves_outcome_notes_none():
+    """pipeline:node_complete without notes/failure_reason leaves outcome_notes as None."""
+    agg = StateAggregator()
+    await agg.handle_pipeline_start(
+        "pipeline:start",
+        {"graph_name": "g", "node_count": 2, "edge_count": 1, "goal": "test"},
+    )
+    await agg.handle_node_start(
+        "pipeline:node_start",
+        {"node_id": "plan", "handler_type": "codergen", "attempt": 1},
+    )
+    await agg.handle_node_complete(
+        "pipeline:node_complete",
+        {
+            "node_id": "plan",
+            "status": "success",
+            "duration_ms": 100,
+        },
+    )
+    run = agg.state.node_runs["plan"][0]
+    assert run.outcome_notes is None

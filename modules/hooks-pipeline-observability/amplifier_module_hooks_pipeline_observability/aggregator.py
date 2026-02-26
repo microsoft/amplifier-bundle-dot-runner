@@ -52,7 +52,7 @@ class StateAggregator:
         self._pipeline_start_time = time.monotonic()
         self.state = PipelineRunState(
             pipeline_id=data.get("graph_name", "unknown"),
-            dot_source="",  # populated later if available
+            dot_source=data.get("dot_source", ""),
             goal=data.get("goal", ""),
             status="running",
             nodes_total=data.get("node_count", 0),
@@ -109,6 +109,11 @@ class StateAggregator:
             current_run.status = status
             current_run.completed_at = datetime.now(timezone.utc)
             current_run.duration_ms = duration_ms
+
+            notes = data.get("notes")
+            failure_reason = data.get("failure_reason")
+            if notes or failure_reason:
+                current_run.outcome_notes = notes or failure_reason
 
         self.state.nodes_completed += 1
         self.state.timing[node_id] = self.state.timing.get(node_id, 0) + duration_ms
