@@ -7,7 +7,10 @@ requires-python = ">=3.11"
 authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
-dependencies = ["amplifier-core>=0.1.0"]
+dependencies = [
+    "amplifier-core>=0.1.0",
+    "unified-llm-client",
+]
 
 [project.entry-points."amplifier.modules"]
 loop-agent = "amplifier_module_loop_agent:mount"
@@ -19,6 +22,9 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = true
 
+[tool.uv.sources]
+unified-llm-client = { path = "../unified-llm-client" }
+
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_module_loop_agent"]
 
@@ -28,7 +34,6 @@ allow-direct-references = true
 [dependency-groups]
 dev = [
     "amplifier-core",
-    "unified-llm-client",
     "pytest>=8.0.0",
     "pytest-asyncio>=1.0.0",
 ]
@@ -39,4 +44,4 @@ dev = [
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
-pythonpath = [".", "../../../unified-llm-client"]
+pythonpath = [".", "../unified-llm-client"]
