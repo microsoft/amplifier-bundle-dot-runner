@@ -9,6 +9,7 @@ __amplifier_module_type__ = "tool"
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -18,8 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Optional import of loop-pipeline for provider validation
 try:
-    from amplifier_module_loop_pipeline.dot_parser import parse_dot
-    from amplifier_module_loop_pipeline.stylesheet import parse_stylesheet
+    from amplifier_module_loop_pipeline.dot_parser import parse_dot  # type: ignore[import]
 
     HAS_PIPELINE = True
 except ImportError:
@@ -173,29 +173,40 @@ class PipelineRunTool:
         Returns:
             Set of provider names (e.g. {"anthropic", "openai"}).
         """
-        if not HAS_PIPELINE:
-            logger.debug("loop-pipeline not available; skipping provider extraction")
-            return set()
-
-        graph = parse_dot(dot_source)
         providers: set[str] = set()
 
-        # Source 1: model_stylesheet rules
-        if graph.model_stylesheet:
-            rules = parse_stylesheet(graph.model_stylesheet)
-            for rule in rules:
-                provider = rule.properties.get("llm_provider")
+        if HAS_PIPELINE:
+            graph = parse_dot(dot_source)  # type: ignore[possibly-unbound]
+
+            # Source 1: model_stylesheet rules — use regex since parse_stylesheet
+            # may not expose a .properties dict with llm_provider keys
+            if graph.model_stylesheet:
+                for m in re.finditer(
+                    r"llm_provider\s*:\s*([a-zA-Z0-9_-]+)", graph.model_stylesheet
+                ):
+                    providers.add(m.group(1))
+
+            # Source 2: explicit node attributes
+            structural_shapes = {"Mdiamond", "Msquare", "point"}
+            for node in graph.nodes.values():
+                if node.shape in structural_shapes:
+                    continue
+                provider = node.attrs.get("llm_provider")
                 if provider:
                     providers.add(provider)
+        else:
+            # Regex fallback when loop-pipeline is not installed
+            logger.debug(
+                "loop-pipeline not available; using regex fallback for provider extraction"
+            )
 
-        # Source 2: explicit node attributes
-        structural_shapes = {"Mdiamond", "Msquare", "point"}
-        for node in graph.nodes.values():
-            if node.shape in structural_shapes:
-                continue
-            provider = node.attrs.get("llm_provider")
-            if provider:
-                providers.add(provider)
+            # Source 1: stylesheet declarations — llm_provider: value;
+            for m in re.finditer(r"llm_provider\s*:\s*([a-zA-Z0-9_-]+)", dot_source):
+                providers.add(m.group(1))
+
+            # Source 2: node attribute declarations — llm_provider="value"
+            for m in re.finditer(r'llm_provider\s*=\s*"([a-zA-Z0-9_-]+)"', dot_source):
+                providers.add(m.group(1))
 
         return providers
 
