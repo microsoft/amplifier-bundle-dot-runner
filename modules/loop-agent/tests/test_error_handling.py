@@ -19,6 +19,7 @@ from amplifier_core.models import ToolResult
 
 from amplifier_module_loop_agent import AgentOrchestrator
 from amplifier_module_loop_agent.events import (
+    AGENT_CONTEXT_WARNING,
     AGENT_ERROR,
     AGENT_SESSION_END,
     PROVIDER_ERROR,
@@ -104,16 +105,39 @@ async def test_auth_error_closes_session():
 
 
 @pytest.mark.asyncio
-async def test_context_length_error_closes_session():
-    """ContextLengthError → session CLOSED, error re-raised."""
+async def test_context_length_error_session_continues():
+    """ContextLengthError → session stays IDLE (NOT closed), error NOT re-raised.
+
+    Spec Appendix B / STOP-005: ContextLengthError is handled separately.
+    Session must remain usable after a context-window overflow.
+    """
     orch, ctx, provs, tools, hooks = _make_harness(
         provider_error=ContextLengthError(
             "context too long", provider="openai", status_code=413
         )
     )
-    with pytest.raises(ContextLengthError):
-        await orch.execute("hello", ctx, provs, tools, hooks)
-    assert orch._session._state_machine.state == SessionState.CLOSED
+    # Must NOT raise — the session absorbs the overflow and stays alive
+    await orch.execute("hello", ctx, provs, tools, hooks)
+    assert orch._session._state_machine.state == SessionState.IDLE
+
+
+@pytest.mark.asyncio
+async def test_context_length_error_emits_context_warning():
+    """ContextLengthError → agent:context_warning event emitted (not session_end).
+
+    Spec Appendix B: ContextLengthError | Emit warning event, session continues.
+    """
+    orch, ctx, provs, tools, hooks = _make_harness(
+        provider_error=ContextLengthError(
+            "context too long", provider="openai", status_code=413
+        )
+    )
+    await orch.execute("hello", ctx, provs, tools, hooks)
+    event_names = [e[0] for e in hooks._emitted]
+    assert AGENT_CONTEXT_WARNING in event_names
+    # Verify the warning carries the context_length_exceeded flag
+    warning_events = [e for e in hooks._emitted if e[0] == AGENT_CONTEXT_WARNING]
+    assert any(e[1].get("context_length_exceeded") is True for e in warning_events)
 
 
 @pytest.mark.asyncio

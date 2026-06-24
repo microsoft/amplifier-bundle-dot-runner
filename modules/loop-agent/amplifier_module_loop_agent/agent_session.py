@@ -19,7 +19,7 @@ import time
 import uuid
 from typing import Any
 
-from amplifier_core.llm_errors import LLMError
+from amplifier_core.llm_errors import ContextLengthError, LLMError
 from amplifier_core.message_models import (
     ChatRequest,
     ChatResponse,
@@ -303,7 +303,15 @@ class AgentSession:
         round_count = 0
         last_text = ""
 
-        while round_count < self._config.max_tool_rounds_per_input:
+        # Per-provider max_tool_rounds_per_provider is accessible via
+        # config.max_tool_rounds_per_provider but the loop uses the global
+        # max_tool_rounds_per_input as the spec primitive; per-provider
+        # limits are an optional extension (M-4) for future wiring.
+        _max_rounds = self._config.max_tool_rounds_per_input
+
+        # Spec STOP-002: <=0 means unlimited. Use the same guard the spec
+        # pseudocode describes: "IF max > 0 AND round_count >= max: BREAK".
+        while _max_rounds <= 0 or round_count < _max_rounds:
             # Checkpoint 1: Graceful cancellation at top of loop
             if self._is_cancelled():
                 self._state_machine.complete()
@@ -337,13 +345,30 @@ class AgentSession:
             # Call LLM — streaming or non-streaming based on provider capability
             try:
                 call_result = await self._call_provider(request)
+            except ContextLengthError as e:
+                # Spec Appendix B / STOP-005: ContextLengthError is handled
+                # separately from other non-retryable errors.  Emit a context
+                # warning (reusing AGENT_CONTEXT_WARNING) and return to IDLE
+                # so the session stays usable — do NOT close it.
+                await self._emit_provider_error(e)
+                await self._emit_error(str(e))
+                await self._hooks.emit(
+                    AGENT_CONTEXT_WARNING,
+                    {
+                        "message": str(e),
+                        "context_length_exceeded": True,
+                    },
+                )
+                self._state_machine.complete()  # PROCESSING -> IDLE
+                return await self._process_follow_ups(last_text)
             except LLMError as e:
                 await self._emit_provider_error(e)
                 await self._emit_error(str(e))
                 if not e.retryable:
-                    # Non-retryable (auth, context length) → CLOSED
+                    # Other non-retryable errors (e.g. auth) → CLOSED
                     self._state_machine.fatal_error()
                     await self._emit_session_end()
+                    raise
                 raise
             except Exception as e:
                 # Generic unexpected error → CLOSED

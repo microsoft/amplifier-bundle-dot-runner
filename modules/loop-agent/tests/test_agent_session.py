@@ -194,6 +194,46 @@ async def test_max_tool_rounds_returns_last_text():
     assert result == "Working on it"
 
 
+@pytest.mark.asyncio
+async def test_max_tool_rounds_zero_is_unlimited():
+    """max_tool_rounds_per_input=0 means unlimited — loop does NOT cap at zero.
+
+    Spec coding-agent-loop-spec.md:150 — 0 = unlimited.
+    With 0 the session must run until the model stops requesting tools.
+    """
+    # 5 tool rounds, then a text-only response (natural completion)
+    tool_responses = [
+        _tool_response((f"tc{i}", "read_file", {})) for i in range(5)
+    ]
+    orch, ctx, provs, tools, hooks = _make_harness(
+        config={"max_tool_rounds_per_input": 0},
+        responses=tool_responses + [_text_response("done after 5 rounds")],
+    )
+    result = await orch.execute("go", ctx, provs, tools, hooks)
+    assert result == "done after 5 rounds"
+    # All 6 provider calls happened (5 tool rounds + 1 final text response)
+    assert provs["test"].complete.call_count == 6
+
+
+@pytest.mark.asyncio
+async def test_max_tool_rounds_three_caps_at_three():
+    """max_tool_rounds_per_input=3 caps the loop at exactly 3 tool rounds.
+
+    Spec coding-agent-loop-spec.md:231 — IF max > 0 AND round >= max: BREAK.
+    """
+    # Provide more responses than needed — only 3 should be consumed
+    responses = [
+        _tool_response((f"tc{i}", "read_file", {})) for i in range(10)
+    ]
+    orch, ctx, provs, tools, hooks = _make_harness(
+        config={"max_tool_rounds_per_input": 3},
+        responses=responses,
+    )
+    await orch.execute("go", ctx, provs, tools, hooks)
+    # 3 tool rounds = 3 provider calls; the loop must exit before call #4
+    assert provs["test"].complete.call_count == 3
+
+
 # ---------------------------------------------------------------------------
 # Error handling tests
 # ---------------------------------------------------------------------------
