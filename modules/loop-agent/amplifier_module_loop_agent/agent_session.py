@@ -75,6 +75,27 @@ from .turns import (
 logger = logging.getLogger(__name__)
 
 
+# Canonical provider IDs, shared by AgentSession (project-doc / env-context
+# filtering) and AgentOrchestrator (provider-default base-prompt selection).
+KNOWN_PROVIDERS = ("anthropic", "openai", "gemini")
+
+
+def canonical_provider(raw: str | None) -> str | None:
+    """Normalise a raw provider name to a canonical ID (anthropic/openai/gemini).
+
+    Bundle composition may yield provider names like "provider-anthropic" or
+    "Provider-OpenAI"; this returns the canonical ID via case-insensitive
+    substring match, or None when the provider cannot be identified.
+    """
+    if not raw:
+        return None
+    lower = raw.lower()
+    for canonical in KNOWN_PROVIDERS:
+        if canonical in lower:
+            return canonical
+    return None
+
+
 class AgentSession:
     """Manages a single coding agent session with the core agentic loop.
 
@@ -493,7 +514,7 @@ class AgentSession:
     # ------------------------------------------------------------------
 
     # Canonical provider IDs for flexible matching
-    _KNOWN_PROVIDERS = ("anthropic", "openai", "gemini")
+    _KNOWN_PROVIDERS = KNOWN_PROVIDERS
 
     def _resolve_provider_id(self) -> str | None:
         """Resolve raw provider name to a canonical provider ID.
@@ -506,14 +527,7 @@ class AgentSession:
 
         Returns None when the provider cannot be identified.
         """
-        raw = self._provider_name
-        if not raw:
-            return None
-        lower = raw.lower()
-        for canonical in self._KNOWN_PROVIDERS:
-            if canonical in lower:
-                return canonical
-        return None
+        return canonical_provider(self._provider_name)
 
     # ------------------------------------------------------------------
     # System prompt assembly (spec PROV-002: rebuilt every LLM call)
@@ -534,20 +548,31 @@ class AgentSession:
         # Resolve canonical provider ID for doc filtering
         provider_id = self._resolve_provider_id()
 
-        # Layer 1: Base prompt — resolved by AgentOrchestrator.execute() from the bundle's
-        # context._system_prompt_factory (which delivers context.include files per nlspec §6.1:
-        # "Provider-specific base instructions (from ProviderProfile)").
-        # Falls back to system_prompt config; falls through to a stub with a warning when
-        # neither the factory nor the config provides content.
+        # Layer 1: Base prompt — comes ONLY from config.system_prompt (set directly,
+        # or loaded by AgentOrchestrator.execute() from system_prompt_file before the
+        # session is created). loop-agent does NOT consume the bundle's context.include
+        # files for the base — that channel is for ADDITIVE context, not Layer-1
+        # (proven empirically in core 1.6.0; the prior assumption was wrong). The
+        # provider base prompt (nlspec §6.1 ProviderProfile) MUST therefore be supplied
+        # via system_prompt / system_prompt_file in session.orchestrator.config.
+        # See docs/designs/layer-1-profile-owned-system-prompt.md.
         base_prompt = self._config.system_prompt
         if not base_prompt:
-            logger.warning(
-                "Layer-1 base prompt is empty: no context._system_prompt_factory "
-                "contribution and no system_prompt in orchestrator config. "
-                "Falling back to stub. Set context.include in the bundle profile "
-                "or system_prompt in orchestrator config."
+            # Fail-loud: an empty Layer-1 is a configuration error, not a
+            # recoverable runtime condition.  The silent stub ("You are a
+            # coding agent.") was masking misconfiguration and causing
+            # hallucination + over-fragmentation in synthesis.
+            # Fix: add system_prompt_file: context/system-<provider>.md to
+            # session.orchestrator.config in the agent YAML or profile.
+            # See docs/designs/layer-1-profile-owned-system-prompt.md §C.
+            raise RuntimeError(
+                "Layer-1 base prompt is empty: session was created with no "
+                "system_prompt in orchestrator config and no system_prompt_file "
+                "that resolved to content. "
+                "Add system_prompt_file: context/system-<provider>.md to the "
+                "agent's session.orchestrator.config. "
+                "See docs/designs/layer-1-profile-owned-system-prompt.md."
             )
-            base_prompt = "You are a coding agent."
 
         # Layer 2: Environment context
         working_dir = self._config.working_dir or os.getcwd()
