@@ -1,0 +1,73 @@
+bundle:
+  name: dot-runner-amplifier-agent
+  version: 0.1.0
+  description: >
+    OPT-IN engine partial -- wires an example pipeline child agent whose
+    worker is microsoft/amplifier-agent's own Engine (via the
+    loop-amplifier-agent orchestrator adapter) instead of this ecosystem's
+    native loop-agent.
+
+    Deliberately NOT included by this repo's root bundle.md `includes:`.
+    amplifier-agent is a heavy, Python>=3.12-only peer dependency (its own
+    bundle, its own tool roster, its own provider mounting) and must never
+    become a forced dependency of the thin dot-runner engine bundle -- the
+    engine itself stays agent-agnostic. A consuming pipeline bundle opts in
+    explicitly:
+
+        includes:
+          - bundle: dot-runner:behaviors/dot-runner-amplifier-agent
+
+    then adds the agent name below to its own
+    `session.orchestrator.config.profiles` map -- the same map a DOT node's
+    `llm_provider` attribute already routes through today for the
+    loop-agent-backed profiles (see amplifier-bundle-attractor's
+    agents/pipeline-runner.yaml for the established pattern this mirrors).
+
+    loop-agent remains the DEFAULT worker in the attractor layer; this
+    partial is a second, opt-in option, not a replacement.
+
+# Example child agent -- one pipeline node worker backed by
+# microsoft/amplifier-agent's Engine instead of loop-agent.
+#
+# Inline session.orchestrator is REQUIRED here (not optional polish): the
+# spawn capability merges an agent's `session:` key onto the parent config,
+# and loop-pipeline's own recursion guard
+# (amplifier_module_loop_pipeline.backend.AmplifierBackend.run) raises
+# loudly if a node's resolved agent config has no orchestrator.module, or
+# has orchestrator.module == "loop-pipeline" -- either would make the child
+# inherit or re-enter loop-pipeline and recurse infinitely. Declaring
+# `module: loop-amplifier-agent` here is what satisfies that guard.
+#
+# `source:` uses a git+https URL (not a relative path) deliberately: a
+# session.orchestrator source is resolved LATE, against the COMPOSED ROOT's
+# base_path (whatever bundle ultimately includes this partial), not this
+# file's own directory -- unlike tools:/hooks:/providers: sources, which
+# resolve at parse time against this file's directory (see
+# amplifier-bundle-attractor's agents/pipeline-runner.yaml and
+# bundles/attractor-pipeline.yaml, which hit exactly this landmine and fixed
+# it the same way for loop-pipeline/loop-agent).
+agents:
+  dot-runner-agent-amplifier-agent:
+    description: >
+      Pipeline node worker backed by microsoft/amplifier-agent's own Engine
+      (its own bundle, its own tools, its own provider mounting) rather than
+      loop-agent. Useful for nodes that specifically want amplifier-agent's
+      tool roster / skills / sub-delegation instead of this ecosystem's
+      native coding-agent loop.
+    session:
+      orchestrator:
+        module: loop-amplifier-agent
+        source: git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-amplifier-agent
+        config:
+          # Forwarded, best-effort, into amplifier-agent's own Engine boot.
+          # See amplifier_module_loop_amplifier_agent's module docstring
+          # (`_run_turn`) for exactly where each key lands:
+          #   llm_provider      -> Engine provider injection (inject_provider)
+          #   reasoning_effort  -> same inject_provider call, effort_override
+          #   max_turns         -> best-effort forward into the session
+          #                        orchestrator's own config (loop-streaming
+          #                        by default)
+          #   user_instructions -> appended to the turn prompt (Layer-5)
+          llm_provider: anthropic
+          reasoning_effort: medium
+          max_turns: 8

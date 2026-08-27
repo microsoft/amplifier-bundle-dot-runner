@@ -1,0 +1,72 @@
+[project]
+name = "amplifier-module-loop-amplifier-agent"
+version = "0.1.0"
+description = "Adapter orchestrator: hosts microsoft/amplifier-agent's Engine as a dot-pipeline node's worker"
+license = "MIT"
+# amplifier-agent (the peer library this adapter hosts) declares
+# `requires-python = ">=3.12"` (verified against its own pyproject.toml on
+# 2026-08-26, both a pre-existing dev clone and a fresh `@main` clone,
+# commit 530bb7d). This module cannot support a lower floor than the
+# library it wraps, so it deliberately deviates from this repo's usual
+# `>=3.11` floor. See .github/workflows/ci.yml's `unit-tests` matrix
+# `exclude:` entry and this module's README ("Python version note") for
+# the CI-visible consequence: this module's job runs on py3.12/3.13 only,
+# not the repo's usual py3.11/3.13 pair.
+requires-python = ">=3.12"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
+dependencies = [
+    "amplifier-core>=0.1.0",
+    # The peer library this adapter hosts. Direct git reference (not a bare
+    # PyPI name): amplifier-agent is not published to PyPI. Floats on @main
+    # deliberately, mirroring every other `@main` git dependency in this
+    # repo's modules (see pipeline-runner/pyproject.toml's own comment on
+    # why a SHA pin here would collide with other consumers' `@main` refs).
+    "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main",
+    # Local sibling module: this adapter mounts the REAL ReportOutcomeTool
+    # directly onto the per-turn amplifier-agent session coordinator (the
+    # probe-proven mechanism -- see amplifier_module_loop_amplifier_agent's
+    # module docstring). Path-sourced below, mirroring how
+    # modules/pipeline-runner sources this exact same sibling for its own
+    # producer+verdict+consumer transport test.
+    "amplifier-module-tool-report-outcome",
+]
+
+[project.entry-points."amplifier.modules"]
+loop-amplifier-agent = "amplifier_module_loop_amplifier_agent:mount"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+amplifier-module-tool-report-outcome = { path = "../tool-report-outcome", editable = true }
+# Test-only, same-repo path source (dev dependency-group member below). The
+# integration test (tests/test_spawn_report_outcome_transport.py) drives the
+# REAL consumer (loop-pipeline's AmplifierBackend) against this module's REAL
+# producer, mirroring pipeline-runner's own transport test verbatim for this
+# adapter. Editable so the test always runs the working tree's modules.
+amplifier-module-loop-pipeline = { path = "../loop-pipeline", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["amplifier_module_loop_amplifier_agent"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = [
+    "amplifier-core",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    "amplifier-module-loop-pipeline",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+asyncio_mode = "strict"

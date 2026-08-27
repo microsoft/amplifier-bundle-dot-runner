@@ -46,6 +46,23 @@ jobs:
             extra_args: ""
           - name: unified-llm-client
             extra_args: ""
+          - name: loop-amplifier-agent
+            extra_args: ""
+        exclude:
+          # loop-amplifier-agent's own pyproject.toml declares
+          # `requires-python = ">=3.12"` -- one floor higher than this repo's
+          # usual `>=3.11` -- because it hard-depends on
+          # `amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main`,
+          # which itself declares `requires-python = ">=3.12"` (verified
+          # against its pyproject.toml). `uv sync` on py3.11 would fail to
+          # resolve this module's dependency tree before any test runs, so
+          # the py3.11 cell is excluded here rather than left to fail red.
+          # See modules/loop-amplifier-agent/README.md's "Python version
+          # note".
+          - python-version: "3.11"
+            module:
+              name: loop-amplifier-agent
+              extra_args: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -191,7 +208,11 @@ jobs:
       - name: Run validate-bundle-repo recipe against the repo root
         run: |
           source .venv-validate/bin/activate
-          uv run --python .venv-validate --with amplifier \
+          # The `amplifier` CLI is published from microsoft/amplifier-app-cli
+          # (package name amplifier-app-cli, console script `amplifier`) --
+          # it is NOT on PyPI, so --with needs the git URL.
+          uv run --python .venv-validate \
+            --with "git+https://github.com/microsoft/amplifier-app-cli@main" \
             amplifier tool invoke recipes \
             operation=execute \
             recipe_path=foundation:recipes/validate-bundle-repo.yaml \
