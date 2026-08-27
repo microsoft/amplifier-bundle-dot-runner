@@ -24,14 +24,43 @@ these fakes stand in for.
 
 from __future__ import annotations
 
+import enum
 from types import SimpleNamespace
 from typing import Any, Self
+
+
+class FakeHookRegistry:
+    """Mirrors amplifier_core's Rust-backed HookRegistry seam this module uses.
+
+    Real contract: ``amplifier_core/_engine.pyi``'s
+    ``set_default_fields(self, **kwargs: Any) -> None`` -- the real
+    AmplifierSession (``amplifier_core/session.py``) and the vendored
+    ``make_turn_handler`` both call this to stamp ``session_id``/``turn_id``
+    (etc.) onto every subsequent event the coordinator's hooks emit. This
+    fake just records every call so a test can assert the right fields were
+    stamped (gap 5).
+    """
+
+    def __init__(self) -> None:
+        self.default_fields_calls: list[dict[str, Any]] = []
+
+    def set_default_fields(self, **kwargs: Any) -> None:
+        self.default_fields_calls.append(kwargs)
 
 
 class FakeSessionCoordinator:
     def __init__(self) -> None:
         self.capabilities: dict[str, Any] = {}
         self.mounted_tools: dict[str, Any] = {}
+        # Mirrors the coordinator's ``.config`` attribute -- the live session
+        # mount plan. Gap 4's ``_resolve_parent_provider_preference`` reads
+        # this (a REAL seam: ``ModuleCoordinator.config`` is the same dict
+        # ``AmplifierSession.__init__`` stores as ``self.config``). Empty by
+        # default; tests that exercise provider_preferences assign to it
+        # directly before calling ``execute()``.
+        self.config: dict[str, Any] = {}
+        # Mirrors ``coordinator.hooks`` (gap 5).
+        self.hooks = FakeHookRegistry()
 
     def register_capability(self, name: str, fn: Any) -> None:
         self.capabilities[name] = fn
@@ -57,6 +86,15 @@ class FakeSession:
         self._outcome_to_set = outcome_to_set
         self._raise_on_execute = raise_on_execute
         self.prompt_seen: str | None = None
+        # Set during execute() if an "approval.request" capability is
+        # registered (gap 3) -- mirrors a real child turn that hits at
+        # least one approval-gated tool call. Faithful to the real seam:
+        # amplifier-agent's own hooks-approval module calls exactly this
+        # capability the same way, with a real ``ApprovalRequest``-shaped
+        # payload; the exact payload shape doesn't matter here because
+        # every code path this module wires (an ``ApprovalOverride`` of
+        # YES or NO) decides before ever inspecting the request.
+        self.last_approval_response: dict[str, Any] | None = None
 
     async def __aenter__(self) -> Self:
         return self
@@ -68,6 +106,11 @@ class FakeSession:
         self.prompt_seen = prompt
         if self._raise_on_execute is not None:
             raise self._raise_on_execute
+        approval_fn = self.coordinator.capabilities.get("approval.request")
+        if approval_fn is not None:
+            self.last_approval_response = await approval_fn(
+                {"kind": "tool_call", "payload": {"toolName": "fake_tool"}}
+            )
         tool = self.coordinator.mounted_tools.get("report_outcome")
         if tool is not None and self._outcome_to_set is not None:
             tool.last_outcome = self._outcome_to_set
@@ -156,9 +199,50 @@ class FakeEngine:
         return {}
 
 
+class FakeApprovalOverride(enum.Enum):
+    """Mirrors amplifier_agent_lib.protocol_points.defaults_cli.ApprovalOverride."""
+
+    YES = "yes"
+    NO = "no"
+
+
 class FakeCliApprovalSystem:
-    def __init__(self, mode: str = "yes") -> None:
+    """Mirrors CliApprovalSystem's ``request()`` contract for the
+    override-only branches this module actually drives (gap 3):
+    override YES -> accept, override NO (or anything else) -> decline.
+    The real class's is_tty/prompt_fn fallback path is never exercised by
+    this adapter (it always passes an explicit override), so it is not
+    faked here.
+    """
+
+    def __init__(self, *, mode: str | None = None, override: Any = None) -> None:
         self.mode = mode
+        self._override = override
+
+    async def request(self, req: Any) -> dict[str, str]:
+        if self._override is FakeApprovalOverride.YES:
+            return {"action": "accept"}
+        return {"action": "decline"}
+
+
+class FakeWireApprovalProvider:
+    """Mirrors amplifier_agent_lib.wire_approval_provider.WireApprovalProvider's
+    forwarding contract: ``request_approval(request)`` calls the injected
+    ``approval_request_fn`` (here, the FakeCliApprovalSystem's ``request``
+    bound method -- exactly ``ctx.approval.request`` in the real handler)
+    and returns its result. The real class also translates
+    ApprovalRequest<->wire-shape around that call; this module's own
+    approval_override branches always short-circuit BEFORE the real
+    CliApprovalSystem.request() ever inspects the request shape (see that
+    class's real source), so the translation step is faithfully omitted
+    here rather than faked for its own sake.
+    """
+
+    def __init__(self, *, approval_request_fn: Any) -> None:
+        self._approval_request_fn = approval_request_fn
+
+    async def request_approval(self, request: Any) -> dict[str, Any]:
+        return await self._approval_request_fn(request)
 
 
 class FakeCliDisplaySystem:
@@ -177,6 +261,9 @@ def make_fake_deps(
     raise_on_execute: Exception | None = None,
     inject_provider_calls: list[tuple[Any, ...]] | None = None,
     shutdown_raises: Exception | None = None,
+    resolved_workspace: str = "fake-default-workspace",
+    agents_mount_plan: dict[str, Any] | None = None,
+    spawn_sub_session_result: dict[str, Any] | None = None,
 ) -> tuple[SimpleNamespace, dict[str, Any]]:
     """Build a fake ``_load_dependencies()``-shaped namespace + capture dict.
 
@@ -186,13 +273,31 @@ def make_fake_deps(
       * ``"session"``    -> the FakeSession instance actually created
       * ``"tool"``       -> the FakeReportOutcomeTool instance actually mounted
       * ``"inject_provider_calls"`` -> list of (provider_name, kwargs) tuples
+      * ``"prepare_bundle_for_session_calls"`` -> list of
+        ``{"host_config": ..., "workspace": ...}`` dicts (gap 1)
+      * ``"spawn_sub_session_calls"`` -> list of kwargs dicts every
+        ``session.spawn`` invocation actually forwarded (gap 2)
 
     ``shutdown_raises``, if given, makes the constructed ``FakeEngine``'s
     ``shutdown()`` raise that exception (after still recording
     ``shutdown_called = True``) -- for proving a shutdown failure never
     masks whatever ``submit_turn`` already raised/returned.
+
+    ``resolved_workspace`` is what the fake ``resolve_workspace`` returns
+    when no ``argv_workspace`` is given (mirrors the real function's
+    cwd-derived fallback tier, without replicating its slugify logic).
+
+    ``agents_mount_plan``, if given, seeds ``prepared.mount_plan["agents"]``
+    so gap 2's cold-path ``agent_configs`` hydration has something to hydrate.
+
+    ``spawn_sub_session_result``, if given, is what the fake
+    ``spawn_sub_session`` returns (defaults to a plausible delegate result).
     """
-    captured: dict[str, Any] = {"inject_provider_calls": []}
+    captured: dict[str, Any] = {
+        "inject_provider_calls": [],
+        "prepare_bundle_for_session_calls": [],
+        "spawn_sub_session_calls": [],
+    }
 
     session = FakeSession(
         reply_text=reply_text,
@@ -200,6 +305,8 @@ def make_fake_deps(
         raise_on_execute=raise_on_execute,
     )
     prepared = FakePreparedBundle(session)
+    if agents_mount_plan is not None:
+        prepared.mount_plan["agents"] = agents_mount_plan
     captured["session"] = session
     captured["prepared"] = prepared
 
@@ -210,6 +317,39 @@ def make_fake_deps(
         prepared_arg: Any, provider_name: str, **kwargs: Any
     ) -> None:
         captured["inject_provider_calls"].append((provider_name, kwargs))
+
+    def fake_prepare_bundle_for_session(
+        prepared_arg: Any, *, host_config: Any, workspace: str
+    ) -> None:
+        captured["prepare_bundle_for_session_calls"].append(
+            {"host_config": host_config, "workspace": workspace}
+        )
+        prepared_arg.mount_plan["_prepared_bundle_applied"] = {
+            "host_config": host_config,
+            "workspace": workspace,
+        }
+
+    def fake_resolve_workspace(
+        *, argv_workspace: str | None, env: Any, cwd: Any
+    ) -> str:
+        if argv_workspace:
+            return argv_workspace
+        return resolved_workspace
+
+    def fake_hydrate_agent_overlay(path: Any) -> dict[str, Any]:
+        return {"instruction": f"fake-overlay:{path}"}
+
+    async def fake_spawn_sub_session(**kwargs: Any) -> dict[str, Any]:
+        captured["spawn_sub_session_calls"].append(kwargs)
+        if spawn_sub_session_result is not None:
+            return spawn_sub_session_result
+        return {
+            "output": "child delegate done",
+            "session_id": "fake-child-session-1",
+            "status": "success",
+            "turn_count": 1,
+            "metadata": {},
+        }
 
     real_report_outcome_tool_cls = FakeReportOutcomeTool
 
@@ -240,10 +380,16 @@ def make_fake_deps(
         Engine=engine_factory,
         PROTOCOL_VERSION="fake-protocol-1",
         server_default_capabilities=dict,
+        ApprovalOverride=FakeApprovalOverride,
         CliApprovalSystem=FakeCliApprovalSystem,
         CliDisplaySystem=FakeCliDisplaySystem,
         inject_provider=fake_inject_provider,
         ReportOutcomeTool=tool_factory,
+        prepare_bundle_for_session=fake_prepare_bundle_for_session,
+        resolve_workspace=fake_resolve_workspace,
+        hydrate_agent_overlay=fake_hydrate_agent_overlay,
+        spawn_sub_session=fake_spawn_sub_session,
+        WireApprovalProvider=FakeWireApprovalProvider,
     )
     return deps, captured
 

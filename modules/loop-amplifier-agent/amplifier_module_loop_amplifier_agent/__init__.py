@@ -56,6 +56,7 @@ __amplifier_module_type__ = "orchestrator"
 
 import logging
 import os
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -76,8 +77,18 @@ VALID_STATUSES = frozenset({"success", "fail", "partial_success", "retry"})
 
 #: amplifier-agent's own baked-in default (bundle.md: ``default_provider:
 #: anthropic``), used when the pipeline node's orchestrator_config carries no
-#: ``llm_provider`` override.
+#: ``llm_provider`` override and no parent ``provider_preferences`` resolve.
 DEFAULT_PROVIDER = "anthropic"
+
+#: v2 gap 3 (approvals): safe-by-default headless approval policy. A
+#: pipeline node has no human in the loop, so v1's hardcoded auto-accept
+#: stub is the dangerous default -- "deny" fails closed: every
+#: approval-gated action in the child turn is declined unless the pipeline
+#: author explicitly opts in via ``orchestrator_config.approval_policy:
+#: "accept"``. See ``_run_turn``'s docstring and the README's "Approvals"
+#: section for the full rationale.
+DEFAULT_APPROVAL_POLICY = "deny"
+VALID_APPROVAL_POLICIES = frozenset({"accept", "deny"})
 
 #: Appended to every prompt sent to the amplifier-agent turn so the child
 #: knows to leave an explicit verdict behind (EXTENSIONS.md 35 transport).
@@ -121,16 +132,21 @@ def _load_dependencies() -> SimpleNamespace:
     """
     from amplifier_agent_cli.provider_sources import inject_provider
     from amplifier_agent_lib import __version__ as aaa_version
+    from amplifier_agent_lib._runtime import prepare_bundle_for_session
     from amplifier_agent_lib.bundle.cache import load_and_prepare_cached
     from amplifier_agent_lib.engine import Engine
+    from amplifier_agent_lib.persistence import resolve_workspace
     from amplifier_agent_lib.protocol import (
         PROTOCOL_VERSION,
         server_default_capabilities,
     )
     from amplifier_agent_lib.protocol_points.defaults_cli import (
+        ApprovalOverride,
         CliApprovalSystem,
         CliDisplaySystem,
     )
+    from amplifier_agent_lib.spawn import hydrate_agent_overlay, spawn_sub_session
+    from amplifier_agent_lib.wire_approval_provider import WireApprovalProvider
     from amplifier_module_tool_report_outcome import ReportOutcomeTool
 
     return SimpleNamespace(
@@ -139,10 +155,17 @@ def _load_dependencies() -> SimpleNamespace:
         Engine=Engine,
         PROTOCOL_VERSION=PROTOCOL_VERSION,
         server_default_capabilities=server_default_capabilities,
+        ApprovalOverride=ApprovalOverride,
         CliApprovalSystem=CliApprovalSystem,
         CliDisplaySystem=CliDisplaySystem,
         inject_provider=inject_provider,
         ReportOutcomeTool=ReportOutcomeTool,
+        # v2 capability closures (see README "Capability gaps" section):
+        prepare_bundle_for_session=prepare_bundle_for_session,  # gap 1
+        resolve_workspace=resolve_workspace,  # gap 1
+        hydrate_agent_overlay=hydrate_agent_overlay,  # gap 2 (cold-path agent_configs)
+        spawn_sub_session=spawn_sub_session,  # gap 2
+        WireApprovalProvider=WireApprovalProvider,  # gap 3
     )
 
 
@@ -289,8 +312,26 @@ class AmplifierAgentOrchestrator:
             ``inject_provider`` a no-op -- "don't clobber existing" -- and
             mounting all 9 can trigger interactive OAuth for
             openai-chatgpt), then ``inject_provider(prepared, provider,
-            effort_override=reasoning_effort)`` mounts exactly one real,
-            credentialed provider module.
+            effort_override=reasoning_effort, model_override=...)`` mounts
+            exactly one real, credentialed provider module.
+
+            **v2 precedence vs. parent ``provider_preferences`` (gap 4):**
+            an explicit ``llm_provider`` always wins PROVIDER SELECTION.
+            ``backend.py`` (loop-pipeline's spawn caller) says so itself:
+            "Provider SELECTION ... flows via orchestrator_config
+            ['llm_provider']" while ``provider_preferences`` exists purely
+            to carry the resolved concrete MODEL, which "has no other
+            channel." So: if ``llm_provider`` is set, it selects the
+            provider, and the parent's preferred model is honored ONLY when
+            it names that SAME provider (a model pinned for a different
+            provider would be nonsensical to force onto an explicitly
+            chosen one, so it is dropped rather than silently applied to
+            the wrong provider). If ``llm_provider`` is absent, the parent
+            preference's own provider+model wins outright. See
+            ``_resolve_parent_provider_preference`` for how the preference
+            is recovered (there is no ``provider_preferences`` parameter on
+            ``Orchestrator.execute()`` at all -- see that method's
+            docstring for the real extraction seam).
           * ``reasoning_effort`` -> forwarded to that same
             ``inject_provider`` call as ``effort_override`` (see
             ``amplifier_agent_cli.provider_sources.build_provider_entry``:
@@ -308,12 +349,35 @@ class AmplifierAgentOrchestrator:
           * ``user_instructions`` -> appended to the prompt text handed to
             ``session.execute()`` (Layer-5 override), the same place the
             report_outcome nudge is appended.
+          * ``workspace`` (v2, gap 1) -> the CLI's ``--workspace`` argv-flag
+            analogue, forwarded to ``amplifier_agent_lib.persistence.
+            resolve_workspace`` (argv > ``AMPLIFIER_AGENT_WORKSPACE`` env >
+            cwd-derived slug, unchanged precedence). Always resolved (even
+            when absent) so the child turn gets a real, isolated
+            context-intelligence workspace bucket instead of amplifier-agent's
+            bare baked-in bundle -- see ``prepare_bundle_for_session`` below.
+          * ``host_config`` (v2, gap 1, optional/advanced) -> forwarded
+            verbatim as ``prepare_bundle_for_session``'s ``host_config``
+            (the CLI's ``--config`` file analogue). No natural CLI-config-file
+            source exists for an embedded pipeline node, so this defaults to
+            ``None`` (no-op merge_config overlay); a pipeline author may
+            opt in with a host_config-shaped dict for parity with the CLI.
+          * ``approval_policy`` (v2, gap 3) -> ``"accept"`` or ``"deny"``
+            (default ``"deny"``), governs the ``ApprovalOverride`` handed to
+            ``CliApprovalSystem`` -- see the class-level
+            ``DEFAULT_APPROVAL_POLICY`` docstring for the safety rationale.
+
+        v2 (gap 1): calls the REAL vendored ``prepare_bundle_for_session``
+        (skills/modes ``BUNDLE_DIR`` injection, host-config ``merge_config``
+        overlay, hook-context-intelligence workspace seed) instead of
+        reimplementing its three transforms -- judged fully applicable to an
+        embedded node worker (see docstring above for the CLI-only bits that
+        get no-op defaults here, not silently dropped).
         """
         deps = _load_dependencies()
 
         cfg = self._config
         max_turns = cfg.get("max_turns")
-        llm_provider = cfg.get("llm_provider") or DEFAULT_PROVIDER
         reasoning_effort = cfg.get("reasoning_effort")
         user_instructions = cfg.get("user_instructions")
 
@@ -321,9 +385,50 @@ class AmplifierAgentOrchestrator:
 
         prepared = await deps.load_and_prepare_cached(aaa_version=deps.aaa_version)
 
+        # --- gap 1: prepare_bundle_for_session ------------------------------
+        resolved_workspace = deps.resolve_workspace(
+            argv_workspace=cfg.get("workspace"),
+            env=os.environ,
+            cwd=working_dir,
+        )
+        deps.prepare_bundle_for_session(
+            prepared,
+            host_config=cfg.get("host_config"),
+            workspace=resolved_workspace,
+        )
+
+        # Pre-hydrate agent overlays (gap 2 cold path) once per turn so
+        # session.spawn's delegate lookups need no per-call I/O. Mirrors
+        # make_turn_handler's identical cold-path hydration.
+        agent_configs: dict[str, dict[str, Any]] = {
+            name: deps.hydrate_agent_overlay(Path(entry["source_path"]))
+            for name, entry in (prepared.mount_plan.get("agents") or {}).items()
+            if isinstance(entry, dict) and "source_path" in entry
+        }
+
+        # --- gap 4: provider_preferences vs. llm_provider precedence --------
+        llm_provider_cfg = cfg.get("llm_provider")
+        parent_preference = self._resolve_parent_provider_preference()
+        if llm_provider_cfg:
+            effective_provider = llm_provider_cfg
+            model_override = (
+                parent_preference[1]
+                if parent_preference is not None
+                and parent_preference[0] == effective_provider
+                else None
+            )
+        elif parent_preference is not None:
+            effective_provider, model_override = parent_preference
+        else:
+            effective_provider = DEFAULT_PROVIDER
+            model_override = None
+
         # llm_provider -> Engine's provider injection (probe-proven seam).
         prepared.mount_plan["providers"] = []
-        deps.inject_provider(prepared, llm_provider, effort_override=reasoning_effort)
+        inject_kwargs: dict[str, Any] = {"effort_override": reasoning_effort}
+        if model_override is not None:
+            inject_kwargs["model_override"] = model_override
+        deps.inject_provider(prepared, effective_provider, **inject_kwargs)
 
         # max_turns -> best-effort forward into the session orchestrator's
         # own config (see docstring above).
@@ -332,21 +437,81 @@ class AmplifierAgentOrchestrator:
             orch_plan = session_plan.setdefault("orchestrator", {})
             orch_plan.setdefault("config", {})["max_turns"] = max_turns
 
+        # --- gap 3: approval policy (safe-by-default) -----------------------
+        approval_policy = cfg.get("approval_policy", DEFAULT_APPROVAL_POLICY)
+        if approval_policy not in VALID_APPROVAL_POLICIES:
+            logger.warning(
+                "loop-amplifier-agent: unknown approval_policy=%r (expected "
+                "one of %s); failing closed to %r.",
+                approval_policy,
+                sorted(VALID_APPROVAL_POLICIES),
+                DEFAULT_APPROVAL_POLICY,
+            )
+            approval_policy = DEFAULT_APPROVAL_POLICY
+        if approval_policy == "accept":
+            # LOUD: auto-accepting every approval-gated action with no human
+            # in the loop is the dangerous choice -- an operator who opts
+            # into it should see it in the logs every time.
+            logger.warning(
+                "loop-amplifier-agent: approval_policy='accept' -- every "
+                "approval-gated action in this child turn will be "
+                "AUTO-APPROVED with no human in the loop."
+            )
+        else:
+            logger.info(
+                "loop-amplifier-agent: approval_policy='deny' -- "
+                "approval-gated actions in this child turn will be declined "
+                "unless approval_policy: 'accept' is set."
+            )
+        approval_override = (
+            deps.ApprovalOverride.YES
+            if approval_policy == "accept"
+            else deps.ApprovalOverride.NO
+        )
+
         captured: dict[str, Any] = {}
 
         async def handler(ctx: Any) -> str:
+            session_id = ctx.session_id or None
+            # v2 (gap 5): mint a fresh id for a one-shot run (this adapter
+            # always submits with no incoming session id -- see the
+            # engine.submit_turn call below) so hooks.set_default_fields has
+            # a non-empty session_id to stamp. Mirrors make_turn_handler's
+            # identical ephemeral-id fallback and its rationale: the
+            # context-intelligence LoggingHandler drops any event whose
+            # session_id default field is empty.
+            engine_session_id = session_id or f"ephemeral-{uuid.uuid4().hex}"
+
             session = await prepared.create_session(
-                session_id=ctx.session_id or None,
+                session_id=engine_session_id,
                 session_cwd=working_dir,
                 is_resumed=False,
             )
+
+            # gap 1 (D5-equivalent): write the resolved workspace identity
+            # onto the child's own coordinator config -- belt-and-suspenders
+            # on top of prepare_bundle_for_session's hook-config pre-seed,
+            # mirroring make_turn_handler exactly.
+            session.coordinator.config["workspace"] = resolved_workspace
+            session.coordinator.config["project_slug"] = resolved_workspace
+
+            # gap 5: stamp session_id/turn_id as default event fields so
+            # every tool/llm/execution event this turn emits is attributed.
+            session.coordinator.hooks.set_default_fields(
+                session_id=engine_session_id,
+                turn_id=ctx.turn_id,
+            )
+
             session.coordinator.register_capability("display.emit", ctx.display.emit)
 
-            async def _approval_request(_req: Any) -> dict[str, str]:
-                return {"action": "accept"}
-
+            # gap 3: forward the REAL approval decision -- ctx.approval is
+            # the Engine's own ApprovalSystem protocol point (constructed
+            # below from approval_override), never a hardcoded stub.
+            wire_approval_provider = deps.WireApprovalProvider(
+                approval_request_fn=ctx.approval.request
+            )
             session.coordinator.register_capability(
-                "approval.request", _approval_request
+                "approval.request", wire_approval_provider.request_approval
             )
 
             # THE MECHANISM (see module docstring + probe_q1_q2.py): mount
@@ -356,11 +521,24 @@ class AmplifierAgentOrchestrator:
             await session.coordinator.mount("tools", tool, name=tool.name)
             captured["tool"] = tool
 
+            # gap 2: register session.spawn so the child's own `delegate`
+            # tool can spawn grandchild sessions. Mirrors make_turn_handler's
+            # closure pattern exactly (parent_session is always THIS turn's
+            # session, agent_configs defaults to the cold-path hydration).
+            async def _spawn_fn(**kw: Any) -> dict[str, Any]:
+                kw.setdefault("agent_configs", agent_configs)
+                kw["parent_session"] = session
+                return await deps.spawn_sub_session(**kw)
+
+            session.coordinator.register_capability("session.spawn", _spawn_fn)
+
             async with session:
                 return await session.execute(ctx.prompt)
 
         display = deps.CliDisplaySystem(stream=_NullStream(), verbosity="quiet")
-        approval = deps.CliApprovalSystem(mode="yes")
+        approval = deps.CliApprovalSystem(
+            mode=approval_policy, override=approval_override
+        )
         engine = deps.Engine(
             turn_handler=handler,
             protocol_points={"approval": approval, "display": display},
@@ -411,6 +589,64 @@ class AmplifierAgentOrchestrator:
         if isinstance(cap_val, str) and cap_val:
             return Path(cap_val)
         return Path(os.getcwd())
+
+    def _resolve_parent_provider_preference(self) -> tuple[str, str] | None:
+        """Recover the parent's resolved ``provider_preferences`` (gap 4), if any.
+
+        ``provider_preferences`` never reaches ``execute()`` as its own
+        parameter -- the kernel's orchestrator call boundary
+        (``amplifier_core._session_exec.run_orchestrator``) threads through
+        exactly ``prompt`` / ``context`` / ``providers`` / ``tools`` /
+        ``hooks`` / ``coordinator``, nothing else. Instead, the generic
+        foundation spawn path
+        (``amplifier_foundation.bundle._prepared.PreparedBundle.spawn``)
+        resolves ``provider_preferences`` BEFORE session creation, via
+        ``apply_provider_preferences_with_resolution`` ->
+        ``_apply_single_override``, which mutates the CHILD SESSION's OWN
+        mount-plan ``providers`` list in place: it promotes the matching
+        provider entry to ``config["priority"] = 0`` and stamps
+        ``config["default_model"]`` with the resolved model. Since this
+        orchestrator IS that child session's mounted orchestrator,
+        ``self._coordinator.config["providers"]`` is exactly that mutated
+        list -- read it back here.
+
+        A plain, non-preference-promoted provider entry (declared straight
+        in a bundle.md, or produced by this module's OWN ``inject_provider``
+        calls) never carries ``default_model`` unless a caller explicitly
+        set one (see ``build_provider_entry``'s docstring: "omitted
+        entirely so the provider's own ``get_info().defaults`` wins") --
+        so a non-empty ``config["default_model"]`` is the reliable signal
+        that THIS entry was promoted by a parent preference, independent of
+        priority-ordering ties.
+
+        Returns ``(provider_short_name, model)`` for the first matching
+        entry (``module`` with a leading ``"provider-"`` stripped, matching
+        ``amplifier_agent_cli.provider_sources.PROVIDER_CATALOG``'s naming
+        convention), or ``None`` when no provider_preferences were supplied,
+        none matched, or ``self._coordinator`` carries no readable config.
+        """
+        session_config = getattr(self._coordinator, "config", None)
+        if not isinstance(session_config, dict):
+            return None
+        provider_entries = session_config.get("providers")
+        if not isinstance(provider_entries, list):
+            return None
+        for entry in provider_entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_config = entry.get("config")
+            if not isinstance(entry_config, dict):
+                continue
+            model = entry_config.get("default_model")
+            if not (isinstance(model, str) and model):
+                continue
+            module = entry.get("module")
+            provider_name = module
+            if isinstance(module, str) and module.startswith("provider-"):
+                provider_name = module[len("provider-") :]
+            if isinstance(provider_name, str) and provider_name:
+                return provider_name, model
+        return None
 
     @staticmethod
     def _build_prompt(prompt: str, user_instructions: str | None) -> str:

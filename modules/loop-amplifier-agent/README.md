@@ -128,41 +128,98 @@ An empty final reply is not itself a failure: if the agent calls
 turn still succeeds (artifact over prose -- see
 `test_empty_reply_with_verdict_still_succeeds`).
 
-## Capability gaps vs the vendored CLI handler (v1)
+## Capability gaps vs the vendored CLI handler (v2)
 
-This module's custom `TurnHandler` (`_run_turn`'s inner `handler`) deliberately
-does **less** than the vendored `amplifier_agent_lib._runtime.make_turn_handler`
-it is modeled on (see "The mechanism" above). These are disclosed v1 scope
-cuts, not oversights, and each is plausible fast-follow scope -- they are
-**not** silently fixed in this PR:
+v1 disclosed five deliberate scope cuts vs. the vendored
+`amplifier_agent_lib._runtime.make_turn_handler` this module's custom
+`TurnHandler` is modeled on (see "The mechanism" above). v2 closes all five,
+each judged for what makes sense on an EMBEDDED node worker rather than an
+interactive CLI (there is no human, no TTY, no `--config` file, no `--workspace`
+flag):
 
-- **No `prepare_bundle_for_session` call.** The vendored handler runs this
-  once per session (skills/modes `BUNDLE_DIR` injection, the host-config
-  `merge_config` overlay, and the hook-context-intelligence workspace seed).
-  This module skips it entirely, so a child turn gets amplifier-agent's bare
-  baked-in bundle: no host-config merge, no workspace-seeded skills/modes.
-- **`session.spawn` is never registered.** The vendored handler registers
-  `session.spawn` on the coordinator so the child's own `delegate` tool can
-  spawn grandchild sessions. This module never registers that capability, so
-  a `delegate` tool call inside the child session would break.
-- **Approvals are hardcoded-accept, not forwarded.** The vendored handler
-  wires `WireApprovalProvider(approval_request_fn=ctx.approval.request)` onto
-  `approval.request`, forwarding the real caller's approval decision. This
-  module registers a stub that always returns `{"action": "accept"}`, so
-  every approval-gated action in the child turn is silently auto-approved
-  regardless of what the parent's approval system would have decided.
-- **`provider_preferences` is silently ignored.** Only the `llm_provider`
-  (+ `reasoning_effort`) `orchestrator_config` keys are read; a resolved
-  concrete `model` arriving via the parent's `provider_preferences` (as
-  `loop-pipeline`'s `backend.py` sends for model-pinned nodes) is dropped, so
-  a node that pins a specific model still only gets the provider's default
-  model.
-- **No `hooks.set_default_fields` call.** The vendored handler stamps
-  `session_id`/`turn_id` onto the coordinator's default event fields so every
-  tool/llm/execution event is attributed. This module never calls it, and
-  the context-intelligence `LoggingHandler` drops any event whose
-  `session_id` is empty -- so child-turn telemetry beyond session-lifecycle
-  events is silently dropped.
+- **`prepare_bundle_for_session` -- closed.** `_run_turn` now calls the REAL
+  vendored `amplifier_agent_lib._runtime.prepare_bundle_for_session` (skills/
+  modes `BUNDLE_DIR` injection, the host-config `merge_config` overlay, and
+  the hook-context-intelligence workspace seed) instead of reimplementing it.
+  **Judgment call:** the CLI's `--workspace` flag has no argv equivalent here,
+  so `orchestrator_config.workspace` fills that role, resolved through the
+  SAME `amplifier_agent_lib.persistence.resolve_workspace` (argv > env >
+  cwd-derived slug) and always applied -- a child turn gets a real, isolated
+  context-intelligence workspace bucket by default, not amplifier-agent's bare
+  baked-in bundle. The CLI's `--config` file has no natural analogue for a
+  pipeline node, so `host_config` defaults to `None` (no-op overlay) unless a
+  pipeline author opts in via `orchestrator_config.host_config` (a
+  host_config-shaped dict, forwarded verbatim). No remainder: closing this one
+  call closes the whole gap for the embedded case. See `_run_turn`'s docstring
+  and `tests/test_v2_capabilities.py`'s gap-1 tests.
+- **`session.spawn` -- closed.** Registered on the child session's coordinator
+  exactly like the vendored handler (same closure pattern: `agent_configs`
+  defaults from the cold-path hydration, `parent_session` pinned to the
+  current turn's session), so the child's own `delegate` tool can spawn
+  grandchild sessions. See `test_session_spawn_registered_and_forwards_to_delegate`
+  (RED-proof: against v1, `session.coordinator.capabilities.get("session.spawn")`
+  was always `None`).
+- **Approvals -- closed, safe-by-default.** `approval.request` now wires the
+  REAL `WireApprovalProvider(approval_request_fn=ctx.approval.request)` seam,
+  forwarding the actual decision instead of a hardcoded stub. **The decision
+  itself is governed by a new `approval_policy: "accept" | "deny"` config key,
+  defaulting to `"deny"`.** A headless pipeline node has no human to ask, so
+  v1's auto-accept was the dangerous default; `"deny"` fails closed (every
+  approval-gated action in the child turn is declined unless a pipeline
+  author explicitly opts in), and `"accept"` logs a loud `WARNING` on every
+  turn it's active so the dangerous choice is never silent. An unrecognized
+  `approval_policy` value also fails closed to `"deny"` with a logged warning
+  -- never fails open. See `test_approval_defaults_to_deny` (RED-proof: v1's
+  stub always returned `{"action": "accept"}` regardless of config),
+  `test_approval_policy_accept_forwards_accept`,
+  `test_approval_policy_accept_logs_a_loud_warning`, and
+  `test_approval_policy_invalid_value_fails_closed_to_deny`. One inherited
+  claim, disclosed honestly: that a DECLINED approval degrades gracefully
+  mid-turn (the agent proceeds past the denial rather than crashing) is
+  upstream amplifier-agent's own tested non-interactive CLI behavior -- this
+  module's tests prove the WIRING (the decision reaches the real
+  `WireApprovalProvider`), not the mid-turn degradation itself.
+- **`provider_preferences` -- closed.** There is no `provider_preferences`
+  parameter on `Orchestrator.execute()` at all (the kernel's orchestrator call
+  boundary, `amplifier_core._session_exec.run_orchestrator`, threads through
+  only `prompt`/`context`/`providers`/`tools`/`hooks`/`coordinator`) -- the
+  generic foundation spawn path resolves `provider_preferences` BEFORE session
+  creation by mutating the CHILD session's OWN mount-plan `providers` list
+  (`apply_provider_preferences_with_resolution` promotes the matching entry to
+  `priority=0` and stamps its `config["default_model"]`). Since this
+  orchestrator IS that child session's mounted orchestrator,
+  `_resolve_parent_provider_preference` reads it back from
+  `coordinator.config["providers"]`. **Fragile-signal caveat:** the read-back
+  detects the promotion by the PRESENCE of `config["default_model"]` on the
+  promoted provider entry -- that marker is foundation's current
+  implementation detail, verified by source-reading (not by a live
+  provider_preferences spawn). If a future foundation refactor changes how
+  `apply_provider_preferences_with_resolution` records the preference, this
+  detection must be revisited; the unit tests pin today's marker so the
+  break will be loud, not silent. **Precedence (documented, tested):** an
+  explicit `llm_provider` config always wins PROVIDER SELECTION --
+  `loop-pipeline`'s own `backend.py` says so in its spawn_kwargs comment
+  ("Provider SELECTION ... flows via orchestrator_config['llm_provider']"
+  while `provider_preferences` exists purely to carry the model, which "has no
+  other channel"). So: `llm_provider` set -> it selects the provider, and the
+  parent's preferred model is honored only when it names that SAME provider
+  (a mismatched model is dropped rather than forced onto the wrong provider).
+  `llm_provider` absent -> the parent preference's provider+model wins
+  outright. Neither present -> `DEFAULT_PROVIDER`, no model override (v1
+  behavior, unchanged). See `_run_turn`'s docstring and the four
+  `test_*provider_preferences*` / `test_explicit_llm_provider_wins_*` /
+  `test_mismatched_parent_preference_model_is_dropped` /
+  `test_no_parent_preference_and_no_llm_provider_falls_back_to_default` tests.
+- **`hooks.set_default_fields` -- closed.** The per-turn handler now mints an
+  ephemeral session id (mirroring `make_turn_handler`'s identical one-shot
+  fallback: this adapter always submits with no incoming session id, so a
+  fresh `ephemeral-<uuid>` id is minted every turn) and calls
+  `session.coordinator.hooks.set_default_fields(session_id=..., turn_id=...)`,
+  so every tool/llm/execution event this turn emits carries a non-empty
+  `session_id` instead of being dropped by the context-intelligence
+  `LoggingHandler`'s empty-session-id check. See
+  `test_hooks_default_fields_stamped_with_session_and_turn_id` (RED-proof:
+  against v1, `coordinator.hooks.set_default_fields` was never called at all).
 
 ## Python version note
 
