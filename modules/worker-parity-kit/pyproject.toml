@@ -1,0 +1,52 @@
+[project]
+name = "amplifier-worker-parity-kit"
+version = "0.1.0"
+description = "Executed parity tests pinning the dot-runner worker seam (WorkerHarness protocol, M1-M3 + TARGET suite) across orchestrator workers"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
+dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    # M3's authority is enforced by feeding a worker's own completion
+    # envelope to the REAL engine reader
+    # (amplifier_module_loop_pipeline.backend._outcome_from_spawn_result) --
+    # never a reimplementation of its logic. Direct git reference (not a
+    # bare path) so this survives external consumption via
+    # `git+https://...@main#subdirectory=modules/worker-parity-kit` (mirrors
+    # loop-amplifier-agent's own sibling-module dependency pattern -- see
+    # its pyproject.toml's amplifier-module-tool-report-outcome entry). The
+    # [tool.uv.sources] path override below is for local/editable dev so CI
+    # and local runs always exercise the working tree's loop-pipeline, not
+    # a stale @main fetch.
+    "amplifier-module-loop-pipeline @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-pipeline",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+amplifier-module-loop-pipeline = { path = "../loop-pipeline", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["worker_parity_kit"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+asyncio_mode = "strict"

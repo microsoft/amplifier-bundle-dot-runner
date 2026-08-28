@@ -51,6 +51,11 @@ amplifier-module-tool-report-outcome = { path = "../tool-report-outcome", editab
 # producer, mirroring pipeline-runner's own transport test verbatim for this
 # adapter. Editable so the test always runs the working tree's modules.
 amplifier-module-loop-pipeline = { path = "../loop-pipeline", editable = true }
+# Test-only, same-repo path source: tests/test_worker_parity.py wires this
+# module's REAL orchestrator into worker-parity-kit's shared M1-M3 + TARGET
+# suite (see that module's README, "Why this exists"). Editable so the test
+# always runs the working tree's kit.
+amplifier-worker-parity-kit = { path = "../worker-parity-kit", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_module_loop_amplifier_agent"]
@@ -64,6 +69,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=1.0.0",
     "amplifier-module-loop-pipeline",
+    "amplifier-worker-parity-kit",
 ]
 
 [tool.pytest.ini_options]

@@ -48,6 +48,15 @@ jobs:
             extra_args: ""
           - name: loop-amplifier-agent
             extra_args: ""
+          - name: worker-parity-kit
+            # Kit self-tests: the M1-M3 + TARGET suite driven against its own
+            # BrokenWorker fixture (non-vacuity meta-tests). No py3.12-only
+            # dep (only pytest + loop-pipeline, which floors at py3.11), so
+            # this runs the full py3.11/py3.13 pair unlike loop-amplifier-agent
+            # below. The loop-amplifier-agent ADAPTER's own wiring
+            # (tests/test_worker_parity.py) runs inside ITS OWN job/cell
+            # above, not here -- it needs the adapter's py3.12+ fakes.
+            extra_args: ""
         exclude:
           # loop-amplifier-agent's own pyproject.toml declares
           # `requires-python = ">=3.12"` -- one floor higher than this repo's
