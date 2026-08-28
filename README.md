@@ -52,6 +52,12 @@ dependency back on it (the arrow is one-directional: `attractor -> runner`).
 Other repos (a recipes layer, and others) are expected to mount the same
 engine for different, non-convergence-loop orchestration styles.
 
+That anchoring holds regardless of shape: a recipes-layer or other
+non-attractor consumer is bound to the same strongdm/attractor nlspec as
+this repo's own convergence-loop use, not a relaxed derivative of it. See
+the Compatibility doctrine in `SPEC_CONFORMANCE.md` (rule 5, "Anchoring
+survives scope") for how that bar is enforced.
+
 If you're looking for `.dot` examples, authoring guides, agents, or the
 attractor-specific vision/contracts docs, see
 [`amplifier-bundle-attractor`](https://github.com/microsoft/amplifier-bundle-attractor).
