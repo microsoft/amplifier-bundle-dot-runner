@@ -599,39 +599,39 @@ class AmplifierBackend:
             # mapped to a valid status.  Honor it unconditionally — the child's
             # prose output is preserved in the transcript below but does not
             # override the structured routing signal.
-            session_id = (
-                result.get("session_id") if isinstance(result, dict) else None
-            )
+            session_id = result.get("session_id") if isinstance(result, dict) else None
             if session_id:
                 spawn_outcome.session_id = session_id
-            # output.strip() guard (issue #287): a child can carry an explicit
-            # verdict AND no closing prose (it did its work via tool calls and
-            # ended on a terminal report_outcome).  Appending that exchange puts
-            # an empty turn in the transcript, which
-            # _get_parent_messages_for_thread expands into
-            # {"role": "assistant", "content": ""} for a LATER same-thread spawn
-            # — and some providers reject empty assistant content.
+            # support#498 (was the output.strip() guard for issue #287): a
+            # child can carry an explicit verdict AND no closing prose (it did
+            # its work via tool calls and ended on a terminal report_outcome).
+            # "work → report_outcome → end" is the normal agentic turn shape,
+            # not an edge case — and the engine's own outcome ladder already
+            # treats this turn as legitimately completed for ROUTING
+            # (spawn_outcome is honored above regardless of output content).
+            # Recording must not contradict that: the exchange is still
+            # appended to the transcript whenever there is a recoverable
+            # outcome (spawn_outcome is not None), with the assistant half
+            # synthesized as an honest structured marker when prose is absent
+            # (see _synthesize_outcome_marker) instead of left empty.
             #
-            # Append NEITHER half, not just the assistant half: a transcript
-            # entry is an indivisible (instruction, output) exchange that the
-            # emission site always expands into a user+assistant PAIR, and every
-            # other empty-output path already appends nothing — the
-            # non-explicit empty-output branch below returns before reaching an
-            # append, and the tool-loop path never appends at all.  Skipping the
-            # whole exchange keeps this consistent with them (and matches the
-            # pre-#286 behavior for an empty-output child).
+            # This preserves issue #287's REAL invariant — never emit a
+            # literal empty assistant message some providers reject — without
+            # losing the turn: the marker is always non-empty, and it is
+            # attributed tool-event content, never invented prose.
             #
             # The verdict is unaffected: spawn_outcome (status /
             # preferred_label / is_explicit) is still returned exactly as the
-            # #231 parent-side fix made it.  Only the empty turn stops being
-            # written.
-            if (
-                fidelity == "full"
-                and graph is not None
-                and thread_key is not None
-                and output.strip()
-            ):
-                self._append_to_transcript(thread_key, node.id, instruction, output)
+            # #231 parent-side fix made it.
+            if fidelity == "full" and graph is not None and thread_key is not None:
+                transcript_output = (
+                    output
+                    if output.strip()
+                    else _synthesize_outcome_marker(spawn_outcome)
+                )
+                self._append_to_transcript(
+                    thread_key, node.id, instruction, transcript_output
+                )
             return spawn_outcome
 
         if not output.strip():
@@ -649,12 +649,29 @@ class AmplifierBackend:
                 )
                 if session_id:
                     spawn_outcome.session_id = session_id
+                # support#498: this is the non-explicit twin of the
+                # explicit-verdict branch above — a recovered (non-explicit)
+                # outcome (e.g. orchestrator completion status=success with no
+                # report_outcome call) is still a recoverable outcome, so the
+                # exchange is appended with a synthesized marker rather than
+                # dropped.  See _synthesize_outcome_marker.
+                if fidelity == "full" and graph is not None and thread_key is not None:
+                    self._append_to_transcript(
+                        thread_key,
+                        node.id,
+                        instruction,
+                        _synthesize_outcome_marker(spawn_outcome),
+                    )
                 return spawn_outcome
 
             # Genuinely empty: no text, no report_outcome, no success status.
-            # Return FAIL so the engine can route via the spec's FAIL-edge
-            # (retry_target / goal_gate) rather than silently re-running the
-            # node in a materially different in-process harness.
+            # support#498 / issue #287: this remains the ONE case that skips
+            # the transcript append entirely — there is no recoverable outcome
+            # to synthesize an honest marker from, so appending would mean
+            # inventing content the child never produced.  Return FAIL so the
+            # engine can route via the spec's FAIL-edge (retry_target /
+            # goal_gate) rather than silently re-running the node in a
+            # materially different in-process harness.
             logger.warning(
                 "Node %s: spawn returned empty output with no recoverable outcome.",
                 node.id,
@@ -1369,6 +1386,71 @@ def _outcome_from_spawn_result(result: Any) -> Outcome | None:
         )
 
     return None
+
+
+def _synthesize_outcome_marker(outcome: Outcome) -> str:
+    """Build an honest structured marker for a terminal turn that produced
+    no closing prose (support#498).
+
+    "work → report_outcome → end" is the normal agentic turn shape: a child
+    can legitimately finish via tool calls and end on a terminal
+    report_outcome with no trailing assistant text.  When that happens the
+    transcript still needs a non-empty assistant half (issue #287: never emit
+    a literal empty assistant message some providers reject) -- but it must
+    not be invented prose either.  This synthesizes the missing half as
+    attributed tool-event content, never a fabrication of what the child
+    "would have said".
+
+    Marker shape (support#498 review fix, binding on ``outcome.is_explicit``,
+    EXTENSIONS.md §25/§35 -- this function reads the flag rather than
+    trusting the caller's branch to imply it):
+      - ``outcome.is_explicit is True``: a real ``report_outcome`` tool call
+        (or an equivalent explicit JSON/embedded verdict) produced this
+        outcome. Marker is prefixed ``report_outcome``::
+
+            [report_outcome: status=success preferred_label=validated notes="..."]
+
+      - ``outcome.is_explicit is False``: NO ``report_outcome`` call
+        happened -- the outcome was INFERRED from the orchestrator's own
+        completion status (spec §4.5 / EXTENSIONS.md §25). Using the
+        ``report_outcome`` prefix here would assert a tool call that never
+        occurred. Marker is prefixed ``spawn-completion`` instead::
+
+            [spawn-completion: status=success notes="..."]
+
+        A later model reading this transcript must be able to tell
+        attributed-tool-event content (a real verdict) from an inferred
+        completion status -- the prefix is the only signal it has.
+
+    Contract (support#498 design, binding, applies to BOTH shapes above):
+      - NO ``{``/``}`` anywhere in the returned string. ``_parse_outcome``'s
+        prose-recovery rung scans a LATER turn's output for the last balanced
+        ``{...}`` pair; a braced marker echoed back by a later model could be
+        misparsed as a fresh embedded verdict.  Any brace characters that leak
+        in via ``preferred_label``/``notes`` are neutralized defensively.
+      - ``status`` is spelled in the lowercase spec §5.2 / StageStatus.value
+        vocabulary (success|partial_success|retry|fail|skipped) -- never
+        upper-cased or renamed.
+      - Always non-empty: ``status`` is a required ``Outcome`` field, so the
+        marker never degenerates to an empty string even when
+        ``preferred_label`` and ``notes`` are both absent (e.g.
+        ``"[report_outcome: status=success]"`` /
+        ``"[spawn-completion: status=success]"``).
+    """
+
+    def _debrace(value: str) -> str:
+        # Defensive: guarantee the "no braces anywhere" invariant even if a
+        # child's report_outcome notes/label happened to contain literal
+        # braces -- the marker itself must never be misparsable as JSON.
+        return value.replace("{", "(").replace("}", ")")
+
+    prefix = "report_outcome" if outcome.is_explicit else "spawn-completion"
+    parts = [f"status={outcome.status.value}"]
+    if outcome.preferred_label:
+        parts.append(f"preferred_label={_debrace(str(outcome.preferred_label))}")
+    if outcome.notes:
+        parts.append(f'notes="{_debrace(str(outcome.notes))}"')
+    return f"[{prefix}: " + " ".join(parts) + "]"
 
 
 def _parse_outcome(output: str, *, node: object = None) -> Outcome:

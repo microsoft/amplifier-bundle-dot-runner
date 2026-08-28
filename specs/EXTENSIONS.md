@@ -392,6 +392,23 @@ into each subsequent same-thread spawn via the `parent_messages` mechanism (foun
 node. The child agent's inner tool-loop turns are **not** included — only the conversation
 *between* nodes is preserved, not the child's internal reasoning.
 
+*Addendum (2026-08-28, support#498): the "one pair per `full` node" claim above needs
+qualification — as originally implemented it held only when the node's `final_output` was
+non-empty. Before this addendum, a node whose child ended on a terminal tool call with no
+trailing prose (the normal "work → report_outcome → end" turn shape) caused BOTH halves of the
+pair to be silently dropped, even when a recoverable outcome existed — erasing that node's
+exchange from every later same-thread spawn's `parent_messages`. The corrected rule: the pair is
+**always** emitted when the turn produced a recoverable outcome, whether or not `final_output`
+is empty. When it is empty, the assistant half is instead a synthesized marker — attributed
+tool-event content, never invented prose — naming the terminal verdict the child ended on, in
+one of two shapes keyed on §25's `is_explicit` flag: `[report_outcome: ...]` when a real
+`report_outcome` call (or other explicit verdict source) produced the outcome, or
+`[spawn-completion: ...]` when the outcome was instead inferred from the orchestrator's own
+completion status with no `report_outcome` call at all — the `report_outcome` prefix is reserved
+for the former so the transcript never asserts a tool call that did not happen. Whether a
+recoverable outcome exists, and which of the two shapes it takes, is governed entirely by §35's
+Precedence Policy and §25's `is_explicit` contract; this entry does not redefine either.*
+
 **Why:** The spec's §5.4 language ("reuse the same LLM session", "full history preserved") is
 written as a *behavior specification*, not a mechanism mandate. The spec separately notes
 (§5.3) that sessions are in-memory and non-serializable, and unified-llm §2.6 models the LLM

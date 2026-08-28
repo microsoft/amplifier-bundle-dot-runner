@@ -11,6 +11,7 @@ Spec coverage: Section 4.5 (CodergenBackend Interface), Section 1.4.
 """
 
 import json
+import re
 import sys
 import types
 from dataclasses import dataclass, field
@@ -75,7 +76,6 @@ from amplifier_module_loop_pipeline.backend import AmplifierBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Node
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
-
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -804,7 +804,7 @@ async def test_spawn_nonempty_output_without_metadata_uses_parse_outcome():
             "output": '{"status": "fail", "failure_reason": "validation failed"}',
             "session_id": "c-prose-fail",
             "status": "success",  # spawn envelope says success -- must NOT win
-            "metadata": {},       # no report_outcome
+            "metadata": {},  # no report_outcome
         }
     )
     backend = AmplifierBackend(
@@ -870,20 +870,76 @@ def _make_same_thread_full_graph():
     )
 
 
+# ---------------------------------------------------------------------------
+# support#498: synthesized outcome-marker helpers/shape assertions.
+#
+# Marker contract (binding, see backend._synthesize_outcome_marker). Review
+# fix: the marker shape is keyed on ``outcome.is_explicit`` -- using the
+# wrong prefix would assert a tool call that never occurred, so this is a
+# TWO-shape contract, not one:
+#   - [report_outcome: status=x ...]    -- outcome.is_explicit is True (a
+#     real report_outcome tool call happened)
+#   - [spawn-completion: status=x ...]  -- outcome.is_explicit is False (the
+#     status was INFERRED from the orchestrator's own completion status,
+#     EXTENSIONS.md \u00a725; no report_outcome call happened)
+# Both shapes share the rest of the contract:
+#   - bracketed, e.g. [report_outcome: status=success preferred_label=x notes="..."]
+#   - NEVER contains "{" / "}" anywhere (rung-3 prose-recovery misparse risk)
+#   - status is the lowercase spec Sec 5.2 / StageStatus.value vocabulary
+#   - always non-empty, even when preferred_label/notes are both absent
+# ---------------------------------------------------------------------------
+_MARKER_RE = re.compile(
+    r"^\[(?:report_outcome|spawn-completion): status=[a-z_]+"
+    r'(?: preferred_label=\S+)?(?: notes=".*")?\]$',
+    re.DOTALL,
+)
+
+
+def _assert_valid_marker(
+    marker: str, *, expected_prefix: str = "report_outcome"
+) -> None:
+    """Shared shape assertions for a synthesized outcome marker.
+
+    ``expected_prefix`` must be either ``"report_outcome"`` (explicit
+    verdict) or ``"spawn-completion"`` (inferred outcome) -- see the module
+    comment above for the review-mandated two-shape contract.
+    """
+    assert expected_prefix in ("report_outcome", "spawn-completion"), (
+        f"unknown expected_prefix {expected_prefix!r}"
+    )
+    assert marker, "synthesized marker must never be empty"
+    assert "{" not in marker and "}" not in marker, (
+        f"marker must contain no braces anywhere (rung-3 misparse risk), got {marker!r}"
+    )
+    assert marker.startswith(f"[{expected_prefix}:") and marker.endswith("]"), (
+        f"marker must be bracketed {expected_prefix!r} content, got {marker!r}"
+    )
+    assert _MARKER_RE.fullmatch(marker), (
+        f"marker did not match expected shape: {marker!r}"
+    )
+    status_part = marker.split("status=", 1)[1].split()[0]
+    assert status_part == status_part.lower(), (
+        f"status must be the lowercase spec \u00a75.2 vocabulary, got {status_part!r}"
+    )
+
+
 @pytest.mark.asyncio
-async def test_spawn_explicit_verdict_empty_output_appends_no_empty_turn():
-    """Explicit verdict + EMPTY output => no empty assistant turn (issue #287).
+async def test_spawn_explicit_verdict_empty_output_appends_synthesized_marker_turn():
+    """support#498: explicit verdict + EMPTY output => the exchange IS
+    appended, with the assistant half synthesized as an honest
+    ``[report_outcome: ...]`` marker.
 
-    A child can legitimately carry an explicit ``metadata.report_outcome``
-    verdict AND produce no closing prose (it did its work via tool calls and
-    ended on a terminal report_outcome).  Before the ``output.strip()`` guard,
-    the explicit-verdict path appended that empty exchange to the full-fidelity
-    transcript, and ``_get_parent_messages_for_thread`` then expanded it into
-    ``{"role": "assistant", "content": ""}`` for a LATER same-thread spawn --
-    which some providers reject.
-
-    The verdict itself must STILL round-trip (the #231/#286 parent-side fix is
-    orthogonal to the transcript append and must not regress).
+    This FLIPS the pre-support#498 pinned-wrong test (formerly named
+    ``..._appends_no_empty_turn``): that test only asserted the ABSENCE of an
+    empty assistant turn, which was trivially satisfied by the bug (dropping
+    BOTH halves of the exchange entirely) -- it never positively asserted
+    that the turn was recorded at all. "work -> report_outcome -> end" is the
+    normal agentic turn shape, and the engine's own outcome ladder already
+    treats this turn as legitimately completed for ROUTING (the verdict below
+    still round-trips exactly as before); recording must not contradict that.
+    Issue #287's REAL invariant -- never emit a literal empty assistant
+    message some providers reject -- is preserved by synthesizing a
+    non-empty marker instead of skipping the append.
     """
     coordinator = MockCoordinator(
         spawn_result={
@@ -903,37 +959,24 @@ async def test_spawn_explicit_verdict_empty_output_appends_no_empty_turn():
         coordinator=coordinator,
         profiles={"anthropic": "attractor-anthropic"},
     )
-    node1, node2, graph, edge1, edge2 = _make_same_thread_full_graph()
+    node1, _node2, graph, edge1, _edge2 = _make_same_thread_full_graph()
 
     outcome = await backend.run(
         node1, "First instruction", _make_context(), incoming_edge=edge1, graph=graph
     )
 
-    # --- #287: no empty assistant turn reaches a later same-thread spawn ---
+    # --- support#498: the exchange IS appended, with a synthesized marker ---
     messages = backend._get_parent_messages_for_thread("t")
-    empty_assistant_turns = [
-        m
-        for m in messages
-        if m["role"] == "assistant" and not str(m["content"]).strip()
-    ]
-    assert empty_assistant_turns == [], (
-        "explicit-verdict spawn with empty output must not append an empty "
-        f"assistant turn to the same-thread transcript, got {messages!r}"
+    assert len(messages) == 2, (
+        f"expected exactly one (user, assistant) pair appended, got {messages!r}"
     )
-
-    # ... and prove it at the emission seam a later same-thread spawn actually sees.
-    await backend.run(
-        node2, "Second instruction", _make_context(), incoming_edge=edge2, graph=graph
-    )
-    parent_messages = coordinator.last_spawn_kwargs.get("parent_messages") or []
-    assert not [
-        m
-        for m in parent_messages
-        if m.get("role") == "assistant" and not str(m.get("content", "")).strip()
-    ], (
-        "a later same-thread spawn must not be handed an empty assistant "
-        f"message, got parent_messages={parent_messages!r}"
-    )
+    assert messages[0] == {"role": "user", "content": "First instruction"}
+    assert messages[1]["role"] == "assistant"
+    marker = messages[1]["content"]
+    _assert_valid_marker(marker)
+    assert "status=success" in marker
+    assert "preferred_label=validated" in marker
+    assert "Work done via tool calls" in marker
 
     # --- #231/#286 must NOT regress: the verdict still round-trips ---
     assert isinstance(outcome, Outcome)
@@ -946,6 +989,310 @@ async def test_spawn_explicit_verdict_empty_output_appends_no_empty_turn():
     )
     assert outcome.status == StageStatus.SUCCESS
     assert outcome.session_id == "c-empty-verdict"
+
+
+@pytest.mark.asyncio
+async def test_spawn_empty_output_envelope_marker_reaches_next_same_thread_spawn():
+    """support#498 end-to-end continuity: node A's empty-output+envelope turn
+    survives into node B's ``parent_messages`` on the same thread, with the
+    assistant half as the synthesized marker (never dropped, never empty).
+    """
+    coordinator = MockCoordinator(
+        spawn_result={
+            "output": "",
+            "session_id": "c-continuity",
+            "status": "success",
+            "metadata": {
+                "report_outcome": {
+                    "status": "success",
+                    "preferred_label": "validated",
+                    "notes": "Node A finished via tool calls.",
+                }
+            },
+        }
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node1, node2, graph, edge1, edge2 = _make_same_thread_full_graph()
+
+    await backend.run(
+        node1, "First instruction", _make_context(), incoming_edge=edge1, graph=graph
+    )
+    await backend.run(
+        node2, "Second instruction", _make_context(), incoming_edge=edge2, graph=graph
+    )
+
+    parent_messages = coordinator.last_spawn_kwargs.get("parent_messages") or []
+    assert len(parent_messages) == 2, (
+        "node2's spawn must receive node1's exchange as parent_messages, "
+        f"got {parent_messages!r}"
+    )
+    assert parent_messages[0] == {"role": "user", "content": "First instruction"}
+    assert parent_messages[1]["role"] == "assistant"
+    _assert_valid_marker(parent_messages[1]["content"])
+    assert not [
+        m
+        for m in parent_messages
+        if m.get("role") == "assistant" and not str(m.get("content", "")).strip()
+    ], (
+        "a later same-thread spawn must not be handed an empty assistant "
+        f"message, got parent_messages={parent_messages!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_spawn_recovered_non_explicit_outcome_empty_output_appends_marker_turn():
+    """support#498: empty output + a RECOVERED (non-explicit) outcome -- no
+    ``metadata.report_outcome``, but orchestrator ``status=success`` -- also
+    gets its exchange appended, with the synthesized marker as the assistant
+    half.
+
+    This is the non-explicit twin of the explicit-verdict test above: the
+    ``_outcome_from_spawn_result`` success-status branch (``is_explicit=False``)
+    must be recorded exactly the same way as the explicit envelope branch.
+    """
+    coordinator = MockCoordinator(
+        spawn_result={
+            "output": "",
+            "session_id": "c-recovered",
+            "status": "success",
+            "metadata": {},  # no report_outcome envelope
+        }
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node1, _node2, graph, edge1, _edge2 = _make_same_thread_full_graph()
+
+    outcome = await backend.run(
+        node1, "First instruction", _make_context(), incoming_edge=edge1, graph=graph
+    )
+
+    messages = backend._get_parent_messages_for_thread("t")
+    assert len(messages) == 2, f"expected an appended pair, got {messages!r}"
+    assert messages[0] == {"role": "user", "content": "First instruction"}
+    marker = messages[1]["content"]
+    # support#498 review fix: NO report_outcome tool call happened here --
+    # the outcome was INFERRED from the orchestrator's completion status
+    # (is_explicit=False, asserted below). Using the `report_outcome` prefix
+    # would assert a tool call that never occurred, so this marker MUST use
+    # the `spawn-completion` prefix instead, and MUST NEVER be
+    # `[report_outcome: ...]`. (RED-proof: this assertion fails against the
+    # pre-fix code, which always emits `[report_outcome: ...]` regardless of
+    # `is_explicit`.)
+    _assert_valid_marker(marker, expected_prefix="spawn-completion")
+    assert not marker.startswith("[report_outcome:"), (
+        "an INFERRED outcome (no report_outcome tool call happened) must "
+        f"never be marked with the report_outcome prefix, got {marker!r}"
+    )
+    # _outcome_from_spawn_result's non-explicit success branch always sets a
+    # fixed notes string (no preferred_label); the marker must carry it
+    # through rather than falling back to a bare status field.
+    assert marker == (
+        "[spawn-completion: status=success "
+        'notes="Child session completed with empty final message"]'
+    ), f"unexpected marker for a recovered (non-explicit) outcome: {marker!r}"
+    assert "preferred_label=" not in marker
+
+    assert isinstance(outcome, Outcome)
+    assert outcome.is_explicit is False, (
+        "orchestrator completion status alone is NOT an explicit verdict "
+        "(EXTENSIONS.md \u00a725) -- this must stay non-regressed"
+    )
+    assert outcome.status == StageStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_spawn_truly_empty_full_fidelity_skips_transcript_append():
+    """support#498 / issue #287 invariant pin: a TRULY empty turn -- no
+    output AND no recoverable outcome -- is still skipped in the transcript,
+    exactly as before the fix.  There is nothing honest to synthesize a
+    marker from, so nothing is appended (the node still fails loud via its
+    returned Outcome; see test_spawn_truly_empty_fails_loud for that half).
+    """
+    coordinator = MockCoordinator(
+        spawn_result={
+            "output": "",
+            "session_id": "c-truly-empty",
+            "status": "error",  # not a success status
+            "metadata": {},  # no report_outcome
+        }
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node1, _node2, graph, edge1, _edge2 = _make_same_thread_full_graph()
+
+    outcome = await backend.run(
+        node1, "First instruction", _make_context(), incoming_edge=edge1, graph=graph
+    )
+
+    assert isinstance(outcome, Outcome)
+    assert outcome.status == StageStatus.FAIL
+
+    messages = backend._get_parent_messages_for_thread("t")
+    assert messages == [], (
+        "a truly-empty turn (no output, no recoverable outcome) must not "
+        f"append anything to the transcript, got {messages!r}"
+    )
+
+
+def test_synthesize_outcome_marker_format_guards_explicit():
+    """support#498 marker-format contract for an EXPLICIT verdict
+    (``outcome.is_explicit=True`` -- a real ``report_outcome`` tool call
+    happened), checked directly against ``_synthesize_outcome_marker``: no
+    braces anywhere, lowercase status, always non-empty (even with every
+    optional field absent), every present field is represented, and the
+    ``report_outcome`` prefix is used.
+    """
+    from amplifier_module_loop_pipeline.backend import _synthesize_outcome_marker
+
+    # Full: status + preferred_label + notes.
+    full = _synthesize_outcome_marker(
+        Outcome(
+            status=StageStatus.SUCCESS,
+            preferred_label="validated",
+            notes="All checks passed.",
+            is_explicit=True,
+        )
+    )
+    _assert_valid_marker(full, expected_prefix="report_outcome")
+    assert "preferred_label=validated" in full
+    assert 'notes="All checks passed."' in full
+
+    # Bare fallback: status only, no preferred_label/notes -- still non-empty.
+    bare = _synthesize_outcome_marker(
+        Outcome(status=StageStatus.SUCCESS, is_explicit=True)
+    )
+    _assert_valid_marker(bare, expected_prefix="report_outcome")
+    assert bare == "[report_outcome: status=success]"
+
+    # Every StageStatus value round-trips lowercase and brace-free.
+    for status in StageStatus:
+        marker = _synthesize_outcome_marker(Outcome(status=status, is_explicit=True))
+        _assert_valid_marker(marker, expected_prefix="report_outcome")
+        assert marker == f"[report_outcome: status={status.value}]"
+        assert status.value == status.value.lower()
+
+    # Defensive brace-neutralization: a child's own notes/label containing
+    # literal braces must never leak into the marker (rung-3 misparse risk).
+    braced = _synthesize_outcome_marker(
+        Outcome(
+            status=StageStatus.PARTIAL_SUCCESS,
+            preferred_label="odd{label}",
+            notes='embedded {"status": "fail"} in notes',
+            is_explicit=True,
+        )
+    )
+    assert "{" not in braced and "}" not in braced
+    assert braced.startswith("[report_outcome:") and braced.endswith("]")
+
+
+def test_synthesize_outcome_marker_format_guards_inferred():
+    """support#498 review fix: the same marker-format contract for an
+    INFERRED outcome (``outcome.is_explicit=False`` -- no ``report_outcome``
+    tool call happened, e.g. the orchestrator's own completion status).
+
+    The marker must use the ``spawn-completion`` prefix, never
+    ``report_outcome`` -- that prefix would assert a tool call that never
+    occurred. (RED-proof: prior to the review fix, ``_synthesize_outcome_marker``
+    ignored ``is_explicit`` entirely and always returned ``report_outcome:``
+    -- every assertion below fails against that code.)
+    """
+    from amplifier_module_loop_pipeline.backend import _synthesize_outcome_marker
+
+    # Full: status + preferred_label + notes, is_explicit=False (default).
+    full = _synthesize_outcome_marker(
+        Outcome(
+            status=StageStatus.SUCCESS,
+            preferred_label="validated",
+            notes="All checks passed.",
+            is_explicit=False,
+        )
+    )
+    _assert_valid_marker(full, expected_prefix="spawn-completion")
+    assert not full.startswith("[report_outcome:")
+    assert "preferred_label=validated" in full
+    assert 'notes="All checks passed."' in full
+
+    # Bare fallback: status only -- still non-empty, still spawn-completion.
+    bare = _synthesize_outcome_marker(Outcome(status=StageStatus.SUCCESS))
+    _assert_valid_marker(bare, expected_prefix="spawn-completion")
+    assert bare == "[spawn-completion: status=success]"
+    assert not bare.startswith("[report_outcome:")
+
+    # Every StageStatus value round-trips lowercase, brace-free, and with
+    # the spawn-completion prefix.
+    for status in StageStatus:
+        marker = _synthesize_outcome_marker(Outcome(status=status))
+        _assert_valid_marker(marker, expected_prefix="spawn-completion")
+        assert marker == f"[spawn-completion: status={status.value}]"
+        assert status.value == status.value.lower()
+
+    # Defensive brace-neutralization applies identically to this shape.
+    braced = _synthesize_outcome_marker(
+        Outcome(
+            status=StageStatus.PARTIAL_SUCCESS,
+            preferred_label="odd{label}",
+            notes='embedded {"status": "fail"} in notes',
+            is_explicit=False,
+        )
+    )
+    assert "{" not in braced and "}" not in braced
+    assert braced.startswith("[spawn-completion:") and braced.endswith("]")
+
+
+@pytest.mark.asyncio
+async def test_spawn_nonempty_output_never_synthesizes_marker():
+    """support#498: real trailing prose always wins -- the marker only fills
+    an ABSENCE of output, never overrides or accompanies real prose.
+
+    Control test for the marker feature: when the child DOES produce closing
+    prose (mirrors ``..._nonempty_output_still_appends_turn``), the appended
+    assistant turn must be the verbatim prose, with no report_outcome marker
+    appended alongside or instead of it.
+    """
+    coordinator = MockCoordinator(
+        spawn_result={
+            "output": "The analysis is complete.",
+            "session_id": "c-prose-wins",
+            "status": "success",
+            "metadata": {
+                "report_outcome": {
+                    "status": "success",
+                    "preferred_label": "validated",
+                    "notes": "All checks passed.",
+                }
+            },
+        }
+    )
+    backend = AmplifierBackend(
+        coordinator=coordinator,
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    node1, _node2, graph, edge1, _edge2 = _make_same_thread_full_graph()
+
+    await backend.run(
+        node1, "First instruction", _make_context(), incoming_edge=edge1, graph=graph
+    )
+
+    messages = backend._get_parent_messages_for_thread("t")
+    assert messages == [
+        {"role": "user", "content": "First instruction"},
+        {"role": "assistant", "content": "The analysis is complete."},
+    ]
+    assert "[report_outcome:" not in messages[1]["content"], (
+        "a non-empty child response must never be replaced or decorated "
+        f"with a synthesized marker, got {messages[1]['content']!r}"
+    )
+    assert "[spawn-completion:" not in messages[1]["content"], (
+        "a non-empty child response must never be replaced or decorated "
+        f"with either synthesized marker shape, got {messages[1]['content']!r}"
+    )
 
 
 @pytest.mark.asyncio
