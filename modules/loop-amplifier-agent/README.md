@@ -159,21 +159,50 @@ flag):
   grandchild sessions. See `test_session_spawn_registered_and_forwards_to_delegate`
   (RED-proof: against v1, `session.coordinator.capabilities.get("session.spawn")`
   was always `None`).
-- **Approvals -- closed, safe-by-default.** `approval.request` now wires the
-  REAL `WireApprovalProvider(approval_request_fn=ctx.approval.request)` seam,
-  forwarding the actual decision instead of a hardcoded stub. **The decision
-  itself is governed by a new `approval_policy: "accept" | "deny"` config key,
-  defaulting to `"deny"`.** A headless pipeline node has no human to ask, so
-  v1's auto-accept was the dangerous default; `"deny"` fails closed (every
-  approval-gated action in the child turn is declined unless a pipeline
-  author explicitly opts in), and `"accept"` logs a loud `WARNING` on every
-  turn it's active so the dangerous choice is never silent. An unrecognized
-  `approval_policy` value also fails closed to `"deny"` with a logged warning
-  -- never fails open. See `test_approval_defaults_to_deny` (RED-proof: v1's
-  stub always returned `{"action": "accept"}` regardless of config),
-  `test_approval_policy_accept_forwards_accept`,
-  `test_approval_policy_accept_logs_a_loud_warning`, and
-  `test_approval_policy_invalid_value_fails_closed_to_deny`. One inherited
+- **Approvals -- closed, defaults to `"accept"` (worker parity).**
+  `approval.request` wires the REAL
+  `WireApprovalProvider(approval_request_fn=ctx.approval.request)` seam,
+  forwarding the actual decision instead of a hardcoded stub. The decision
+  itself is governed by an `approval_policy: "accept" | "deny"` config key.
+
+  **This shipped defaulting to `"deny"` and was flipped to `"accept"` after a
+  design challenge** (maintainer-decided; an independent review already
+  adjudicated the direction). Three grounds:
+
+  1. **Worker parity.** `loop-agent` -- the *default* worker -- has **no
+     approval system at all** (`coding-agent-loop-spec` sec8 excludes it
+     deliberately); that is behaviorally accept-everything. `"deny"` made
+     this adapter *stricter* than the default worker: swap workers on a
+     pipeline node and approval-gated actions that used to succeed would
+     silently start failing -- a parity violation of exactly the class
+     already fixed twice (support#497).
+  2. **The attractor spec's own posture.** sec6.4 defines the
+     `AutoApproveInterviewer` ("Always selects YES") as the non-interactive
+     default. Autonomous convergence is the point of a pipeline node.
+  3. **House doctrine -- gates outside workers.** The safety layer is the
+     graph's evidence gates and budget walls, not an approval prompt inside a
+     headless worker nobody is watching. `"deny"`-by-default was
+     interactive-CLI instinct imported into a headless context.
+
+  `"deny"` remains available as opt-in hardening: it logs a `WARNING` once
+  per `execute()` call (an operator who opts into stricter behavior should
+  see it, but it need not spam every turn). `"accept"` (the default,
+  expected posture) logs a single `INFO` line instead -- no more per-turn
+  `WARNING` noise for the normal case.
+
+  **Unknown `approval_policy` value:** warns *loudly*, naming the bad value,
+  and then uses the default (`"accept"`) -- it does **not** fail closed to
+  `"deny"` the way v1 did. Rationale: a typo silently bricking every
+  approval-gated action is the *worse* failure in a headless pipeline; the
+  graph's own evidence gates and budget walls catch a bad work product, so a
+  fully-bricked worker is not a safer failure mode, just a more confusing
+  one.
+
+  See `test_approval_defaults_to_accept` (RED-proof: fails against the
+  pre-flip `"deny"`-default code), `test_approval_policy_deny_forwards_decline`
+  (opt-in hardening still works), `test_approval_policy_accept_logs_at_info_once`,
+  `test_approval_policy_deny_logs_at_warning_once`, and
+  `test_approval_policy_invalid_value_warns_and_uses_default`. One inherited
   claim, disclosed honestly: that a DECLINED approval degrades gracefully
   mid-turn (the agent proceeds past the denial rather than crashing) is
   upstream amplifier-agent's own tested non-interactive CLI behavior -- this

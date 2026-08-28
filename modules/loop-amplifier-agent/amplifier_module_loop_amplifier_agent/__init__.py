@@ -80,14 +80,28 @@ VALID_STATUSES = frozenset({"success", "fail", "partial_success", "retry"})
 #: ``llm_provider`` override and no parent ``provider_preferences`` resolve.
 DEFAULT_PROVIDER = "anthropic"
 
-#: v2 gap 3 (approvals): safe-by-default headless approval policy. A
-#: pipeline node has no human in the loop, so v1's hardcoded auto-accept
-#: stub is the dangerous default -- "deny" fails closed: every
-#: approval-gated action in the child turn is declined unless the pipeline
-#: author explicitly opts in via ``orchestrator_config.approval_policy:
-#: "accept"``. See ``_run_turn``'s docstring and the README's "Approvals"
-#: section for the full rationale.
-DEFAULT_APPROVAL_POLICY = "deny"
+#: v2 gap 3 (approvals): worker-parity headless approval policy. Default
+#: flipped from "deny" to "accept" after a design challenge (maintainer-
+#: decided; see the README's "Approvals" section for the full rationale).
+#: Three grounds:
+#:   1. Worker parity: loop-agent -- the DEFAULT worker -- has NO approval
+#:      system at all (coding-agent-loop spec sec8 excludes it deliberately),
+#:      i.e. it is behaviorally accept-everything. "deny" made this adapter
+#:      STRICTER than the default worker: switching workers would make
+#:      previously-succeeding approval-gated actions silently start failing
+#:      -- a parity violation of exactly the class already fixed twice
+#:      (support#497).
+#:   2. The attractor spec's own posture: sec6.4 defines the
+#:      AutoApproveInterviewer ("Always selects YES") as the non-interactive
+#:      default. Autonomous convergence is the point of a pipeline node.
+#:   3. House doctrine -- gates outside workers: the safety layer is the
+#:      graph's evidence gates and budget walls, not an approval prompt
+#:      inside a headless worker nobody is watching. "deny"-by-default was
+#:      interactive-CLI instinct imported into a headless context.
+#: "deny" remains available as opt-in hardening. See ``_run_turn``'s
+#: docstring for the logging-level and unknown-value handling this default
+#: pairs with.
+DEFAULT_APPROVAL_POLICY = "accept"
 VALID_APPROVAL_POLICIES = frozenset({"accept", "deny"})
 
 #: Appended to every prompt sent to the amplifier-agent turn so the child
@@ -409,9 +423,11 @@ class AmplifierAgentOrchestrator:
             ``None`` (no-op merge_config overlay); a pipeline author may
             opt in with a host_config-shaped dict for parity with the CLI.
           * ``approval_policy`` (v2, gap 3) -> ``"accept"`` or ``"deny"``
-            (default ``"deny"``), governs the ``ApprovalOverride`` handed to
-            ``CliApprovalSystem`` -- see the class-level
-            ``DEFAULT_APPROVAL_POLICY`` docstring for the safety rationale.
+            (default ``"accept"``), governs the ``ApprovalOverride`` handed
+            to ``CliApprovalSystem`` -- see the class-level
+            ``DEFAULT_APPROVAL_POLICY`` docstring for the worker-parity /
+            spec sec6.4 rationale for the default, and the approval-policy
+            block below for logging levels and unknown-value handling.
 
         v2 (gap 1): calls the REAL vendored ``prepare_bundle_for_session``
         (skills/modes ``BUNDLE_DIR`` injection, host-config ``merge_config``
@@ -483,31 +499,39 @@ class AmplifierAgentOrchestrator:
             orch_plan = session_plan.setdefault("orchestrator", {})
             orch_plan.setdefault("config", {})["max_turns"] = max_turns
 
-        # --- gap 3: approval policy (safe-by-default) -----------------------
+        # --- gap 3: approval policy (accept by default; worker parity) -----
         approval_policy = cfg.get("approval_policy", DEFAULT_APPROVAL_POLICY)
         if approval_policy not in VALID_APPROVAL_POLICIES:
+            # LOUD, but never fail OPEN to deny: a typo here silently
+            # bricking every approval-gated action is the worse failure in
+            # a headless pipeline -- the graph's own evidence gates and
+            # budget walls catch a bad work product; a bricked worker
+            # catches nothing. Name the bad value so it's fixable, then use
+            # the default.
             logger.warning(
                 "loop-amplifier-agent: unknown approval_policy=%r (expected "
-                "one of %s); failing closed to %r.",
+                "one of %s); using default %r.",
                 approval_policy,
                 sorted(VALID_APPROVAL_POLICIES),
                 DEFAULT_APPROVAL_POLICY,
             )
             approval_policy = DEFAULT_APPROVAL_POLICY
+        # Log the active policy exactly ONCE per execute() -- not per-turn
+        # spam. "accept" is the default, expected posture (worker parity
+        # with loop-agent, which has no approval system at all) so it logs
+        # at INFO; "deny" is the operator opting into hardening, worth
+        # visibility, so it logs at WARNING. One line either way.
         if approval_policy == "accept":
-            # LOUD: auto-accepting every approval-gated action with no human
-            # in the loop is the dangerous choice -- an operator who opts
-            # into it should see it in the logs every time.
-            logger.warning(
-                "loop-amplifier-agent: approval_policy='accept' -- every "
-                "approval-gated action in this child turn will be "
-                "AUTO-APPROVED with no human in the loop."
+            logger.info(
+                "loop-amplifier-agent: approval_policy='accept' -- "
+                "approval-gated actions in this child turn are "
+                "auto-approved (default)."
             )
         else:
-            logger.info(
+            logger.warning(
                 "loop-amplifier-agent: approval_policy='deny' -- "
-                "approval-gated actions in this child turn will be declined "
-                "unless approval_policy: 'accept' is set."
+                "approval-gated actions in this child turn will be "
+                "declined (opt-in hardening)."
             )
         approval_override = (
             deps.ApprovalOverride.YES

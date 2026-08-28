@@ -21,9 +21,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import pytest
-
 import amplifier_module_loop_amplifier_agent as laa
+import pytest
 
 from ._fakes import (
     CapturingHooks,
@@ -181,12 +180,14 @@ async def test_session_spawn_lets_caller_override_agent_configs(
 
 
 @pytest.mark.asyncio
-async def test_approval_defaults_to_deny(monkeypatch: pytest.MonkeyPatch):
-    """RED-proof: the v1 adapter registered a hardcoded stub that ALWAYS
-    returned ``{"action": "accept"}`` regardless of config. Against v1, this
-    assertion (expecting a DECLINE with no config at all) fails. Post-fix,
-    the safe default (``approval_policy`` unset -> "deny") makes the
-    approval-gated tool call inside the child turn come back declined.
+async def test_approval_defaults_to_accept(monkeypatch: pytest.MonkeyPatch):
+    """RED-proof: this pins the flipped default. Against the PRE-FLIP
+    adapter (``DEFAULT_APPROVAL_POLICY = "deny"``), this assertion (expecting
+    an ACCEPT with no config at all) fails -- the whole point of this test.
+    Post-flip, the default (``approval_policy`` unset -> "accept") makes the
+    approval-gated tool call inside the child turn come back accepted --
+    worker parity with loop-agent, which has no approval system at all (see
+    README's "Approvals" section for the full rationale).
     """
     captured = _install_fake_deps(
         monkeypatch, reply_text="", outcome_to_set={"status": "success"}
@@ -196,14 +197,15 @@ async def test_approval_defaults_to_deny(monkeypatch: pytest.MonkeyPatch):
     hooks = CapturingHooks()
     await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
 
-    assert captured["session"].last_approval_response == {"action": "decline"}
+    assert captured["session"].last_approval_response == {"action": "accept"}
 
 
 @pytest.mark.asyncio
 async def test_approval_policy_accept_forwards_accept(monkeypatch: pytest.MonkeyPatch):
-    """Opting in via ``approval_policy: "accept"`` really does forward an
-    accept decision through the REAL WireApprovalProvider/ctx.approval.request
-    seam (not a bypassed hardcoded stub) -- and logs loudly (see next test).
+    """Explicit ``approval_policy: "accept"`` (same as the default, but
+    spelled out) really does forward an accept decision through the REAL
+    WireApprovalProvider/ctx.approval.request seam (not a bypassed hardcoded
+    stub).
     """
     captured = _install_fake_deps(
         monkeypatch, reply_text="", outcome_to_set={"status": "success"}
@@ -219,30 +221,86 @@ async def test_approval_policy_accept_forwards_accept(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_approval_policy_accept_logs_a_loud_warning(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-):
-    """The dangerous opt-in must be loud, every time, not a silent default."""
-    _install_fake_deps(monkeypatch, reply_text="", outcome_to_set={"status": "success"})
+async def test_approval_policy_deny_forwards_decline(monkeypatch: pytest.MonkeyPatch):
+    """ "deny" remains available as opt-in hardening: it still forwards a
+    real decline through the REAL WireApprovalProvider/ctx.approval.request
+    seam when a pipeline author explicitly opts in.
+    """
+    captured = _install_fake_deps(
+        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
+    )
 
     orchestrator = laa.AmplifierAgentOrchestrator(
-        coordinator=None, config={"approval_policy": "accept"}
+        coordinator=None, config={"approval_policy": "deny"}
     )
     hooks = CapturingHooks()
-    with caplog.at_level("WARNING", logger="amplifier_module_loop_amplifier_agent"):
-        await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
+    await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
 
-    assert any("AUTO-APPROVED" in record.message for record in caplog.records), (
-        "approval_policy='accept' must log a loud warning every turn"
-    )
+    assert captured["session"].last_approval_response == {"action": "decline"}
 
 
 @pytest.mark.asyncio
-async def test_approval_policy_invalid_value_fails_closed_to_deny(
+async def test_approval_policy_accept_logs_at_info_once(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
-    """An unrecognized approval_policy value must never fail OPEN (accept) --
-    it fails closed to "deny" and logs why.
+    """The default, expected posture ("accept") logs exactly ONE line per
+    ``execute()``, at INFO -- not a per-turn WARNING. Per-turn WARNING spam
+    for the new default would be noise: the whole point of flipping the
+    default was that auto-approval is no longer the dangerous, watch-out-for
+    -this choice, it is the expected one (worker parity with loop-agent,
+    which has no approval system at all).
+    """
+    _install_fake_deps(monkeypatch, reply_text="", outcome_to_set={"status": "success"})
+
+    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
+    hooks = CapturingHooks()
+    with caplog.at_level(logging.INFO, logger="amplifier_module_loop_amplifier_agent"):
+        await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
+
+    policy_records = [r for r in caplog.records if "approval_policy=" in r.message]
+    assert len(policy_records) == 1, (
+        "expected exactly one approval-policy log line per execute(), got "
+        f"{[r.message for r in policy_records]!r}"
+    )
+    assert policy_records[0].levelno == logging.INFO
+    assert "'accept'" in policy_records[0].message
+
+
+@pytest.mark.asyncio
+async def test_approval_policy_deny_logs_at_warning_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """Opting into "deny" hardening is worth visibility -- logged at
+    WARNING, but still exactly one line per ``execute()``, not per-turn
+    spam.
+    """
+    _install_fake_deps(monkeypatch, reply_text="", outcome_to_set={"status": "success"})
+
+    orchestrator = laa.AmplifierAgentOrchestrator(
+        coordinator=None, config={"approval_policy": "deny"}
+    )
+    hooks = CapturingHooks()
+    with caplog.at_level(logging.INFO, logger="amplifier_module_loop_amplifier_agent"):
+        await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
+
+    policy_records = [r for r in caplog.records if "approval_policy=" in r.message]
+    assert len(policy_records) == 1, (
+        "expected exactly one approval-policy log line per execute(), got "
+        f"{[r.message for r in policy_records]!r}"
+    )
+    assert policy_records[0].levelno == logging.WARNING
+    assert "'deny'" in policy_records[0].message
+
+
+@pytest.mark.asyncio
+async def test_approval_policy_invalid_value_warns_and_uses_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """An unrecognized approval_policy value must never silently brick every
+    approval-gated action in a headless pipeline (the OLD unknown -> "deny"
+    fail-closed behavior). It warns loudly, naming the bad value, and then
+    uses the default ("accept") -- the graph's own evidence gates and budget
+    walls are the safety net for a bad work product, not a bricked worker.
     """
     captured = _install_fake_deps(
         monkeypatch, reply_text="", outcome_to_set={"status": "success"}
@@ -255,8 +313,11 @@ async def test_approval_policy_invalid_value_fails_closed_to_deny(
     with caplog.at_level("WARNING", logger="amplifier_module_loop_amplifier_agent"):
         await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
 
-    assert captured["session"].last_approval_response == {"action": "decline"}
-    assert any("unknown approval_policy" in record.message for record in caplog.records)
+    assert captured["session"].last_approval_response == {"action": "accept"}
+    assert any(
+        "unknown approval_policy" in record.message and "sure-why-not" in record.message
+        for record in caplog.records
+    )
 
 
 # ---------------------------------------------------------------------------
