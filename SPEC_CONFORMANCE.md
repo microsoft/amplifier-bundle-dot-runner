@@ -12,7 +12,7 @@ and the chosen disposition for each gap. The goal is not 100% literal conformanc
 
 ## Compatibility doctrine
 
-Maintainer ruling, 2026-08-14. The four rules that decide every disposition in this file:
+Maintainer ruling, 2026-08-14. The five rules that decide every disposition in this file:
 
 1. **Honor the nlspec design where possible.** The upstream natural-language spec is the design of
    record; "we'd have done it differently" is not a reason to diverge.
@@ -33,6 +33,15 @@ Maintainer ruling, 2026-08-14. The four rules that decide every disposition in t
    the spec-literal behavior actually failed, and fail loudly rather than silently — a divergence
    that resolves quietly toward "success" is the failure mode this doctrine exists to prevent. Every
    one is ledgered here and in `specs/EXTENSIONS.md`.
+5. **Anchoring survives scope.** The strongdm/attractor nlspec is this runner's design of record for
+   every use, not only attractor-shaped ones. Consumers are expected to drive this engine in
+   recipe-shaped and other non-convergence-loop styles; that broadens what pipelines this engine
+   runs, and narrows nothing about what it must conform to. A new use case is never a reason to
+   relax rules 1-4: an extension motivated by a non-attractor consumer meets the same
+   additive/non-interfering bar as any other, and a divergence meets the same
+   safety-plus-measured-evidence bar, ledgered identically in `specs/EXTENSIONS.md` and asserted in
+   the conformance matrix. "The spec didn't anticipate this shape" is a reason to file an extension
+   entry, not to skip one.
 
 ## How to use this file
 

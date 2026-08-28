@@ -10,6 +10,10 @@ written against the canonical spec should continue to work without modification.
 When in doubt about whether a behavior is spec-conformant, consult the canonical snapshot
 before assuming it is a bug.
 
+An extension motivated by a recipe-shaped or other non-attractor consumer meets this
+identical bar — see the Compatibility doctrine's rule 5 ("Anchoring survives scope") in
+`SPEC_CONFORMANCE.md`.
+
 ---
 
 ## Entry Format
