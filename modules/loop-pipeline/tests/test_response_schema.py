@@ -27,6 +27,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# response_schema= is under a deprecation window (EXTENSIONS.md Sec23,
+# maintainer ruling 2026-08-29 -- BACK-OUT); resolve_response_schemas() now
+# emits a DeprecationWarning for every node that declares it. This whole
+# file deliberately exercises that attribute end-to-end, so the warning
+# fires by design on nearly every test here -- filtered at module scope so
+# it doesn't spam CI's warnings summary. The warning's own existence/wording
+# is covered by tests/test_response_schema_deprecation_warning.py, not here.
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
+
 # ---------------------------------------------------------------------------
 # Dependency stubs (must precede module imports)
 # ---------------------------------------------------------------------------
