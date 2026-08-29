@@ -727,6 +727,17 @@ class AmplifierBackend:
             prior_messages = self._get_parent_messages_for_thread(thread_key)
             if prior_messages:
                 spawn_kwargs["parent_messages"] = prior_messages
+            # Continuity optimization (feat/agent-always-installed, WAVE 6):
+            # thread the already-resolved thread_key through the SAME public
+            # orchestrator_config seam llm_provider/max_turns/user_instructions
+            # already use, so a spawn-capable worker CAN derive a stable
+            # cross-node session identity for this thread if it knows how to
+            # (today: loop-amplifier-agent -- see that module's own use of
+            # this key). This is an ADDITIVE optimization layer only:
+            # parent_messages (above) remains the actual continuity
+            # mechanism and is completely unaffected by whether a worker
+            # reads this key or not.
+            spawn_kwargs["orchestrator_config"]["thread_key"] = thread_key
 
         # CR-1 guard: parent_messages and sub_session_id must never coexist.
         # (sub_session_id is not set by this method for full-fidelity, so this

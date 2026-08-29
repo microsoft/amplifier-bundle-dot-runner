@@ -52,6 +52,7 @@ __amplifier_module_type__ = "orchestrator"
 
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +61,20 @@ from typing import Any
 from amplifier_core.events import ORCHESTRATOR_COMPLETE
 
 logger = logging.getLogger(__name__)
+
+#: Sanitizes a `.dot` graph's free-form thread_id/node-id (fidelity.py's
+#: `resolve_thread_key`) into a safe amplifier-agent sessionId component.
+#: amplifier-agent's own sessionId is an opaque string handed straight to
+#: its persistence layer (see docs/INTEGRATION.md's (workspace, sessionId)
+#: contract) -- this is deliberately conservative (no assumption about what
+#: characters that layer tolerates) rather than passing thread_key through
+#: verbatim.
+_THREAD_KEY_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _slugify_thread_key(thread_key: str) -> str:
+    return _THREAD_KEY_UNSAFE_CHARS.sub("-", thread_key)[:80]
+
 
 #: Identifies this orchestrator in the ORCHESTRATOR_COMPLETE envelope's
 #: ``orchestrator`` field -- mirrors loop-agent's own ``"loop-agent"`` value
@@ -126,7 +141,10 @@ def _load_dependencies() -> SimpleNamespace:
     the real modules the probe (``/var/tmp/aa-probe/probe_q1_q2.py``)
     exercised directly.
     """
-    from amplifier_agent_cli.provider_sources import inject_provider, inject_routing_matrix
+    from amplifier_agent_cli.provider_sources import (
+        inject_provider,
+        inject_routing_matrix,
+    )
     from amplifier_agent_lib import __version__ as aaa_version
     from amplifier_agent_lib._runtime import prepare_bundle_for_session
     from amplifier_agent_lib.bundle.cache import load_and_prepare_cached
@@ -419,6 +437,14 @@ class AmplifierAgentOrchestrator:
         max_turns = cfg.get("max_turns")
         reasoning_effort = cfg.get("reasoning_effort")
         user_instructions = cfg.get("user_instructions")
+        # Continuity optimization (feat/agent-always-installed, WAVE 6):
+        # amplifier_module_loop_pipeline.backend threads the ALREADY-RESOLVED
+        # fidelity="full" thread key through the SAME public orchestrator_
+        # config seam llm_provider/max_turns/user_instructions already use
+        # (see that module's "_run_with_spawn" -- it sets this key right
+        # alongside spawn_kwargs["parent_messages"]). A public, documented
+        # seam: no reach into loop-pipeline internals, no new protocol.
+        thread_key = cfg.get("thread_key")
 
         working_dir = self._resolve_working_dir()
 
@@ -630,11 +656,25 @@ class AmplifierAgentOrchestrator:
         # what was missing is threading a REAL, stable sessionId (not the ""
         # sentinel) and `resume`/is_resumed matching whether this invocation
         # is continuing a fidelity="full" thread (`history` non-empty) or
-        # starting fresh. `engine_session_id` (below, inside `handler`) is
-        # already resolved from this same signal; reuse it here too instead
-        # of the empty-string placeholder that always forced the ephemeral-id
-        # fallback branch.
-        engine_session_id = f"engine-{uuid.uuid4().hex}"
+        # starting fresh.
+        #
+        # WAVE 6 (feat/agent-always-installed): `thread_key` (read from
+        # orchestrator_config above -- backend.py's own fidelity="full"
+        # thread resolution, threaded across the spawn boundary via the
+        # SAME public config seam every other per-node override already
+        # uses) lets THIS turn derive the SAME sessionId a later revisit of
+        # the same thread will also derive, satisfying amplifier-agent's own
+        # (workspace, sessionId) continuity contract for real, instead of a
+        # fresh random id every single turn. `parent_messages` replay
+        # (`history`, above) remains the actual correctness mechanism --
+        # this is an ADDITIVE optimization layer: if `thread_key` is absent
+        # (fidelity != "full", or a caller that predates this key), behavior
+        # is UNCHANGED (a fresh ephemeral id every turn).
+        engine_session_id = (
+            f"dot-runner-thread-{_slugify_thread_key(thread_key)}"
+            if thread_key
+            else f"engine-{uuid.uuid4().hex}"
+        )
         is_resumed = bool(history)
         init_params = {
             "protocolVersion": deps.PROTOCOL_VERSION,
