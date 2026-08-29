@@ -36,7 +36,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import runner
+from . import default_worker, runner
 from .compat import IncompatibleEngineError, check_engine_compatibility
 from .params import parse_params
 
@@ -387,6 +387,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         interviewer = ConsoleInterviewer()
 
     bundle = _resolve_bundle_ref(args)
+    # Default-worker resolution (maintainer policy: amplifier-agent is the
+    # bet for new dot-runner surfaces). A no-op the moment the caller made
+    # ANY explicit choice (--worker, or a bundle ref from --bundle/
+    # DOT_RUNNER_BUNDLE, already merged above) -- see default_worker.resolve.
+    worker, bundle = default_worker.resolve(
+        worker=args.worker, bundle=bundle, prog=prog
+    )
 
     print(f"{prog}: running pipeline cwd={cwd} logs={logs_root}")
 
@@ -396,7 +403,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 dot_source,
                 params=params or None,
                 provider=args.provider,
-                worker=args.worker,
+                worker=worker,
                 bundle=bundle,
                 logs_root=logs_root,
                 cwd=cwd,
@@ -512,6 +519,11 @@ def cmd_resume(args: argparse.Namespace) -> int:
         interviewer = ConsoleInterviewer()
 
     bundle = _resolve_bundle_ref(args)
+    # Same default-worker resolution as 'run' -- consistent on resume (a
+    # no-op the moment the caller made any explicit choice).
+    worker, bundle = default_worker.resolve(
+        worker=args.worker, bundle=bundle, prog=prog
+    )
 
     print(f"{prog}: resuming run cwd={cwd} logs={run_dir}")
 
@@ -522,7 +534,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 dot_source=dot_source,
                 params=params or None,
                 provider=args.provider,
-                worker=args.worker,
+                worker=worker,
                 bundle=bundle,
                 cwd=cwd,
                 interviewer=interviewer,

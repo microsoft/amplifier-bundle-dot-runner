@@ -16,6 +16,24 @@ dependencies = [
     "amplifier-module-pipeline-runner",
 ]
 
+[project.optional-dependencies]
+# The default-worker bet (maintainer policy: amplifier-agent is the team's
+# bet for new dot-runner surfaces -- see amplifier_module_pipeline_runner.
+# default_worker). HEAVY and OPTIONAL: microsoft/amplifier-agent
+# (amplifier_agent_lib) pulls in fastapi/uvicorn/mcp/... and requires
+# Python >=3.12 -- it must never become a forced dependency of the thin
+# engine (`dependencies` above stays untouched). Installing this extra is
+# what makes `amplifier_module_pipeline_runner.default_worker`'s cheap
+# `importlib.util.find_spec` probe resolve True, so a bare `dot-runner run`
+# with no --worker/--bundle wires amplifier-agent instead of falling back
+# to `direct`. Refs mirror modules/loop-amplifier-agent/pyproject.toml's
+# own dependency declarations verbatim (the adapter's own peer-library ref)
+# -- see that file's comment for why each is an unpinned `@main` git ref.
+agent = [
+    "amplifier-module-loop-amplifier-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-amplifier-agent",
+    "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main",
+]
+
 [project.urls]
 Homepage = "https://github.com/microsoft/amplifier-bundle-dot-runner"
 Repository = "https://github.com/microsoft/amplifier-bundle-dot-runner"
@@ -33,3 +51,11 @@ amplifier-module-pipeline-runner = { path = "modules/pipeline-runner" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_dot_runner"]
+
+[tool.hatch.metadata]
+# Required because [project.optional-dependencies] "agent" below uses
+# direct references (git+https:// URLs) -- hatchling refuses to build a
+# package declaring those unless this is explicitly set. Mirrors
+# modules/pipeline-runner/pyproject.toml and modules/loop-amplifier-agent/
+# pyproject.toml, which already carry this same flag for the same reason.
+allow-direct-references = true
