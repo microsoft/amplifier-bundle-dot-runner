@@ -493,6 +493,14 @@ def test_ac3_fidelity_full_degrades_for_exactly_one_hop_across_a_kill(tmp_path):
     assert "l2" in degrade_lines[0] and "summary:high" in degrade_lines[0]
 
     # (d) exactly one hop: l2 got a summary preamble, l3 was free to be `full`
-    #     again and got the bare prompt.
+    #     again and got the bare prompt (WAVE 4: "bare" now means no fidelity
+    #     preamble -- the spawn path additionally appends the status-file
+    #     contract block, EXTENSIONS.md Sec 41/status_contract.py, to EVERY
+    #     spawned instruction regardless of fidelity; that is a fixed,
+    #     recognizable suffix, not a preamble, so it must not be confused
+    #     with the summary-preamble degrade this assertion actually guards).
     assert "Goal:" in (work / "l2.instruction").read_text()
-    assert (work / "l3.instruction").read_text().strip() == "three"
+    l3_instruction = (work / "l3.instruction").read_text()
+    assert l3_instruction.startswith("three"), l3_instruction
+    assert "Goal:" not in l3_instruction
+    assert "Status File Contract" in l3_instruction

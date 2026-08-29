@@ -14,10 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import amplifier_module_loop_amplifier_agent as laa
 import pytest
 from amplifier_core.events import ORCHESTRATOR_COMPLETE
-
-import amplifier_module_loop_amplifier_agent as laa
 
 from ._fakes import CapturingHooks, FakeFactoryContextManager, make_fake_deps
 
@@ -34,18 +33,22 @@ def _install_fake_deps(monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
 
 
 @pytest.mark.asyncio
-async def test_envelope_shape_matches_backend_reader(monkeypatch: pytest.MonkeyPatch):
-    """The ORCHESTRATOR_COMPLETE envelope must carry metadata.report_outcome
-    in loop-agent's exact shape, and it must be parseable by the REAL
-    loop-pipeline backend reader (not just shape-asserted by hand).
+async def test_envelope_shape_never_fabricates_report_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """WAVE 4 (ruling 5): this module no longer mounts a report_outcome
+    reach-in onto the hosted agent's coordinator, so it has nothing to read
+    back after the turn. The ORCHESTRATOR_COMPLETE envelope's ``metadata``
+    stays empty on the happy path -- it must never fabricate a
+    ``report_outcome`` key from nothing. Fed into the REAL loop-pipeline
+    backend reader, an empty-metadata envelope falls through to the
+    lifecycle-status-only path (``is_explicit=False``): it can complete a
+    node, but it can never satisfy a goal_gate on its own. The status-file
+    contract (``amplifier_module_loop_pipeline.status_contract``) is the
+    channel an explicit verdict now travels through -- entirely outside
+    this envelope, proven separately (pipeline-runner's spawn e2e fixture).
     """
-    verdict = {
-        "status": "fail",
-        "preferred_label": "escalate",
-        "failure_reason": "probe verdict",
-        "notes": "transport probe verdict",
-    }
-    _install_fake_deps(monkeypatch, reply_text="", outcome_to_set=verdict)
+    _install_fake_deps(monkeypatch, reply_text="looks done")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -54,16 +57,17 @@ async def test_envelope_shape_matches_backend_reader(monkeypatch: pytest.MonkeyP
         "do the work", None, {}, {}, hooks, coordinator=None
     )
 
-    assert reply == ""
+    assert reply == "looks done"
     event_name, payload = hooks.events[-1]
     assert event_name == ORCHESTRATOR_COMPLETE
     assert payload["orchestrator"] == "loop-amplifier-agent"
     assert payload["status"] == "success"
     assert payload["turn_count"] == 1
-    assert payload["metadata"] == {"report_outcome": verdict}
+    assert payload["metadata"] == {}
 
-    # Prove it travels: feed the exact spawn-result shape foundation's
-    # PreparedBundle.spawn assembles into the REAL backend reader.
+    # Feed the exact spawn-result shape foundation's PreparedBundle.spawn
+    # assembles into the REAL backend reader: no explicit verdict, but a
+    # clean lifecycle success still completes the node (non-explicit).
     from amplifier_module_loop_pipeline.backend import _outcome_from_spawn_result
     from amplifier_module_loop_pipeline.outcome import StageStatus
 
@@ -75,27 +79,8 @@ async def test_envelope_shape_matches_backend_reader(monkeypatch: pytest.MonkeyP
     }
     outcome = _outcome_from_spawn_result(spawn_result)
     assert outcome is not None
-    assert outcome.is_explicit is True
-    assert outcome.status is StageStatus.FAIL
-    assert outcome.preferred_label == "escalate"
-    assert outcome.failure_reason == "probe verdict"
-    assert outcome.notes == "transport probe verdict"
-
-
-@pytest.mark.asyncio
-async def test_context_updates_ride_along(monkeypatch: pytest.MonkeyPatch):
-    verdict = {
-        "status": "success",
-        "context_updates": {"artifact": "report.md"},
-        "suggested_next_ids": ["publish"],
-    }
-    _install_fake_deps(monkeypatch, reply_text="", outcome_to_set=verdict)
-
-    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
-    hooks = CapturingHooks()
-    await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
-
-    assert hooks.completion["metadata"]["report_outcome"] == verdict
+    assert outcome.status is StageStatus.SUCCESS
+    assert outcome.is_explicit is False
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +92,7 @@ async def test_context_updates_ride_along(monkeypatch: pytest.MonkeyPatch):
 async def test_config_keys_are_mapped_to_the_right_injection_points(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    captured = _install_fake_deps(
-        monkeypatch,
-        reply_text="done",
-        outcome_to_set={"status": "success"},
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="done")
 
     config = {
         "llm_provider": "openai",
@@ -140,16 +121,15 @@ async def test_config_keys_are_mapped_to_the_right_injection_points(
     prompt_seen = captured["session"].prompt_seen
     assert "focus on the tests" in prompt_seen
     assert "do the work" in prompt_seen
-    assert "report_outcome" in prompt_seen  # the nudge is always appended too
+    # WAVE 4: the report_outcome nudge is retired -- this adapter no longer
+    # appends anything beyond user_instructions (see _build_prompt).
 
 
 @pytest.mark.asyncio
 async def test_default_provider_used_when_llm_provider_absent(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -165,9 +145,7 @@ async def test_providers_mount_plan_is_cleared_before_injection(
     """Probe-proven seam: the 9 baked-in provider stubs must be cleared
     first, else inject_provider() is a no-op ("don't clobber existing").
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
     assert captured["prepared"].mount_plan["providers"] != []  # baseline: stubs present
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
@@ -185,11 +163,20 @@ async def test_providers_mount_plan_is_cleared_before_injection(
 
 
 @pytest.mark.asyncio
-async def test_fail_closed_on_missing_verdict(monkeypatch: pytest.MonkeyPatch):
-    """The child never called report_outcome (last_outcome stays None)."""
-    _install_fake_deps(
-        monkeypatch, reply_text="All done, looks great!", outcome_to_set=None
-    )
+async def test_never_fabricates_a_verdict_when_child_asserts_none(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """WAVE 4 (ruling 5, M3 authority -- worker-parity-kit's
+    ``test_m3_no_signal_never_fabricates_explicit_success``): a turn with no
+    explicit signal at all must not read back as an explicit verdict of ANY
+    kind -- including the OLD code's own fabricated ``retry``, which was
+    itself an unearned ``is_explicit=True`` synthesized from nothing. With
+    the reach-in mount gone, ``metadata`` simply stays empty; the real
+    channel for an explicit verdict is the status-file contract, which this
+    hermetic orchestrator-level test cannot exercise (no real file-writing
+    LLM here) -- see the pipeline-runner spawn e2e fixture for that proof.
+    """
+    _install_fake_deps(monkeypatch, reply_text="All done, looks great!")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -198,39 +185,7 @@ async def test_fail_closed_on_missing_verdict(monkeypatch: pytest.MonkeyPatch):
     )
 
     assert reply == "All done, looks great!"
-    report_outcome = hooks.completion["metadata"]["report_outcome"]
-    assert report_outcome["status"] == "retry"
-    assert report_outcome["status"] != "success"
-
-
-@pytest.mark.asyncio
-async def test_fail_closed_on_malformed_verdict_missing_status(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"notes": "no status field"}
-    )
-
-    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
-    hooks = CapturingHooks()
-    await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
-
-    assert hooks.completion["metadata"]["report_outcome"]["status"] == "retry"
-
-
-@pytest.mark.asyncio
-async def test_fail_closed_on_malformed_verdict_unknown_status(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "totally-done"}
-    )
-
-    orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
-    hooks = CapturingHooks()
-    await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
-
-    assert hooks.completion["metadata"]["report_outcome"]["status"] == "retry"
+    assert hooks.completion["metadata"] == {}
 
 
 @pytest.mark.asyncio
@@ -263,9 +218,7 @@ async def test_engine_shutdown_called_even_on_exception(
 
 @pytest.mark.asyncio
 async def test_engine_shutdown_called_on_success(monkeypatch: pytest.MonkeyPatch):
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -312,9 +265,18 @@ async def test_shutdown_failure_does_not_mask_original_exception(
 
 
 @pytest.mark.asyncio
-async def test_empty_reply_with_verdict_still_succeeds(monkeypatch: pytest.MonkeyPatch):
-    verdict = {"status": "success", "notes": "wrote the file"}
-    _install_fake_deps(monkeypatch, reply_text="", outcome_to_set=verdict)
+async def test_empty_reply_with_clean_lifecycle_still_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """WAVE 4: "artifact over prose" no longer flows through an in-process
+    verdict capture -- a child that did its work via file tools (writing
+    status.json, or any other artifact) and ended with empty closing prose
+    still completes the node via the lifecycle-status-only path. It is
+    NON-explicit (cannot satisfy a goal_gate by itself); see
+    ``read_status_override`` for how an actually-written status.json
+    overrides that afterward, entirely outside this envelope.
+    """
+    _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -323,7 +285,7 @@ async def test_empty_reply_with_verdict_still_succeeds(monkeypatch: pytest.Monke
     )
 
     assert reply == ""
-    assert hooks.completion["metadata"]["report_outcome"] == verdict
+    assert hooks.completion["metadata"] == {}
     assert hooks.completion["status"] == "success"
 
 
@@ -382,7 +344,6 @@ async def test_system_framing_survives_history_replay(
     captured = _install_fake_deps(
         monkeypatch,
         reply_text="ok",
-        outcome_to_set={"status": "success"},
         context_module=hosted_context,
     )
 

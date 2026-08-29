@@ -8,15 +8,13 @@ actual seam this module depends on (not just a name-shaped stub):
     (``session_id``/``turn_id``/``prompt``/``approval``/``display``), calls
     the injected ``turn_handler`` with it, and returns a ``reply`` key --
     exactly the seam ``AmplifierAgentOrchestrator._run_turn`` depends on.
-  * ``FakeReportOutcomeTool`` exposes the one attribute
-    (``last_outcome``) the orchestrator reads after the turn.
   * ``FakePreparedBundle.create_session`` returns a ``FakeSession`` whose
-    ``coordinator.mount("tools", tool, name=...)`` records the mounted tool
-    exactly like the real per-turn coordinator does, and whose
-    ``execute(prompt)`` can simulate the child agent calling
-    ``report_outcome`` (by setting ``tool.last_outcome`` before returning),
-    or NOT calling it (leaving ``last_outcome`` at ``None``) -- the fail-
-    closed case under test.
+    ``coordinator.mount("tools", tool, name=...)`` records any mounted tool
+    exactly like the real per-turn coordinator does (WAVE 4: the real
+    orchestrator no longer mounts a report_outcome reach-in itself -- ruling
+    5 -- so ``mounted_tools`` is normally empty; this fake keeps the
+    recording behavior only because ``FakeSessionCoordinator`` is a general
+    double other tests may still exercise).
 
 See ``/var/tmp/aa-probe/probe_q1_q2.py`` for the real end-to-end mechanism
 these fakes stand in for.
@@ -198,13 +196,11 @@ class FakeSession:
         self,
         *,
         reply_text: str = "",
-        outcome_to_set: dict[str, Any] | None = None,
         raise_on_execute: Exception | None = None,
         context_module: Any = None,
     ) -> None:
         self.coordinator = FakeSessionCoordinator(context_module=context_module)
         self._reply_text = reply_text
-        self._outcome_to_set = outcome_to_set
         self._raise_on_execute = raise_on_execute
         self.prompt_seen: str | None = None
         # Set during execute() if an "approval.request" capability is
@@ -251,9 +247,6 @@ class FakeSession:
             self.last_approval_response = await approval_fn(
                 {"kind": "tool_call", "payload": {"toolName": "fake_tool"}}
             )
-        tool = self.coordinator.mounted_tools.get("report_outcome")
-        if tool is not None and self._outcome_to_set is not None:
-            tool.last_outcome = self._outcome_to_set
         return self._reply_text
 
 
@@ -272,17 +265,6 @@ class FakePreparedBundle:
         self, *, session_id: str | None, session_cwd: Any, is_resumed: bool
     ) -> FakeSession:
         return self._session
-
-
-class FakeReportOutcomeTool:
-    """Mirrors amplifier_module_tool_report_outcome.ReportOutcomeTool's shape."""
-
-    name = "report_outcome"
-
-    def __init__(self, config: dict[str, Any], coordinator: Any = None) -> None:
-        self.config = config
-        self.coordinator = coordinator
-        self.last_outcome: dict[str, Any] | None = None
 
 
 class FakeEngine:
@@ -397,7 +379,6 @@ class FakeCliDisplaySystem:
 def make_fake_deps(
     *,
     reply_text: str = "",
-    outcome_to_set: dict[str, Any] | None = None,
     raise_on_execute: Exception | None = None,
     inject_provider_calls: list[tuple[Any, ...]] | None = None,
     shutdown_raises: Exception | None = None,
@@ -412,7 +393,6 @@ def make_fake_deps(
       * ``"engine"``     -> the FakeEngine instance actually constructed
       * ``"prepared"``   -> the FakePreparedBundle instance actually used
       * ``"session"``    -> the FakeSession instance actually created
-      * ``"tool"``       -> the FakeReportOutcomeTool instance actually mounted
       * ``"inject_provider_calls"`` -> list of (provider_name, kwargs) tuples
       * ``"prepare_bundle_for_session_calls"`` -> list of
         ``{"host_config": ..., "workspace": ...}`` dicts (gap 1)
@@ -442,7 +422,6 @@ def make_fake_deps(
 
     session = FakeSession(
         reply_text=reply_text,
-        outcome_to_set=outcome_to_set,
         raise_on_execute=raise_on_execute,
         context_module=context_module,
     )
@@ -493,15 +472,6 @@ def make_fake_deps(
             "metadata": {},
         }
 
-    real_report_outcome_tool_cls = FakeReportOutcomeTool
-
-    def tool_factory(
-        config: dict[str, Any], coordinator: Any = None
-    ) -> FakeReportOutcomeTool:
-        tool = real_report_outcome_tool_cls(config, coordinator)
-        captured["tool"] = tool
-        return tool
-
     engines_built: list[FakeEngine] = []
 
     def engine_factory(
@@ -526,7 +496,6 @@ def make_fake_deps(
         CliApprovalSystem=FakeCliApprovalSystem,
         CliDisplaySystem=FakeCliDisplaySystem,
         inject_provider=fake_inject_provider,
-        ReportOutcomeTool=tool_factory,
         prepare_bundle_for_session=fake_prepare_bundle_for_session,
         resolve_workspace=fake_resolve_workspace,
         hydrate_agent_overlay=fake_hydrate_agent_overlay,

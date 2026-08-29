@@ -8,34 +8,30 @@ opt-in agent-entry option, never a forced dependency of the thin dot-runner
 bundle (see behaviors/dot-runner-amplifier-agent.yaml, which is NOT included
 by bundle.md).
 
-THE MECHANISM (proven empirically before this module was written -- see
-``/var/tmp/aa-probe/probe_q1_q2.py``, "Q1: can a host mount a foreign tool
-module into Engine's session? Q2: does the model actually call it?" -- both
-answered yes against a real Engine + real haiku turn):
+THE MECHANISM (WAVE 4 update, maintainer ruling 2026-08-29): this module
+used to mount a REACH-IN copy of the real ``tool-report-outcome`` module
+directly onto the hosted amplifier-agent's own per-turn coordinator
+(``session.coordinator.mount("tools", tool, name=tool.name)``) so that a
+foreign tool the baked-in bundle never declared could capture an explicit
+verdict. Ruling 5 retires that: reaching into a DIFFERENT agent runtime's
+internals to mount a tool it never asked for is exactly the kind of
+internals-reach-in the ruling forbids, even though the mechanism itself was
+proven to work (see the historical probe at
+``/var/tmp/aa-probe/probe_q1_q2.py``).
 
-  1. ``amplifier_agent_lib.engine.Engine`` takes a caller-injected
-     ``turn_handler`` coroutine (``engine.py`` around the ``TurnHandler``
-     type alias and ``Engine.__init__``). The vendored CLI's own handler
-     factory, ``amplifier_agent_lib._runtime.make_turn_handler``, builds a
-     handler that calls ``prepared.create_session()`` and then wires
-     capabilities onto ``session.coordinator``.
-  2. A CUSTOM turn handler can do the same ``create_session()`` call and
-     additionally ``await session.coordinator.mount("tools", tool,
-     name=tool.name)`` to add a tool amplifier-agent's own bundle never
-     declared -- in this case the REAL ``tool-report-outcome`` module's
-     ``ReportOutcomeTool``. This is the *same call shape*
-     ``amplifier_agent_http/_session_runner.py`` uses (around line 134) to
-     mount its own ``HostToolProxy`` tools onto a live per-turn coordinator,
-     so it is not a fragile private hack -- it is the documented extension
-     point for "give this turn a tool the baked-in bundle doesn't have".
-  3. After the turn, ``tool.last_outcome`` holds the agent's
-     ``report_outcome`` call arguments (or ``None`` if it never called the
-     tool). This module reads that register and republishes it as
-     ``metadata.report_outcome`` on an ``ORCHESTRATOR_COMPLETE`` event, in
-     the exact envelope shape ``amplifier_module_loop_agent`` uses (see
-     ``AgentOrchestrator._emit_completion`` there), which
-     ``amplifier_module_loop_pipeline.backend._outcome_from_spawn_result``
-     already knows how to read.
+The replacement is the spec's OWN channel (canonical Sec 4.5 / Appendix C):
+``amplifier_module_loop_pipeline.backend`` injects the ABSOLUTE path to this
+node's stage-directory ``status.json`` (plus the envelope contract) directly
+into the prompt text handed to ``execute()`` below -- see
+``amplifier_module_loop_pipeline.status_contract``. The hosted amplifier-agent
+writes that file using its OWN file-editing tools (no mounting required,
+because writing a file is not a foreign capability); the file's presence and
+content are only ever read back by the PARENT process
+(``handlers/codergen.py``'s ``read_status_override``, EXTENSIONS.md Sec 41),
+entirely outside this module. This adapter's own seam shrinks to: spawn a
+fresh Engine, hand it the (already-contract-carrying) prompt, run one turn,
+and return the reply -- files and ``status.json`` are the channel, not a
+tool call this module has to police.
 
 RECURSION GUARD: an agent entry that uses this orchestrator must declare
 ``session.orchestrator.module: loop-amplifier-agent`` (non-None, and not
@@ -70,11 +66,6 @@ logger = logging.getLogger(__name__)
 #: (amplifier_module_loop_agent/__init__.py's ``_emit_completion``).
 ORCHESTRATOR_NAME = "loop-amplifier-agent"
 
-#: Mirrors tool-report-outcome's own ``VALID_STATUSES`` -- the vocabulary a
-#: verdict's ``status`` field must use for
-#: ``backend.py::_outcome_from_spawn_result`` to accept it as explicit.
-VALID_STATUSES = frozenset({"success", "fail", "partial_success", "retry"})
-
 #: amplifier-agent's own baked-in default (bundle.md: ``default_provider:
 #: anthropic``), used when the pipeline node's orchestrator_config carries no
 #: ``llm_provider`` override and no parent ``provider_preferences`` resolve.
@@ -103,15 +94,6 @@ DEFAULT_PROVIDER = "anthropic"
 #: pairs with.
 DEFAULT_APPROVAL_POLICY = "accept"
 VALID_APPROVAL_POLICIES = frozenset({"accept", "deny"})
-
-#: Appended to every prompt sent to the amplifier-agent turn so the child
-#: knows to leave an explicit verdict behind (EXTENSIONS.md 35 transport).
-_REPORT_OUTCOME_NUDGE = (
-    "\n\nWhen you have finished this task, call the `report_outcome` tool "
-    "exactly once with a final status of 'success', 'fail', "
-    "'partial_success', or 'retry' (plus notes / preferred_label / "
-    "context_updates as appropriate) before ending your turn."
-)
 
 
 async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
@@ -161,7 +143,6 @@ def _load_dependencies() -> SimpleNamespace:
     )
     from amplifier_agent_lib.spawn import hydrate_agent_overlay, spawn_sub_session
     from amplifier_agent_lib.wire_approval_provider import WireApprovalProvider
-    from amplifier_module_tool_report_outcome import ReportOutcomeTool
 
     return SimpleNamespace(
         aaa_version=aaa_version,
@@ -173,7 +154,6 @@ def _load_dependencies() -> SimpleNamespace:
         CliApprovalSystem=CliApprovalSystem,
         CliDisplaySystem=CliDisplaySystem,
         inject_provider=inject_provider,
-        ReportOutcomeTool=ReportOutcomeTool,
         # v2 capability closures (see README "Capability gaps" section):
         prepare_bundle_for_session=prepare_bundle_for_session,  # gap 1
         resolve_workspace=resolve_workspace,  # gap 1
@@ -260,7 +240,7 @@ class AmplifierAgentOrchestrator:
             # get_messages() raises still emits the ORCHESTRATOR_COMPLETE
             # envelope the spawn boundary is owed -- like every other exit path.
             history = await self._history_from_context(context)
-            reply, last_outcome = await self._run_turn(prompt, history=history)
+            reply = await self._run_turn(prompt, history=history)
         except Exception:
             # A raised exception means the invocation never completed --
             # still owes the spawn boundary an envelope (mirrors loop-agent's
@@ -269,32 +249,22 @@ class AmplifierAgentOrchestrator:
             await self._emit_completion(hooks, status="incomplete", report_outcome=None)
             raise
 
-        if (
-            isinstance(last_outcome, dict)
-            and last_outcome.get("status") in VALID_STATUSES
-        ):
-            report_outcome = last_outcome
-        else:
-            # FAIL-CLOSED (the whole point of this block): the turn
-            # completed without ever calling report_outcome, or called it
-            # with something malformed. Never fabricate success --
-            # synthesize an explicit, non-passing verdict so a goal_gate
-            # (and even a plain node) sees a real "needs another look"
-            # signal instead of silently deriving SUCCESS from the
-            # lifecycle status alone
-            # (backend.py::_outcome_from_spawn_result's status-only
-            # fallback, which is_explicit=False on purpose).
-            reason = (
-                f"amplifier-agent turn ended without a valid report_outcome "
-                f"verdict (last_outcome={last_outcome!r}); treating as "
-                f"retry rather than fabricating success."
-            )
-            logger.warning(reason)
-            report_outcome = {"status": "retry", "notes": reason}
-
-        await self._emit_completion(
-            hooks, status="success", report_outcome=report_outcome
-        )
+        # WAVE 4 (maintainer ruling 2026-08-29, EXTENSIONS.md Sec 35 RETCON
+        # note): no in-process report_outcome capture exists anymore -- this
+        # adapter no longer mounts a reach-in tool onto the hosted agent's
+        # coordinator (ruling 5). It is NOT this module's job to fabricate an
+        # explicit verdict from nothing: `metadata.report_outcome` stays
+        # empty, so `backend.py::_outcome_from_spawn_result` falls through to
+        # the lifecycle-status-only path (`is_explicit=False` -- cannot
+        # satisfy a goal_gate on its own, exactly as intended). The REAL
+        # explicit-verdict channel for this worker is the status-file
+        # contract already embedded in `prompt` (see
+        # `amplifier_module_loop_pipeline.status_contract`): if the hosted
+        # amplifier-agent wrote <stage_dir>/status.json with its own file
+        # tools, `handlers/codergen.py`'s `read_status_override` (running in
+        # the PARENT process, after this method returns) picks it up --
+        # entirely outside this adapter's control or knowledge.
+        await self._emit_completion(hooks, status="success", report_outcome=None)
         return reply
 
     @staticmethod
@@ -358,8 +328,14 @@ class AmplifierAgentOrchestrator:
 
     async def _run_turn(
         self, prompt: str, history: list[dict[str, Any]] | None = None
-    ) -> tuple[str, dict[str, Any] | None]:
-        """Boot a fresh Engine, run exactly one turn, return (reply, last_outcome).
+    ) -> str:
+        """Boot a fresh Engine, run exactly one turn, return the reply text.
+
+        WAVE 4: no longer returns a captured ``last_outcome`` -- there is no
+        more in-process report_outcome tool to capture it from (ruling 5).
+        An explicit verdict, if any, reaches the parent exclusively via the
+        status-file contract (``status_contract.py``) already embedded in
+        ``prompt`` -- see ``execute()``'s docstring update below.
 
         Config-key mapping (``orchestrator_config`` keys the dot-pipeline
         backend passes blind -- see ``backend.py``'s spawn_kwargs
@@ -539,8 +515,6 @@ class AmplifierAgentOrchestrator:
             else deps.ApprovalOverride.NO
         )
 
-        captured: dict[str, Any] = {}
-
         async def handler(ctx: Any) -> str:
             session_id = ctx.session_id or None
             # v2 (gap 5): mint a fresh id for a one-shot run (this adapter
@@ -583,13 +557,6 @@ class AmplifierAgentOrchestrator:
             session.coordinator.register_capability(
                 "approval.request", wire_approval_provider.request_approval
             )
-
-            # THE MECHANISM (see module docstring + probe_q1_q2.py): mount
-            # the REAL tool-report-outcome module directly on the live
-            # per-turn coordinator.
-            tool = deps.ReportOutcomeTool(config={}, coordinator=session.coordinator)
-            await session.coordinator.mount("tools", tool, name=tool.name)
-            captured["tool"] = tool
 
             # gap 2: register session.spawn so the child's own `delegate`
             # tool can spawn grandchild sessions. Mirrors make_turn_handler's
@@ -663,9 +630,7 @@ class AmplifierAgentOrchestrator:
                     "engine.shutdown() failed during turn cleanup", exc_info=True
                 )
 
-        tool = captured.get("tool")
-        last_outcome = getattr(tool, "last_outcome", None)
-        return result["reply"], last_outcome
+        return result["reply"]
 
     def _resolve_working_dir(self) -> Path:
         """Resolve the child session's working directory.
@@ -743,9 +708,16 @@ class AmplifierAgentOrchestrator:
 
     @staticmethod
     def _build_prompt(prompt: str, user_instructions: str | None) -> str:
-        """Compose the final prompt: base prompt + user_instructions + nudge."""
+        """Compose the final prompt: base prompt + user_instructions.
+
+        WAVE 4: no longer appends a report_outcome nudge -- ``prompt`` already
+        carries the status-file contract (path + envelope), injected once by
+        ``amplifier_module_loop_pipeline.backend`` for every spawn-capable
+        worker (see ``status_contract.py``). Retiring a second, adapter-local
+        nudge keeps this module's prompt-shaping honest: one contract, one
+        injection point, taught identically to every spawn worker.
+        """
         parts = [prompt]
         if user_instructions:
             parts.append(f"\n\nAdditional instructions:\n{user_instructions}")
-        parts.append(_REPORT_OUTCOME_NUDGE)
         return "".join(parts)
