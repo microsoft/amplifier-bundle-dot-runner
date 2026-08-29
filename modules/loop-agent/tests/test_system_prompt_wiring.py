@@ -7,15 +7,18 @@ their output appears in the ChatRequest sent to the provider.
 Spec coverage: PROV-002, SYS-001, SYS-005-008, ENVCTX-001-002.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from amplifier_core.message_models import ChatResponse, Usage
 
-from amplifier_module_loop_agent import AgentOrchestrator, _resolve_system_prompt_file
+from amplifier_module_loop_agent import (
+    AgentOrchestrator,
+    _resolve_provider_default_prompt,
+    _resolve_system_prompt_file,
+)
 from amplifier_module_loop_agent.agent_session import AgentSession
 from amplifier_module_loop_agent.config import SessionConfig
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -728,40 +731,96 @@ async def test_node_llm_provider_azure_openai_does_not_misroute_to_openai():
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_relative_system_prompt_file_is_cwd_independent(monkeypatch):
+def _write_fake_bundle(tmp_path):
+    """Build a synthetic bundle-root layout under ``tmp_path`` and return
+    ``(fake_pkg_file, fake_bundle_root)``.
+
+    ``fake_pkg_file`` mimics the real editable-install path
+    ``<bundle-root>/modules/loop-agent/amplifier_module_loop_agent/__init__.py``
+    (only the *path*, not real file content -- ``_resolve_system_prompt_file``
+    only ever does ``Path(__file__).resolve().parents[...]`` arithmetic on it,
+    it never opens ``__file__`` itself). ``fake_bundle_root`` is
+    ``ancestors[3]`` of that path, matching production layout exactly.
+    """
+    fake_pkg_file = (
+        tmp_path
+        / "modules"
+        / "loop-agent"
+        / "amplifier_module_loop_agent"
+        / "__init__.py"
+    )
+    fake_bundle_root = tmp_path
+    return fake_pkg_file, fake_bundle_root
+
+
+def test_resolve_relative_system_prompt_file_is_cwd_independent(monkeypatch, tmp_path):
     """A RELATIVE system_prompt_file resolves to the bundle-root file regardless of CWD.
 
     Council BLOCKER: resolution must anchor on the module's __file__, never the
     process working directory. We prove this by chdir'ing to an unrelated dir
-    (/tmp) and confirming the attractor bundle's own context/system-anthropic.md
-    still resolves and is readable. This is exactly what lets a different consumer
-    (e.g. the dot-graph resolver), launched from anywhere, reuse attractor's prompts.
+    and confirming a bundle-root context/system-anthropic.md still resolves and
+    is readable.
+
+    Fixture note (P2 extraction): this used to exercise the REAL
+    amplifier-bundle-attractor-shipped context/system-anthropic.md, because
+    loop-agent lived inside that bundle and the file traveled with it. Since
+    the P2 repo-split, loop-agent lives in amplifier-bundle-dot-runner, which
+    does not ship that file at its own bundle root (see
+    _resolve_provider_default_prompt's module-local fallback for the runtime
+    fix). The CWD-independence *contract* under test here is unchanged, so we
+    now prove it against a synthetic bundle root (module's own ``__file__``
+    monkeypatched into a tmp layout) instead of relying on incidental content
+    from a different repo.
     """
-    import os
     import tempfile
 
-    # The loop-agent module installs editable inside the attractor bundle, so the
-    # bundle ships these provider base prompts at <bundle-root>/context/.
+    import amplifier_module_loop_agent as pkg
+
+    fake_pkg_file, fake_bundle_root = _write_fake_bundle(tmp_path)
+    context_dir = fake_bundle_root / "context"
+    context_dir.mkdir(parents=True)
+    (context_dir / "system-anthropic.md").write_text(
+        "FAKE-BUNDLE-ROOT-ANTHROPIC-CONTENT", encoding="utf-8"
+    )
+    monkeypatch.setattr(pkg, "__file__", str(fake_pkg_file))
+
     rel = "context/system-anthropic.md"
 
     with tempfile.TemporaryDirectory() as other_cwd:
         monkeypatch.chdir(other_cwd)
-        assert os.getcwd() == os.path.realpath(other_cwd) or os.getcwd() == other_cwd
 
         resolved = _resolve_system_prompt_file(rel)
 
         assert resolved.is_absolute()
         assert resolved.is_file(), f"expected an existing file, got {resolved}"
         assert resolved.name == "system-anthropic.md"
-        # Resolved against the module's bundle root, NOT the (temp) CWD.
+        # Resolved against the module's (fake) bundle root, NOT the (temp) CWD.
         assert str(other_cwd) not in str(resolved)
+        assert resolved == (context_dir / "system-anthropic.md").resolve()
         # And it is genuinely readable (the content becomes Layer-1).
-        assert resolved.read_text(encoding="utf-8").strip()
+        assert resolved.read_text(encoding="utf-8").strip() == (
+            "FAKE-BUNDLE-ROOT-ANTHROPIC-CONTENT"
+        )
 
 
-def test_resolve_relative_system_prompt_file_same_from_any_cwd(monkeypatch):
-    """Resolution is deterministic: the same absolute path from two different CWDs."""
+def test_resolve_relative_system_prompt_file_same_from_any_cwd(monkeypatch, tmp_path):
+    """Resolution is deterministic: the same absolute path from two different CWDs.
+
+    See test_resolve_relative_system_prompt_file_is_cwd_independent's docstring
+    for why this now uses a synthetic bundle root rather than a real
+    attractor-shipped file.
+    """
     import tempfile
+
+    import amplifier_module_loop_agent as pkg
+
+    fake_pkg_file, fake_bundle_root = _write_fake_bundle(tmp_path)
+    context_dir = fake_bundle_root / "context"
+    context_dir.mkdir(parents=True)
+    (context_dir / "system-gemini.md").write_text(
+        "FAKE-GEMINI-CONTENT", encoding="utf-8"
+    )
+    monkeypatch.setattr(pkg, "__file__", str(fake_pkg_file))
 
     rel = "context/system-gemini.md"
 
@@ -817,6 +876,106 @@ def test_resolve_existing_absolute_file_used_as_is(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_provider_default_prompt: the new (3a bundle-root COMPAT / 3b
+# module-local) two-rung provider-default ladder (P2-extraction fix: dot-runner
+# does not ship attractor's context/system-<provider>.md at its bundle root).
+# ---------------------------------------------------------------------------
+
+
+def test_module_local_default_fires_when_no_bundle_root_file_exists(
+    monkeypatch, tmp_path
+):
+    """(3b) With NO bundle-root context/system-<provider>.md at all, the
+    module-local package default (shipped with loop-agent itself) is used.
+
+    This is the dot-runner-consumer case: the bundle-root candidate never
+    exists, so (3a) always falls through to (3b) -- exactly what makes
+    loop-agent a self-contained brick after the P2 extraction.
+    """
+    fake_pkg_file, fake_bundle_root = _write_fake_bundle(tmp_path)
+    # Deliberately create NO context/ dir at all under the fake bundle root.
+    assert not (fake_bundle_root / "context").exists()
+    monkeypatch.setattr(
+        __import__("amplifier_module_loop_agent"), "__file__", str(fake_pkg_file)
+    )
+
+    content = _resolve_provider_default_prompt("anthropic")
+
+    # The real module-local default ships this heading (generic, Claude-Code-
+    # aligned coding-agent prompt -- see nlspec Section 6.2).
+    assert "Anthropic Profile" in content
+    assert "Claude Code" in content
+
+
+def test_bundle_root_wins_over_module_local_when_present(monkeypatch, tmp_path):
+    """(3a) COMPAT: a bundle-root context/system-<provider>.md, when present,
+    wins over the module-local default -- attractor's own copy keeps working
+    unchanged through the deprecation window.
+    """
+    fake_pkg_file, fake_bundle_root = _write_fake_bundle(tmp_path)
+    context_dir = fake_bundle_root / "context"
+    context_dir.mkdir(parents=True)
+    BUNDLE_ROOT_SENTINEL = "BUNDLE-ROOT-COMPAT-SENTINEL-M3Q8"
+    (context_dir / "system-anthropic.md").write_text(
+        BUNDLE_ROOT_SENTINEL, encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        __import__("amplifier_module_loop_agent"), "__file__", str(fake_pkg_file)
+    )
+
+    content = _resolve_provider_default_prompt("anthropic")
+
+    assert content == BUNDLE_ROOT_SENTINEL
+    # The module-local default's own heading must NOT have leaked through.
+    assert "Anthropic Profile" not in content
+
+
+@pytest.mark.asyncio
+async def test_explicit_system_prompt_file_wins_over_both_defaults(
+    monkeypatch, tmp_path
+):
+    """Precedence (2) beats (3a) AND (3b): an explicit system_prompt_file wins
+    even when BOTH a bundle-root default and the module-local default would
+    otherwise be available for the resolved provider.
+    """
+    fake_pkg_file, fake_bundle_root = _write_fake_bundle(tmp_path)
+    context_dir = fake_bundle_root / "context"
+    context_dir.mkdir(parents=True)
+    (context_dir / "system-anthropic.md").write_text(
+        "BUNDLE-ROOT-SHOULD-NOT-WIN", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        __import__("amplifier_module_loop_agent"), "__file__", str(fake_pkg_file)
+    )
+
+    explicit_file = tmp_path / "explicit-base.md"
+    EXPLICIT_SENTINEL = "EXPLICIT-FILE-WINS-OVER-BOTH-DEFAULTS-K4P1"
+    explicit_file.write_text(EXPLICIT_SENTINEL, encoding="utf-8")
+
+    context = MagicMock()
+    provider = AsyncMock()
+    provider.complete = AsyncMock(return_value=_text_response("done"))
+    hooks = _make_hooks()
+    coordinator = MagicMock()
+    coordinator.register_capability = MagicMock()
+
+    orch = AgentOrchestrator(
+        coordinator=coordinator,
+        config={
+            "system_prompt_file": str(explicit_file),  # absolute -> bypasses ladder
+            "max_tool_rounds_per_input": 1,
+        },
+    )
+    await orch.execute("hello", context, {"anthropic": provider}, {}, hooks)
+
+    request = provider.complete.call_args[0][0]
+    system_content = request.messages[0].content
+    assert EXPLICIT_SENTINEL in system_content
+    assert "BUNDLE-ROOT-SHOULD-NOT-WIN" not in system_content
+    assert "Anthropic Profile" not in system_content
+
+
+# ---------------------------------------------------------------------------
 # Issue-142: working_dir capability propagation through AgentOrchestrator.execute()
 # ---------------------------------------------------------------------------
 # These tests exercise the capability-propagation path through the PUBLIC
@@ -848,9 +1007,10 @@ async def test_capability_working_dir_propagates_to_environment_context(tmp_path
     import tempfile
 
     # pipeline_dir has an AGENTS.md with a sentinel; process_dir has none.
-    with tempfile.TemporaryDirectory() as pipeline_dir, \
-         tempfile.TemporaryDirectory() as process_dir:
-
+    with (
+        tempfile.TemporaryDirectory() as pipeline_dir,
+        tempfile.TemporaryDirectory() as process_dir,
+    ):
         sentinel = "CAPABILITY_PROPAGATION_SENTINEL_XQ7K9"
         agents_md = os.path.join(pipeline_dir, "AGENTS.md")
         with open(agents_md, "w") as f:
@@ -888,7 +1048,8 @@ async def test_capability_working_dir_propagates_to_environment_context(tmp_path
             # os.getcwd() fails here (wrong value).
             expected_line = f"Working directory: {pipeline_dir}"
             wd_lines = [
-                line for line in system_content.splitlines()
+                line
+                for line in system_content.splitlines()
                 if line.startswith("Working directory:")
             ]
             assert len(wd_lines) == 1 and wd_lines[0] == expected_line, (
@@ -939,7 +1100,8 @@ async def test_capability_fallback_to_getcwd_when_no_capability(tmp_path):
             # Fallback: Working directory: line must equal process_dir (os.getcwd()).
             expected_line = f"Working directory: {process_dir}"
             wd_lines = [
-                line for line in system_content.splitlines()
+                line
+                for line in system_content.splitlines()
                 if line.startswith("Working directory:")
             ]
             assert len(wd_lines) == 1 and wd_lines[0] == expected_line, (
@@ -960,9 +1122,10 @@ async def test_explicit_working_dir_wins_over_capability(tmp_path):
     import os
     import tempfile
 
-    with tempfile.TemporaryDirectory() as pipeline_dir, \
-         tempfile.TemporaryDirectory() as explicit_dir:
-
+    with (
+        tempfile.TemporaryDirectory() as pipeline_dir,
+        tempfile.TemporaryDirectory() as explicit_dir,
+    ):
         # Write AGENTS.md in both dirs with distinct sentinels.
         cap_sentinel = "CAP_DIR_SENTINEL_Z9M2"
         explicit_sentinel = "EXPLICIT_DIR_SENTINEL_W4K7"
@@ -1001,7 +1164,8 @@ async def test_explicit_working_dir_wins_over_capability(tmp_path):
         # Explicit dir must win — Working directory: line equals explicit_dir.
         expected_line = f"Working directory: {explicit_dir}"
         wd_lines = [
-            line for line in system_content.splitlines()
+            line
+            for line in system_content.splitlines()
             if line.startswith("Working directory:")
         ]
         assert len(wd_lines) == 1 and wd_lines[0] == expected_line, (
@@ -1050,10 +1214,13 @@ async def test_magicmock_coordinator_not_coerced_to_string():
 
     # The Working directory: line must be a real path string, not a MagicMock repr.
     wd_lines = [
-        line for line in system_content.splitlines()
+        line
+        for line in system_content.splitlines()
         if line.startswith("Working directory:")
     ]
-    assert len(wd_lines) == 1, f"expected exactly one Working directory: line, got {wd_lines!r}"
+    assert len(wd_lines) == 1, (
+        f"expected exactly one Working directory: line, got {wd_lines!r}"
+    )
     wd_value = wd_lines[0].removeprefix("Working directory: ")
     # Must be an absolute path (os.getcwd() result), not a MagicMock repr.
     assert os.path.isabs(wd_value), (

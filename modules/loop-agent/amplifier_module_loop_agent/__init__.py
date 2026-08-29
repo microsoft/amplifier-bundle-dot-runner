@@ -25,6 +25,20 @@ from .subagent_tools import SubagentManager
 
 logger = logging.getLogger(__name__)
 
+# Module-local package data: provider-default base prompts shipped WITH this
+# module's wheel (support#<pending>: the P2 extraction moved loop-agent out of
+# amplifier-bundle-attractor into amplifier-bundle-dot-runner, and dot-runner
+# does not carry attractor's `context/system-<provider>.md` files at its
+# bundle root). These are generic coding-agent prompts (mirroring Claude
+# Code / codex-rs / gemini-cli per nlspec Section 6.2 -- "The spec does NOT
+# prescribe full system prompt text ... It specifies what topics the prompt
+# must cover"), not attractor-opinionated doctrine, so they belong WITH the
+# module rather than the pattern layer. They are the (3b) rung of
+# ``_resolve_provider_default_prompt`` below -- see that function's docstring
+# for the full precedence.
+_MODULE_DIR = Path(__file__).resolve().parent
+_MODULE_LOCAL_PROMPTS_DIR = _MODULE_DIR / "prompts"
+
 
 def _resolve_system_prompt_file(spf: str) -> Path:
     """Resolve a configured ``system_prompt_file`` to an absolute, existing path.
@@ -101,6 +115,52 @@ def _resolve_system_prompt_file(spf: str) -> Path:
     )
 
 
+def _resolve_provider_default_prompt(canonical: str) -> str:
+    """Resolve the provider-DEFAULT Layer-1 base prompt content for ``canonical``.
+
+    Two-rung fallback (first that resolves wins):
+
+      (3a) bundle-root ``context/system-<canonical>.md`` -- COMPAT rung. A
+           bundle that ships its own copy at its repo root (e.g.
+           amplifier-bundle-attractor, which still carries these files today)
+           keeps winning, unchanged, through the deprecation window. Resolved
+           via the same CWD-independent, bundle-root-anchored
+           ``_resolve_system_prompt_file`` used for an explicit
+           ``system_prompt_file``.
+      (3b) module-local package default ``prompts/system-<canonical>.md`` --
+           shipped WITH this module (installed alongside the code, in the
+           wheel), so a bundle that ships NO copy at its root (e.g.
+           amplifier-bundle-dot-runner, since the P2 repo-split) still gets a
+           working, generic coding-agent default. Anchored on ``__file__``
+           too, so resolution never depends on which bundle a consumer
+           happens to be running loop-agent from.
+
+    Raises FileNotFoundError if NEITHER rung resolves. This should not happen
+    for a member of ``KNOWN_PROVIDERS`` -- the module ships a (3b) default for
+    every one of them -- but stays fail-loud (never a silent empty Layer-1)
+    in case a future KNOWN_PROVIDERS entry is added without its default.
+
+    See docs/designs/layer-1-profile-owned-system-prompt.md §Mechanism.
+    """
+    spf = f"context/system-{canonical}.md"
+    try:
+        return _resolve_system_prompt_file(spf).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        pass  # (3a) bundle-root copy absent -- fall through to (3b).
+
+    module_local = _MODULE_LOCAL_PROMPTS_DIR / f"system-{canonical}.md"
+    if module_local.is_file():
+        return module_local.read_text(encoding="utf-8")
+
+    raise FileNotFoundError(
+        f"No provider-default base prompt found for provider {canonical!r}: "
+        f"neither a bundle-root {spf!r} nor the module-local default "
+        f"{module_local} exists. Set an explicit system_prompt or "
+        f"system_prompt_file in session.orchestrator.config. "
+        f"See docs/designs/layer-1-profile-owned-system-prompt.md."
+    )
+
+
 async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
     """Mount the loop-agent orchestrator."""
     cfg = config or {}
@@ -154,11 +214,17 @@ class AgentOrchestrator:
 
         Precedence (first that applies wins):
           1. explicit ``system_prompt`` in config        -> used as-is
-          2. explicit ``system_prompt_file`` in config   -> loaded (robust resolver)
-          3. provider DEFAULT ``context/system-<provider>.md`` -> loaded (robust
-             resolver), where ``<provider>`` is the canonical provider derived
-             from the agent's own mounted provider — the same provider used for
-             the actual completion, so the base always matches the model called.
+          2. explicit ``system_prompt_file`` in config   -> loaded (robust resolver,
+             strict: a missing explicit file fails loud, it never silently falls
+             back to a default the user didn't ask for)
+          3. provider DEFAULT, where ``<provider>`` is the canonical provider
+             derived from the agent's own mounted provider — the same provider
+             used for the actual completion, so the base always matches the
+             model called. Two rungs, see ``_resolve_provider_default_prompt``:
+               3a. bundle-root ``context/system-<provider>.md`` (COMPAT: a bundle
+                   that ships its own copy, e.g. amplifier-bundle-attractor)
+               3b. module-local package default ``prompts/system-<provider>.md``
+                   (shipped with this module, for a bundle that ships none)
           4. unknown provider, or a configured/default file that does not exist
              -> a CLEAR, ACTIONABLE error (never a silent wrong/empty base).
 
@@ -172,26 +238,27 @@ class AgentOrchestrator:
         if existing:
             return existing
 
-        # (2) explicit system_prompt_file, else (3) provider default.
+        # (2) explicit system_prompt_file: strict robust resolver, fail-loud on
+        # a missing file. No module-local fallback here — the user named a
+        # specific file, so silently substituting a default would hide a typo.
         spf = config_dict.get("system_prompt_file", "")
-        if not spf:
-            canonical = canonical_provider(provider_name)
-            if canonical is None:
-                # (4) unknown provider — do NOT guess a base; fail loud and clear.
-                raise RuntimeError(
-                    f"loop-agent cannot select a Layer-1 base prompt: no "
-                    f"system_prompt or system_prompt_file is configured, and the "
-                    f"provider {provider_name!r} is not one of the known providers "
-                    f"{KNOWN_PROVIDERS} (so no default context/system-<provider>.md "
-                    f"applies). Set an explicit system_prompt_file in "
-                    f"session.orchestrator.config, or run under a known provider. "
-                    f"See docs/designs/layer-1-profile-owned-system-prompt.md."
-                )
-            spf = f"context/system-{canonical}.md"
+        if spf:
+            return _resolve_system_prompt_file(spf).read_text(encoding="utf-8")
 
-        # (2)/(3) load via the robust, CWD-independent resolver. A missing file
-        # raises a clear FileNotFoundError naming the value and path tried — (4).
-        return _resolve_system_prompt_file(spf).read_text(encoding="utf-8")
+        # (3) provider default (bundle-root COMPAT, then module-local; see
+        # _resolve_provider_default_prompt), else (4) unknown provider fail-loud.
+        canonical = canonical_provider(provider_name)
+        if canonical is None:
+            raise RuntimeError(
+                f"loop-agent cannot select a Layer-1 base prompt: no "
+                f"system_prompt or system_prompt_file is configured, and the "
+                f"provider {provider_name!r} is not one of the known providers "
+                f"{KNOWN_PROVIDERS} (so no default context/system-<provider>.md "
+                f"applies). Set an explicit system_prompt_file in "
+                f"session.orchestrator.config, or run under a known provider. "
+                f"See docs/designs/layer-1-profile-owned-system-prompt.md."
+            )
+        return _resolve_provider_default_prompt(canonical)
 
     async def _execute_session(
         self,
@@ -227,11 +294,14 @@ class AgentOrchestrator:
             # instructions from ProviderProfile") with a 4-step precedence, BEFORE the
             # session is created, so the text lands in SessionConfig.system_prompt
             # (Layer-1) regardless of which spawn path was used:
-            #   1. explicit system_prompt config            -> use as-is
-            #   2. explicit system_prompt_file config       -> load
-            #   3. provider DEFAULT context/system-<prov>.md -> load (the common case:
-            #      agents need no per-YAML system_prompt_file; the provider supplies it)
-            #   4. unknown provider / missing file          -> fail-loud clear error
+            #   1. explicit system_prompt config              -> use as-is
+            #   2. explicit system_prompt_file config         -> load
+            #   3. provider DEFAULT -> load (the common case: agents need no
+            #      per-YAML system_prompt_file; the provider supplies it):
+            #        3a. bundle-root context/system-<prov>.md (COMPAT)
+            #        3b. module-local prompts/system-<prov>.md (this module's
+            #            own shipped default -- see _resolve_provider_default_prompt)
+            #   4. unknown provider / missing file            -> fail-loud clear error
             # See _resolve_base_prompt and docs/designs/layer-1-profile-owned-system-prompt.md.
             #
             # File loading is delegated to _resolve_system_prompt_file, which is
