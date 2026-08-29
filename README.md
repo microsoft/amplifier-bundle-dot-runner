@@ -162,8 +162,17 @@ over everything below.
    ```
    dot-runner: no --worker/--bundle given and amplifier-agent is not installed --
    falling back to worker=direct. Install the agent extra for the default
-   amplifier-agent worker: uv tool install "amplifier-dot-runner[agent]"
+   amplifier-agent worker: see this repo's README, "The [agent] extra" section,
+   for the two-step install that enables it today (a single `uv tool install
+   "amplifier-dot-runner[agent]"` can hit a known uv dependency-resolution
+   collision)
    ```
+
+   Review finding, fixed here: the notice used to name the single-command
+   `uv tool install "amplifier-dot-runner[agent]"` install directly -- but
+   that is exactly the command the known `uv` collision below breaks. A
+   notice that teaches a broken command is worse than no notice at all, so
+   it now points at the two-step install that is proven to work instead.
 
    Every box node then runs through the worker registry's `direct` worker
    (unified-llm-client + a provider key) -- unchanged, bare-engine behavior.

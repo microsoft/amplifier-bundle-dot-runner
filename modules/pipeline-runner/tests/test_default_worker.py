@@ -170,6 +170,24 @@ def test_resolve_absent_prints_exactly_one_notice_and_falls_back(monkeypatch, ca
     assert "dot-runner" in lines[0]
 
 
+def test_upgrade_hint_does_not_teach_the_broken_single_command_install():
+    """Review finding, fixed: a single `uv tool install
+    "amplifier-dot-runner[agent]"` can hit a real, disclosed `uv`
+    dependency-resolution collision (README's "The [agent] extra" section,
+    "conflicting URLs for package amplifier-foundation"). Teaching that
+    exact command as THE fix would hand a reader a command known to fail.
+    The notice must instead point at a path proven to work today -- the
+    README's two-step install -- not repeat the broken one-liner as the
+    recommended fix."""
+    hint = default_worker.UPGRADE_HINT
+    assert "README" in hint
+    assert "two-step" in hint
+    # The broken single-command form may still be *named* (as context for
+    # why it's being avoided), but it must never be the thing the reader is
+    # told to run: the hint must not open with it as an instruction.
+    assert not hint.strip().startswith('uv tool install')
+
+
 def test_synthesized_bundle_parses_via_real_amplifier_foundation():
     """Real proof (not a fake): ``amplifier_foundation.load_bundle()`` parses
     the synthesized YAML, and ``runner._declared_worker_and_profiles`` reads

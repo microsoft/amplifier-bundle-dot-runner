@@ -83,7 +83,21 @@ _ADAPTER_SOURCE = (
 
 #: Upgrade hint printed on the ONE stderr fallback line when amplifier-agent
 #: is not installed.
-UPGRADE_HINT = 'uv tool install "amplifier-dot-runner[agent]"'
+#:
+#: Deliberately does NOT tell the reader to run
+#: ``uv tool install "amplifier-dot-runner[agent]"`` as a single command:
+#: that single-solve install can fail today with `uv` reporting "conflicting
+#: URLs for package amplifier-foundation" (a real, disclosed upstream/
+#: cross-repo dependency-declaration mismatch -- see README's "The [agent]
+#: extra" section for the full explanation). Teaching a command known to
+#: fail is worse than teaching nothing, so this notice points at the
+#: two-step install the README proves works today instead.
+UPGRADE_HINT = (
+    'see this repo\'s README, "The [agent] extra" section, for the '
+    "two-step install that enables it today (a single "
+    '`uv tool install "amplifier-dot-runner[agent]"` can hit a known uv '
+    "dependency-resolution collision)"
+)
 
 #: The SAME generic session.context module runner._bare_base_bundle() mounts
 #: for every other bare (no --bundle) run -- shared engine infrastructure,
