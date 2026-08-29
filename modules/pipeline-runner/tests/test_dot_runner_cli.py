@@ -1,18 +1,19 @@
-"""Tests for the P3 two-CLI layering: `dot-runner` (engine-native) vs.
-`attractor` (legacy, opinionated) -- DESIGN-worker-registry-core-split.md P3.
+"""Tests for the `dot-runner` CLI -- the only console-script personality
+after the `attractor` band-aid rip (CONTEXT_POISONING doctrine: no
+attractor-specific policy in this engine repo; full removal, no alias/shim).
 
-Covers (per the P3 acceptance bar):
+Covers:
   1. `dot-runner run` on a minimal box-node .dot with a FAKE provider
-     (hermetic): executes via the `direct` worker, zero attractor-bundle/
-     profile resolution attempted.
+     (hermetic): executes via the `direct` worker, zero bundle/profile
+     resolution attempted when `--bundle` is not given.
   2. `--worker` flag: selects a registered worker; unknown name -> clean
      error listing registered workers (exit code + message, no traceback).
-  3. Legacy `attractor` entry point: the notice appears on stderr exactly
-     once, and stdout is unaffected (byte-identical shape) for a
-     representative command.
-  4. Entry-point registration: both `main`/`main_dot_runner` dispatch
-     correctly and `--help` works for both.
-  5. doctor/lint/trace smoke under the `dot-runner` personality.
+  3. `--bundle` flag / `DOT_RUNNER_BUNDLE` env var: the preserved mechanism
+     for an opinionated experience by explicit declaration -- loads a named
+     bundle, registers `session.spawn`, and honors the loaded bundle's own
+     declared `worker`/`profiles` as this run's effective default.
+  4. Entry-point registration: `main` dispatches correctly and `--help` works.
+  5. doctor/lint/trace smoke.
 
 These use fakes and monkeypatching (no real bundle loading, no engine, no
 LLM) so they stay fast and non-brittle, per the module's testing philosophy
@@ -74,41 +75,43 @@ class FakeCoordinator:
 class FakeBundle:
     """Records ``.compose()`` calls in order (see test_extra_overlays.py)."""
 
-    def __init__(self, applied: list | None = None) -> None:
+    def __init__(
+        self, applied: list | None = None, session: dict | None = None
+    ) -> None:
         self.applied = applied or []
+        self.session = session or {}
 
     def compose(self, other):
-        return FakeBundle(applied=[*self.applied, other])
+        return FakeBundle(applied=[*self.applied, other], session=self.session)
 
     async def prepare(self, *, install_deps):
         del install_deps
         return FakePrepared(applied=self.applied)
 
 
-def _patch_engine_native_base_bundle(monkeypatch) -> None:
-    monkeypatch.setattr(runner_mod, "_engine_native_base_bundle", lambda: FakeBundle())
+def _patch_bare_base_bundle(monkeypatch) -> None:
+    monkeypatch.setattr(runner_mod, "_bare_base_bundle", lambda: FakeBundle())
 
 
-def _forbid_attractor_bundle_load(monkeypatch) -> list[str]:
-    """Monkeypatch ``_load_base_bundle`` to record/forbid any call.
+def _forbid_load_named_bundle(monkeypatch) -> list[str]:
+    """Monkeypatch ``_load_named_bundle`` to record/forbid any call.
 
     Returns the call-count list (mutated in place) so a test can assert
-    ``calls == []`` -- the hermetic proof that the attractor pattern-repo
-    bundle loader (the network-reaching, gap-table-row-23 function) was
-    never reached.
+    ``calls == []`` -- the hermetic proof that no explicit bundle fetch was
+    ever attempted (the network-reaching path this repo now only ever
+    reaches on an EXPLICIT ``--bundle``/``bundle=``).
     """
     calls: list[str] = []
 
     async def spy(*_a, **_k):
         calls.append("called")
         raise AssertionError(
-            "engine_native must never call _load_base_bundle -- that is the "
-            "attractor-bundle network-reach path DESIGN-worker-registry-"
-            "core-split.md P3 names as one of the two verified layering "
-            "inversion sites."
+            "no bundle was given -- _load_named_bundle must never be called "
+            "(mechanism, not policy: this engine fetches a pattern-repo "
+            "bundle ONLY when the caller explicitly asks for one)."
         )
 
-    monkeypatch.setattr(runner_mod, "_load_base_bundle", spy)
+    monkeypatch.setattr(runner_mod, "_load_named_bundle", spy)
     return calls
 
 
@@ -125,18 +128,15 @@ def _make_dot_file(tmp_path, *, llm_model: str = "fake-model") -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. dot-runner never reaches the attractor pattern-repo bundle loader
+# 1. Bare by default -- no bundle fetch, no spawn capability
 # ---------------------------------------------------------------------------
 
 
-def test_build_prepared_engine_native_never_loads_attractor_bundle(
-    monkeypatch, tmp_path
-):
-    """The structural proof: `_build_prepared(engine_native=True)` never
-    calls `_load_base_bundle` (row 23's network-reaching function) -- it
-    calls `_engine_native_base_bundle()` instead."""
-    calls = _forbid_attractor_bundle_load(monkeypatch)
-    _patch_engine_native_base_bundle(monkeypatch)
+def test_build_prepared_bare_never_loads_a_named_bundle(monkeypatch, tmp_path):
+    """The structural proof: `_build_prepared(base_bundle=None)` never calls
+    `_load_named_bundle` -- it calls `_bare_base_bundle()` instead."""
+    calls = _forbid_load_named_bundle(monkeypatch)
+    _patch_bare_base_bundle(monkeypatch)
 
     prepared = asyncio.run(
         runner_mod._build_prepared(
@@ -145,7 +145,6 @@ def test_build_prepared_engine_native_never_loads_attractor_bundle(
             params=None,
             profiles=None,
             worker="direct",
-            engine_native=True,
         )
     )
 
@@ -153,45 +152,12 @@ def test_build_prepared_engine_native_never_loads_attractor_bundle(
     assert prepared is not None
 
 
-def test_build_prepared_attractor_personality_still_uses_load_base_bundle(
-    monkeypatch, tmp_path
-):
-    """Regression guard: the LEGACY (default, engine_native=False) path is
-    UNCHANGED -- it still calls `_load_base_bundle`, never the engine-native
-    bare bundle."""
-    used: list[str] = []
-
-    async def fake_load_base_bundle():
-        used.append("load_base_bundle")
-        return FakeBundle()
-
-    def fail_engine_native():
-        raise AssertionError(
-            "attractor personality must not use the bare engine bundle"
-        )
-
-    monkeypatch.setattr(runner_mod, "_load_base_bundle", fake_load_base_bundle)
-    monkeypatch.setattr(runner_mod, "_engine_native_base_bundle", fail_engine_native)
-
-    asyncio.run(
-        runner_mod._build_prepared(
-            "digraph { start [shape=box]; }",
-            tmp_path,
-            params=None,
-            profiles=None,
-        )
-    )
-    assert used == ["load_base_bundle"]
-
-
-def test_run_pipeline_engine_native_registers_no_spawn_capability(
-    monkeypatch, tmp_path
-):
-    """`run_pipeline(engine_native=True)` never registers `session.spawn` --
+def test_run_pipeline_bare_registers_no_spawn_capability(monkeypatch, tmp_path):
+    """`run_pipeline()` with no `bundle=` never registers `session.spawn` --
     the mechanism that makes the `direct` worker the ONLY reachable path
-    (no attractor-agent profile resolution attempted)."""
-    _patch_engine_native_base_bundle(monkeypatch)
-    calls = _forbid_attractor_bundle_load(monkeypatch)
+    (no implicit profile resolution attempted)."""
+    _patch_bare_base_bundle(monkeypatch)
+    calls = _forbid_load_named_bundle(monkeypatch)
 
     captured: dict = {}
 
@@ -217,7 +183,6 @@ def test_run_pipeline_engine_native_registers_no_spawn_capability(
             "digraph T { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }",
             cwd=tmp_path / "work",
             logs_root=tmp_path / "logs",
-            engine_native=True,
         )
     )
 
@@ -225,22 +190,44 @@ def test_run_pipeline_engine_native_registers_no_spawn_capability(
     assert calls == []
     # No session.spawn ever registered -- direct worker is the only path.
     assert "session.spawn" not in captured["coordinator"].registered
-    # Zero implicit attractor-agent profile fallback.
+    # Zero implicit profile fallback.
     assert captured["profiles"] == {}
-    # Engine-native default worker resolves to "direct" when unspecified.
+    # Bare default worker resolves to "direct" when unspecified.
     assert captured["default_worker"] == "direct"
 
 
-def test_run_pipeline_attractor_personality_still_registers_spawn(
+# ---------------------------------------------------------------------------
+# 2. --bundle mechanism: explicit declaration enables session.spawn and
+#    honors the referenced bundle's own declared worker/profiles.
+# ---------------------------------------------------------------------------
+
+
+def test_run_pipeline_bundle_registers_spawn_and_honors_declared_defaults(
     monkeypatch, tmp_path
 ):
-    """Regression guard: the legacy path is unaffected -- session.spawn IS
-    still registered, and DEFAULT_PROFILES IS still the implicit fallback."""
+    """`run_pipeline(bundle=...)` loads the named bundle, registers
+    `session.spawn`, and -- absent an explicit `worker=`/`profiles=`
+    override -- honors THAT bundle's own declared `session.orchestrator.config`
+    as this run's effective default. Zero attractor-specific (or any other
+    pattern-specific) knowledge lives in this engine repo -- it is proven
+    here with an arbitrary fake bundle, not a real attractor one."""
 
-    async def fake_load_base_bundle():
-        return FakeBundle()
+    declared_bundle = FakeBundle(
+        session={
+            "orchestrator": {
+                "config": {
+                    "worker": "spawn",
+                    "profiles": {"anthropic": "some-agent"},
+                }
+            }
+        }
+    )
 
-    monkeypatch.setattr(runner_mod, "_load_base_bundle", fake_load_base_bundle)
+    async def fake_load_named_bundle(ref):
+        assert ref == "git+https://example.invalid/some-bundle.yaml"
+        return declared_bundle
+
+    monkeypatch.setattr(runner_mod, "_load_named_bundle", fake_load_named_bundle)
 
     captured: dict = {}
 
@@ -261,37 +248,172 @@ def test_run_pipeline_attractor_personality_still_registers_spawn(
 
     monkeypatch.setattr(runner_mod, "drive_engine", fake_drive_engine)
 
+    result = asyncio.run(
+        runner_mod.run_pipeline(
+            "digraph T { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }",
+            cwd=tmp_path / "work",
+            logs_root=tmp_path / "logs",
+            bundle="git+https://example.invalid/some-bundle.yaml",
+        )
+    )
+
+    assert result.status == "success"
+    assert "session.spawn" in captured["coordinator"].registered
+    assert captured["profiles"] == {"anthropic": "some-agent"}
+    assert captured["default_worker"] == "spawn"
+
+
+def test_run_pipeline_bundle_explicit_worker_overrides_declared(monkeypatch, tmp_path):
+    """An explicit `worker=` always wins over the loaded bundle's own
+    declared default."""
+    declared_bundle = FakeBundle(
+        session={"orchestrator": {"config": {"worker": "spawn"}}}
+    )
+
+    async def fake_load_named_bundle(ref):
+        return declared_bundle
+
+    monkeypatch.setattr(runner_mod, "_load_named_bundle", fake_load_named_bundle)
+
+    captured: dict = {}
+
+    async def fake_drive_engine(dot_source, coordinator, **kwargs):
+        captured["default_worker"] = kwargs.get("default_worker")
+
+        class _Outcome:
+            class _Status:
+                value = "success"
+
+            status = _Status()
+            notes = ""
+            failure_reason = None
+
+        return _Outcome()
+
+    monkeypatch.setattr(runner_mod, "drive_engine", fake_drive_engine)
+
     asyncio.run(
         runner_mod.run_pipeline(
             "digraph T { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }",
             cwd=tmp_path / "work",
             logs_root=tmp_path / "logs",
+            bundle="git+https://example.invalid/some-bundle.yaml",
+            worker="direct",
         )
     )
 
-    assert "session.spawn" in captured["coordinator"].registered
-    assert captured["profiles"] == runner_mod.DEFAULT_PROFILES
-    assert captured["default_worker"] is None
+    assert captured["default_worker"] == "direct"
+
+
+def test_cli_bundle_flag_reaches_run_pipeline(monkeypatch, tmp_path):
+    """cmd_run threads --bundle straight through to runner.run_pipeline."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.delenv("DOT_RUNNER_BUNDLE", raising=False)
+    dot_path = _make_dot_file(tmp_path)
+
+    captured: dict = {}
+
+    async def fake_run_pipeline(dot_source, **kwargs):
+        captured["bundle"] = kwargs.get("bundle")
+        return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
+
+    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
+
+    parser = cli.build_parser(prog="dot-runner")
+    args = parser.parse_args(
+        [
+            "run",
+            dot_path,
+            "--bundle",
+            "git+https://example.invalid/x.yaml",
+            "--cwd",
+            str(tmp_path),
+        ]
+    )
+    args.prog_name = "dot-runner"
+
+    rc = cli.cmd_run(args)
+    assert rc == 0
+    assert captured["bundle"] == "git+https://example.invalid/x.yaml"
+
+
+def test_cli_bundle_env_var_fallback_when_flag_omitted(monkeypatch, tmp_path):
+    """DOT_RUNNER_BUNDLE is consulted only when --bundle is not passed."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("DOT_RUNNER_BUNDLE", "git+https://example.invalid/env.yaml")
+    dot_path = _make_dot_file(tmp_path)
+
+    captured: dict = {}
+
+    async def fake_run_pipeline(dot_source, **kwargs):
+        captured["bundle"] = kwargs.get("bundle")
+        return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
+
+    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
+
+    parser = cli.build_parser(prog="dot-runner")
+    args = parser.parse_args(["run", dot_path, "--cwd", str(tmp_path)])
+    args.prog_name = "dot-runner"
+
+    rc = cli.cmd_run(args)
+    assert rc == 0
+    assert captured["bundle"] == "git+https://example.invalid/env.yaml"
+
+
+def test_cli_bundle_flag_wins_over_env_var(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("DOT_RUNNER_BUNDLE", "git+https://example.invalid/env.yaml")
+    dot_path = _make_dot_file(tmp_path)
+
+    captured: dict = {}
+
+    async def fake_run_pipeline(dot_source, **kwargs):
+        captured["bundle"] = kwargs.get("bundle")
+        return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
+
+    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
+
+    parser = cli.build_parser(prog="dot-runner")
+    args = parser.parse_args(
+        [
+            "run",
+            dot_path,
+            "--bundle",
+            "git+https://example.invalid/flag.yaml",
+            "--cwd",
+            str(tmp_path),
+        ]
+    )
+    args.prog_name = "dot-runner"
+
+    rc = cli.cmd_run(args)
+    assert rc == 0
+    assert captured["bundle"] == "git+https://example.invalid/flag.yaml"
 
 
 # ---------------------------------------------------------------------------
-# 2. --worker flag: registered selection + clean unknown-name error
+# 3. --worker flag: registered selection + clean unknown-name error
 # ---------------------------------------------------------------------------
 
 
-def test_worker_flag_accepted_by_argparse_for_both_personalities():
-    for prog in ("attractor", "dot-runner"):
-        parser = cli.build_parser(prog=prog)
-        args = parser.parse_args(["run", "dummy.dot", "--worker", "direct"])
-        assert args.worker == "direct"
-        args2 = parser.parse_args(["resume", "some-dir", "--worker", "direct"])
-        assert args2.worker == "direct"
+def test_worker_flag_accepted_by_argparse():
+    parser = cli.build_parser(prog="dot-runner")
+    args = parser.parse_args(["run", "dummy.dot", "--worker", "direct"])
+    assert args.worker == "direct"
+    args2 = parser.parse_args(["resume", "some-dir", "--worker", "direct"])
+    assert args2.worker == "direct"
 
 
 def test_worker_flag_defaults_to_none():
     parser = cli.build_parser(prog="dot-runner")
     args = parser.parse_args(["run", "dummy.dot"])
     assert args.worker is None
+
+
+def test_bundle_flag_defaults_to_none():
+    parser = cli.build_parser(prog="dot-runner")
+    args = parser.parse_args(["run", "dummy.dot"])
+    assert args.bundle is None
 
 
 def test_worker_flag_reaches_run_pipeline(monkeypatch, tmp_path):
@@ -303,7 +425,6 @@ def test_worker_flag_reaches_run_pipeline(monkeypatch, tmp_path):
 
     async def fake_run_pipeline(dot_source, **kwargs):
         captured["worker"] = kwargs.get("worker")
-        captured["engine_native"] = kwargs.get("engine_native")
         return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
 
     monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
@@ -313,12 +434,10 @@ def test_worker_flag_reaches_run_pipeline(monkeypatch, tmp_path):
         ["run", dot_path, "--worker", "direct", "--cwd", str(tmp_path)]
     )
     args.prog_name = "dot-runner"
-    args.engine_native = True
 
     rc = cli.cmd_run(args)
     assert rc == 0
     assert captured["worker"] == "direct"
-    assert captured["engine_native"] is True
 
 
 def test_unknown_worker_name_fails_clean_not_a_traceback(monkeypatch, tmp_path, capsys):
@@ -333,7 +452,6 @@ def test_unknown_worker_name_fails_clean_not_a_traceback(monkeypatch, tmp_path, 
         ["run", dot_path, "--worker", "totally-bogus-worker", "--cwd", str(tmp_path)]
     )
     args.prog_name = "dot-runner"
-    args.engine_native = True
 
     rc = cli.cmd_run(args)
 
@@ -345,87 +463,26 @@ def test_unknown_worker_name_fails_clean_not_a_traceback(monkeypatch, tmp_path, 
 
 
 # ---------------------------------------------------------------------------
-# 3. Legacy `attractor`: notice on stderr exactly once; stdout unaffected
+# 4. Entry-point registration / dispatch -- `dot-runner` is the ONLY command
 # ---------------------------------------------------------------------------
 
 
-def test_attractor_notice_printed_exactly_once_on_stderr(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
-    dot_path = _make_dot_file(tmp_path)
-
-    async def fake_run_pipeline(dot_source, **kwargs):
-        del kwargs
-        return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
-
-    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
-
-    rc = cli.main(
-        ["run", dot_path, "--cwd", str(tmp_path), "--logs-root", str(tmp_path)]
-    )
-    assert rc == 0
-
-    captured = capsys.readouterr()
-    # Notice text appears in stderr exactly once.
-    assert captured.err.count("NOTICE") == 1
-    assert "dot-runner" in captured.err
-    # stdout is the pre-P3 shape: unaffected by the notice (stderr-only).
-    assert "NOTICE" not in captured.out
-    assert f"attractor: running pipeline cwd={tmp_path} logs={tmp_path}" in captured.out
-    assert "attractor: status=success" in captured.out
-    assert f"attractor: logs={tmp_path}" in captured.out
-
-
-def test_dot_runner_personality_never_prints_the_attractor_notice(
-    monkeypatch, tmp_path, capsys
-):
-    """`dot-runner` IS the engine-native command the notice points toward --
-    it must never print its own deprecation notice."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
-    dot_path = _make_dot_file(tmp_path)
-
-    async def fake_run_pipeline(dot_source, **kwargs):
-        del kwargs
-        return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
-
-    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
-
-    rc = cli.main_dot_runner(
-        ["run", dot_path, "--cwd", str(tmp_path), "--logs-root", str(tmp_path)]
-    )
-    assert rc == 0
-
-    captured = capsys.readouterr()
-    assert "NOTICE" not in captured.err
-    assert "NOTICE" not in captured.out
-    assert (
-        f"dot-runner: running pipeline cwd={tmp_path} logs={tmp_path}" in captured.out
-    )
-    assert "dot-runner: status=success" in captured.out
-
-
-# ---------------------------------------------------------------------------
-# 4. Entry-point registration / dispatch
-# ---------------------------------------------------------------------------
-
-
-def test_both_entry_points_registered_in_pyproject():
+def test_only_dot_runner_script_registered_in_pyproject():
     import tomllib
     from pathlib import Path
 
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     scripts = data["project"]["scripts"]
-    assert scripts["attractor"] == "amplifier_module_pipeline_runner.cli:main"
-    assert (
-        scripts["dot-runner"] == "amplifier_module_pipeline_runner.cli:main_dot_runner"
-    )
+    assert set(scripts) == {"dot-runner"}
+    assert scripts["dot-runner"] == "amplifier_module_pipeline_runner.cli:main"
+    assert "attractor" not in scripts
 
 
-def test_help_works_for_both_personalities():
-    for entry, prog in ((cli.main, "attractor"), (cli.main_dot_runner, "dot-runner")):
-        with pytest.raises(SystemExit) as exc_info:
-            entry(["--help"])
-        assert exc_info.value.code == 0
+def test_help_works():
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["--help"])
+    assert exc_info.value.code == 0
 
 
 def test_dispatch_table_covers_all_five_subcommands():
@@ -433,39 +490,36 @@ def test_dispatch_table_covers_all_five_subcommands():
 
 
 # ---------------------------------------------------------------------------
-# 5. doctor/lint/trace smoke under the dot-runner personality
+# 5. doctor/lint/trace smoke
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_smoke_under_dot_runner(capsys):
-    rc = cli.main_dot_runner(["doctor"])
+def test_doctor_smoke(capsys):
+    rc = cli.main(["doctor"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "dot-runner doctor:" in out
 
 
-def test_lint_smoke_under_dot_runner(tmp_path, capsys):
-    """Pure-static smoke: lint is identical for both personalities (no
-    engine_native branching in cmd_lint). A trivial linear graph is
-    structurally clean (WARNING-only, exit 0) -- lint's ERROR/exit-1 path is
-    already covered by the pre-existing suite (test_lint_folder_dot_file.py);
-    this just proves the `dot-runner` personality reaches the same command.
-    """
+def test_lint_smoke(tmp_path, capsys):
+    """Pure-static smoke: lint's ERROR/exit-1 path is already covered by the
+    pre-existing suite (test_lint_folder_dot_file.py); this just proves a
+    trivial linear graph is structurally clean (WARNING-only, exit 0)."""
     dot_path = tmp_path / "clean.dot"
     dot_path.write_text(
         "digraph T { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }",
         encoding="utf-8",
     )
-    rc = cli.main_dot_runner(["lint", str(dot_path)])
+    rc = cli.main(["lint", str(dot_path)])
     assert rc == 0
     out = capsys.readouterr().out
     assert "dot-runner lint:" in out
 
 
-def test_trace_smoke_under_dot_runner(tmp_path, capsys):
+def test_trace_smoke(tmp_path, capsys):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    rc = cli.main_dot_runner(["trace", str(run_dir)])
+    rc = cli.main(["trace", str(run_dir)])
     assert rc == 0
     out = capsys.readouterr().out
     assert "dot-runner trace:" in out

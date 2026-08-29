@@ -1,19 +1,19 @@
-"""Reusable engine harness: run an arbitrary attractor DOT pipeline.
+"""Reusable engine harness: run an arbitrary DOT pipeline.
 
 Two-layer public API:
 
 * ``drive_engine`` -- low-level. Caller supplies an already-built
-  ``coordinator`` (with ``session.spawn`` already registered on it) and this
-  function parses/transforms/validates the graph, seeds context, and drives
-  ``PipelineEngine`` directly. This is the seam a consumer with its own
-  session/bundle lifecycle (e.g. an existing resolver) plugs into.
+  ``coordinator`` (with ``session.spawn`` already registered on it, if any)
+  and this function parses/transforms/validates the graph, seeds context,
+  and drives ``PipelineEngine`` directly. This is the seam a consumer with
+  its own session/bundle lifecycle (e.g. an existing resolver) plugs into.
 * ``run_pipeline`` -- high-level convenience. Builds the prepared bundle,
   session, and spawn wiring itself, then calls ``drive_engine``. This is what
   the CLI uses.
 
 Extracted from dot-graph-runner's ``dot_graph_runner/runner.py`` (~429 lines),
 split into this two-function shape per the attractor-runner design (slice 0).
-Uses ONLY the attractor engine's public modules
+Uses ONLY the engine's public modules
 (``amplifier_module_loop_pipeline.{context,dot_parser,engine,handlers,backend,
 validation,transforms}``).
 
@@ -24,13 +24,21 @@ no seam to seed flat context keys that way, so a ``--param`` would never reach
 ``tool_command``/``tool_env``. Driving the engine directly is what lets a
 ``--param`` reach a tool node.
 
-Every LLM (``box``) node spawns a full ``attractor-agent-*`` coding agent (its
-own ``loop-agent`` orchestrator + filesystem/bash/search tools) via the
-``session.spawn`` capability -- true of the ``attractor`` CLI personality
-only. The ``dot-runner`` personality (``engine_native=True`` below; DESIGN-
-worker-registry-core-split.md P3) never registers ``session.spawn`` and never
-loads that agent-carrying bundle: every ``box`` node runs through the worker
-registry's ``direct`` worker instead (unified-llm-client + a provider key).
+Bare by default, opinionated by declaration (CONTEXT_POISONING doctrine: no
+attractor-specific policy lives in this engine repo). Every LLM (``box``)
+node runs through the worker registry's ``direct`` worker (unified-llm-client
++ a provider key) unless the caller explicitly loads a bundle reference (the
+CLI's ``--bundle``/``DOT_RUNNER_BUNDLE``, or this module's ``bundle=``
+parameter on ``run_pipeline``/``resume_pipeline``). Loading a bundle is the
+ONLY thing that registers the ``session.spawn`` capability and enables a
+full coding-agent worker for ``box`` nodes -- the engine has zero built-in
+knowledge of what the referenced bundle contains; it composes it and honors
+that bundle's own declared ``session.orchestrator.config`` (``worker``/
+``profiles``) as this run's effective default, unless the caller overrides
+either explicitly. This is how e.g. the attractor pattern's experience
+(provider->agent profiles, full coding-agent spawning) is served: by
+declaration (``dot-runner run --bundle git+...attractor...``), never by an
+engine-side default.
 """
 
 from __future__ import annotations
@@ -44,20 +52,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .attractor_defaults import DEFAULT_PROFILES
-
 if TYPE_CHECKING:
     from amplifier_module_loop_pipeline.graph import Graph
     from amplifier_module_loop_pipeline.outcome import Outcome
-
-# Re-exported for backward compat: ``amplifier_module_pipeline_runner.
-# DEFAULT_PROFILES`` and ``.runner.DEFAULT_PROFILES`` both still resolve
-# (see ``__init__.py``'s public-API docstring). The literal map now lives in
-# ``attractor_defaults.py`` -- DESIGN-worker-registry-core-split.md P3,
-# gap-table row 22: "engine-native defaults; the attractor map moves to the
-# wrapper." Only the ``attractor`` (non-``engine_native``) code path below
-# ever consults it as a fallback.
-__all_reexports__ = ("DEFAULT_PROFILES",)
 
 # Env var name per provider -- used by the CLI's fail-loud preflight check
 # (a provider's API key must be present BEFORE the engine starts running).
@@ -78,11 +75,13 @@ _DEPS_INSTALLED = False
 
 
 class NoProviderConfiguredError(RuntimeError):
-    """No LLM provider is configured for the engine-native ``direct`` worker.
+    """No LLM provider is configured for the ``direct`` worker.
 
     Raised by ``_bootstrap_direct_provider`` (called from ``drive_engine``
-    only when ``engine_native=True``) when ``unified_llm.Client.from_env()``
-    finds zero supported API keys in the environment.
+    unconditionally, mandatory whenever no ``session.spawn`` capability is
+    registered on the coordinator -- i.e. whenever no bundle was explicitly
+    loaded) when ``unified_llm.Client.from_env()`` finds zero supported API
+    keys in the environment.
 
     This is the user-facing replacement for the misleading, engine-internal
     ``AmplifierBackend`` message a missing provider used to produce --
@@ -262,7 +261,6 @@ async def drive_engine(
     validate: bool = True,
     source_dir: str | None = None,
     resume_checkpoint: Any = None,
-    engine_native: bool = False,
 ) -> "Outcome":
     """Drive the attractor engine directly against an already-built coordinator.
 
@@ -302,8 +300,8 @@ async def drive_engine(
             Defaults to ``Path.cwd()`` if not given.
         logs_root: Directory for this run's engine logs.
         hooks: Optional hooks object forwarded to the handler registry and engine.
-        profiles: llm_provider -> agent-name routing map. Defaults to
-            ``DEFAULT_PROFILES`` if not given.
+        profiles: llm_provider -> agent-name routing map. Defaults to ``{}``
+            if not given (``None``).
         interviewer: Optional interviewer object forwarded to the handler
             registry (human-in-the-loop gate seam).
         transform: Required keyword. If True, run ``apply_transforms`` on the
@@ -404,17 +402,12 @@ async def drive_engine(
         # below, so the map the preflight judges is literally the object the
         # backend routes with -- not an equal-looking rebuild of it.
         #
-        # ``profiles if profiles is not None else DEFAULT_PROFILES`` (not the
-        # former ``profiles or DEFAULT_PROFILES``): a caller-supplied EMPTY
-        # mapping must mean "no profiles" verbatim, never silently upgraded
-        # to the attractor defaults -- this is what makes the ``dot-runner``
-        # engine-native path's explicit ``profiles={}`` (see ``run_pipeline``)
-        # actually stick. No existing caller passes an explicit ``{}`` (the
-        # `attractor` CLI never sets ``profiles=`` at all), so this is a
-        # behavior-preserving fix for every caller that predates it.
-        resolved_profiles = (
-            dict(profiles) if profiles is not None else dict(DEFAULT_PROFILES)
-        )
+        # ``profiles if profiles is not None else {}`` (not
+        # ``profiles or {}``): a caller-supplied EMPTY mapping must mean "no
+        # profiles" verbatim -- this is what makes ``run_pipeline``'s default
+        # (no explicit ``--bundle``) ``profiles={}`` actually stick, rather
+        # than silently reappearing as some other truthy value.
+        resolved_profiles = dict(profiles) if profiles is not None else {}
         try:
             resolvable_profiles = _spawn_resolvable_agents(coordinator)
         except Exception:
@@ -440,24 +433,40 @@ async def drive_engine(
             hooks if hooks is not None else getattr(coordinator, "hooks", None)
         )
 
-        # Engine-native provider bootstrap (DESIGN-worker-registry-core-
-        # split.md P3 blocker fix): the `dot-runner` personality never
-        # registers `session.spawn`, so `direct` is the ONLY worker that can
-        # ever execute a box/LLM node on this path -- and `AmplifierBackend`
-        # only reaches that worker when its OWN `provider=` truthy gate is
-        # satisfied (`backend.py`'s `elif self._provider is not None`,
-        # pre-existing loop-pipeline contract, untouched here). Without this,
-        # `default_worker="direct"` alone was never enough: a box node would
-        # fail with the engine-internal "Neither session.spawn nor a direct
-        # provider is available" message regardless of what API key the user
-        # had set. Scoped strictly to `engine_native=True` -- the legacy
-        # `attractor` personality always registers `session.spawn` and is
-        # completely unaffected (`direct_provider`/`direct_unified_client`
-        # stay `None`, identical to pre-fix `AmplifierBackend(...)` calls).
+        # Direct-worker provider bootstrap (DESIGN-worker-registry-core-
+        # split.md P3 blocker fix, generalized post-band-aid-rip): a box/LLM
+        # node dispatched to the `direct` worker only reaches it when
+        # `AmplifierBackend`'s OWN `provider=` truthy gate is satisfied
+        # (`backend.py`'s `elif self._provider is not None`, pre-existing
+        # loop-pipeline contract, untouched here). Without this, a
+        # `default_worker="direct"` node would fail with the engine-internal
+        # "Neither session.spawn nor a direct provider is available" message
+        # regardless of what API key the user had set.
+        #
+        # Whether the bootstrap failure is FATAL depends on whether
+        # `session.spawn` is registered on this run's coordinator (which only
+        # happens when the caller explicitly loaded a bundle -- see
+        # `run_pipeline`'s `bundle` parameter): with no spawn capability,
+        # `direct` is the ONLY reachable path and a missing credential must
+        # fail loud here, before any node runs. With spawn registered, the
+        # bootstrap is opportunistic -- a graph that never dispatches a node
+        # to `direct` should not be blocked by an absent direct-provider key.
+        has_spawn = False
+        try:
+            has_spawn = coordinator.get_capability("session.spawn") is not None
+        except Exception:  # noqa: BLE001 -- tolerant probe, mirrors _safe_get_spawn_fn
+            has_spawn = False
+
         direct_provider: Any = None
         direct_unified_client: Any = None
-        if engine_native:
+        try:
             direct_provider, direct_unified_client = _bootstrap_direct_provider()
+        except NoProviderConfiguredError:
+            if not has_spawn:
+                raise
+            # A direct-worker node dispatched later gets today's honest
+            # per-node error; nothing to do eagerly when spawn may cover
+            # every node in this graph.
 
         backend = AmplifierBackend(
             # The SAME coordinator the preflight above read
@@ -654,126 +663,98 @@ def make_spawn_fn(
     return spawn_capability
 
 
-def _local_bundle_path() -> Path:
-    """Path to the local sibling attractor-pipeline bundle, if any.
+async def _load_named_bundle(ref: str) -> Any:
+    """Load an EXPLICIT bundle reference (the ``--bundle``/``bundle=``
+    mechanism) -- e.g. a ``git+https://...`` bundle YAML.
 
-    Computed relative to this file: this module lives at
-    ``<repo>/modules/pipeline-runner/amplifier_module_pipeline_runner/runner.py``,
-    so the repo root is ``parents[3]`` and the bundle is at
-    ``<repo>/bundles/attractor-pipeline.yaml``. Overridable via the
-    ``ATTRACTOR_PIPELINE_BUNDLE`` env var for out-of-tree development.
-
-    DESIGN-worker-registry-core-split.md P3 names this one of the program's
-    "verified layering inversion" sites: the computed path does not exist in
-    THIS repo at all (there is no ``bundles/`` directory here) -- it only
-    ever resolves via the git fallback in ``_load_base_bundle`` below, or an
-    explicit out-of-tree override. Only the legacy ``attractor`` personality
-    (``engine_native=False``) ever calls this; the ``dot-runner`` personality
-    calls ``_engine_native_base_bundle()`` instead and never reaches this
-    function at all -- see ``_build_prepared``.
+    This is the ONLY place this engine repo ever fetches a pattern-repo
+    bundle over the network, and it only happens when the caller explicitly
+    asks for it. The engine has zero built-in knowledge of what ``ref``
+    contains -- no hardcoded name, no default, no fallback. Not cached
+    (unlike the bare bundle below): an explicit reference is expected to
+    vary per invocation.
     """
-    override = os.environ.get("ATTRACTOR_PIPELINE_BUNDLE")
-    if override:
-        return Path(override).expanduser()
-    repo_root = Path(__file__).resolve().parents[3]
-    return repo_root / "bundles" / "attractor-pipeline.yaml"
-
-
-_ATTRACTOR_PIPELINE_GIT = (
-    "git+https://github.com/microsoft/amplifier-bundle-attractor@main"
-    "#subdirectory=bundles/attractor-pipeline.yaml"
-)
-
-
-async def _load_base_bundle() -> Any:
-    """Load the attractor-pipeline bundle (local sibling preferred, else git).
-
-    Cached in a module global -- loaded once per process.
-
-    DESIGN-worker-registry-core-split.md P3 names this function (together
-    with ``_local_bundle_path``/``_ATTRACTOR_PIPELINE_GIT`` above) as the
-    other "verified layering inversion" site: it makes the engine CLI fetch
-    the ATTRACTOR repo's bundle over the network as its own base bundle.
-    That inversion survives, unchanged, for the legacy ``attractor``
-    personality through the deprecation window (DESIGN Sec4 P3: "the
-    window's ``git+...@main`` reference ... survives P4"). What P3 actually
-    fixes is that the ``dot-runner`` personality never calls this function --
-    see ``_engine_native_base_bundle()`` and ``_build_prepared``'s
-    ``engine_native`` branch. A test asserting this function is never
-    invoked under ``engine_native=True`` is the structural proof.
-    """
-    global _BASE_BUNDLE
-    if _BASE_BUNDLE is not None:
-        return _BASE_BUNDLE
     from amplifier_foundation import load_bundle
 
-    local = _local_bundle_path()
-    last_err: Exception | None = None
-    if local.exists():
-        try:
-            _BASE_BUNDLE = await load_bundle(str(local))
-            return _BASE_BUNDLE
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-
-    # TODO(slice-1/§8.6): verify local-sibling resolution for a built wheel /
-    # DTU install (non-monorepo) -- this git fallback is the path that
-    # exercises in that environment.
-    try:
-        _BASE_BUNDLE = await load_bundle(_ATTRACTOR_PIPELINE_GIT)
-        return _BASE_BUNDLE
-    except Exception as e:  # noqa: BLE001
-        last_err = e
-
-    raise RuntimeError(f"Could not load attractor-pipeline bundle: {last_err}")
+    return await load_bundle(ref)
 
 
-# In-process cache for the engine-native base bundle -- mirrors ``_BASE_BUNDLE``
-# above, kept separate so the two personalities' caches can never cross-pollute.
-_ENGINE_NATIVE_BASE_BUNDLE: Any = None
+def _declared_worker_and_profiles(bundle: Any) -> tuple[str | None, dict[str, str]]:
+    """Read back an explicitly-loaded bundle's OWN declared ``worker``/
+    ``profiles`` default, if any.
+
+    A bundle's ``session.orchestrator.config`` is otherwise inert for the
+    direct-engine path (see ``_build_prepared``'s docstring) -- ``drive_engine``
+    never reads it back on its own. This is the one place that changes: when
+    the caller explicitly loads a bundle via ``--bundle``/``bundle=``, its own
+    declared defaults become THIS run's effective default (still overridable
+    by an explicit ``--worker`` flag or an explicit ``profiles=`` argument).
+    This is what makes ``dot-runner run --bundle git+...attractor...`` serve
+    that bundle's opinionated experience by declaration -- the engine simply
+    honors whatever the referenced bundle says, with no attractor-specific
+    (or any other pattern-specific) knowledge baked in here.
+
+    Tolerant of any shape mismatch (a bundle with no ``session`` dict, or a
+    non-dict ``orchestrator``/``config``) -- returns ``(None, {})`` rather
+    than raising, since a malformed/unexpected bundle shape should surface
+    later (or not at all) rather than block loading it.
+    """
+    session = getattr(bundle, "session", None)
+    if not isinstance(session, dict):
+        return None, {}
+    orchestrator = session.get("orchestrator")
+    if not isinstance(orchestrator, dict):
+        return None, {}
+    config = orchestrator.get("config")
+    if not isinstance(config, dict):
+        return None, {}
+    declared_worker = config.get("worker")
+    declared_profiles = config.get("profiles")
+    return (
+        declared_worker if isinstance(declared_worker, str) else None,
+        dict(declared_profiles) if isinstance(declared_profiles, dict) else {},
+    )
+
+
+# In-process cache for the bare base bundle (no explicit --bundle given).
+_BARE_BASE_BUNDLE: Any = None
 
 
 # Generic Amplifier session-context module -- infrastructure every
 # AmplifierSession needs (``Configuration must specify session.context``),
-# NOT attractor pattern policy. Distinct from ``_ATTRACTOR_PIPELINE_GIT``
-# above: this is `microsoft/amplifier-module-context-simple`, a core engine
-# dependency (the same role `unified-llm-client` and `amplifier-foundation`
-# already play), never `amplifier-bundle-attractor`. The attractor bundle
-# mounts this exact module the exact same way (see
-# ``amplifier-bundle-attractor/bundles/attractor-pipeline.yaml``'s own
-# ``session.context`` block) -- it is shared infra, not something the
-# attractor bundle introduces.
+# NOT pattern-repo policy. This is `microsoft/amplifier-module-context-
+# simple`, a core engine dependency (the same role `unified-llm-client` and
+# `amplifier-foundation` already play) -- never a reference to any specific
+# pattern repo. An explicitly loaded bundle (e.g. attractor's own
+# bundles/attractor-pipeline.yaml) mounts this exact module the exact same
+# way -- it is shared infra, not something any particular bundle introduces.
 _CONTEXT_SIMPLE_GIT = (
     "git+https://github.com/microsoft/amplifier-module-context-simple@main"
 )
 
 
-def _engine_native_base_bundle() -> Any:
-    """Return the ``dot-runner`` personality's base bundle -- ENGINE-NATIVE.
+def _bare_base_bundle() -> Any:
+    """Return the default bare base bundle -- no explicit --bundle given.
 
-    DESIGN-worker-registry-core-split.md P3, gap-table rows 23/24/26: the
-    ``dot-runner`` command's base bundle carries no ``agents:`` block, no
-    reference (local-sibling or git) to ``amplifier-bundle-attractor``, and
-    makes zero network calls INTO ANY PATTERN REPO. It is a near-bare
-    ``Bundle`` -- session context (see ``_CONTEXT_SIMPLE_GIT`` above; a
-    generic engine dependency, not attractor policy) plus nothing else --
-    whose only purpose is to satisfy ``AmplifierSession``'s construction
-    requirements (the same reason ``_build_prepared`` mounts ``loop-pipeline``
-    as an overlay regardless of personality). Every box node then runs
-    through the worker registry's ``direct`` worker (unified-llm-client + a
-    provider key; see ``run_pipeline``'s ``engine_native`` branch, which also
-    skips registering ``session.spawn`` entirely, so there is no agent-spawn
-    capability for a node's ``worker=`` attribute to even reach).
+    Carries no ``agents:`` block, no reference to any pattern repo, and
+    makes zero network calls into one. It is a near-bare ``Bundle`` --
+    session context (see ``_CONTEXT_SIMPLE_GIT`` above; a generic engine
+    dependency, not pattern-repo policy) plus nothing else -- whose only
+    purpose is to satisfy ``AmplifierSession``'s construction requirements
+    (the same reason ``_build_prepared`` mounts ``loop-pipeline`` as an
+    overlay regardless). Every box node then runs through the worker
+    registry's ``direct`` worker (unified-llm-client + a provider key) --
+    see ``run_pipeline``, which registers ``session.spawn`` only when the
+    caller explicitly loads a bundle via ``--bundle``/``bundle=``.
 
-    Cached in a module global, separate from the attractor path's
-    ``_BASE_BUNDLE``, so the two personalities' bundles never share identity.
+    Cached in a module global -- loaded once per process.
     """
-    global _ENGINE_NATIVE_BASE_BUNDLE
-    if _ENGINE_NATIVE_BASE_BUNDLE is not None:
-        return _ENGINE_NATIVE_BASE_BUNDLE
+    global _BARE_BASE_BUNDLE
+    if _BARE_BASE_BUNDLE is not None:
+        return _BARE_BASE_BUNDLE
     from amplifier_foundation import Bundle
 
-    _ENGINE_NATIVE_BASE_BUNDLE = Bundle(
+    _BARE_BASE_BUNDLE = Bundle(
         name="dot-runner-base",
         version="1.0.0",
         session={
@@ -783,7 +764,7 @@ def _engine_native_base_bundle() -> Any:
             },
         },
     )
-    return _ENGINE_NATIVE_BASE_BUNDLE
+    return _BARE_BASE_BUNDLE
 
 
 async def _build_prepared(
@@ -794,16 +775,16 @@ async def _build_prepared(
     profiles: dict[str, str] | None,
     extra_overlays: Sequence[Any] | None = None,
     worker: str | None = None,
-    engine_native: bool = False,
+    base_bundle: Any = None,
 ) -> Any:
     """Compose base + a minimal orchestrator overlay, then prepare.
 
     We still mount the loop-pipeline module as ``session.orchestrator`` --
     ``AmplifierSession`` requires SOME orchestrator to be present at
-    construction, and mounting the module is also what makes the
-    attractor-pipeline bundle's static ``agents:`` block land in
+    construction, and mounting the module is also what makes an explicitly
+    loaded bundle's static ``agents:`` block (if any) land in
     ``session.coordinator.config["agents"]`` (each entry already carrying
-    its own inline ``loop-agent`` orchestrator -- see ``AmplifierBackend``'s
+    its own inline non-pipeline orchestrator -- see ``AmplifierBackend``'s
     recursion guard). ``drive_engine`` never calls this mounted
     orchestrator's ``execute()`` though -- it drives ``PipelineEngine``
     directly instead. ``dot_source``/``params``/``profiles``/``worker`` are
@@ -817,19 +798,22 @@ async def _build_prepared(
     and spawned child -- e.g. mounting an observability hook -- without the
     runner needing to know what the overlay contains.
 
-    ``engine_native`` (DESIGN-worker-registry-core-split.md P3) selects
-    WHICH base bundle to load: ``False`` (default -- the legacy ``attractor``
-    personality) calls ``_load_base_bundle()``, which may fetch the
-    attractor-pattern bundle over the network; ``True`` (the ``dot-runner``
-    personality) calls ``_engine_native_base_bundle()`` instead, which never
-    touches the network or any pattern repo. A test monkeypatching
-    ``_load_base_bundle`` and asserting it was never called is the
-    structural proof that ``engine_native=True`` makes zero such reach.
+    ``base_bundle`` (optional) is an ALREADY-LOADED ``Bundle`` to use as this
+    run's base -- the caller's explicit ``--bundle``/``bundle=`` reference,
+    loaded via ``_load_named_bundle`` before this function is called (so its
+    declared ``session.orchestrator.config`` can be inspected for a default
+    ``worker``/``profiles`` -- see ``run_pipeline``). ``None`` (the default)
+    means no bundle was loaded: this composes the bare ``_bare_base_bundle()``
+    instead, which never touches the network or any pattern repo. A test
+    monkeypatching ``_bare_base_bundle`` and asserting it was never called
+    when ``base_bundle`` is given is the structural proof that an explicit
+    bundle reference is what determines network reach here, not a hardcoded
+    personality flag.
     """
     global _DEPS_INSTALLED
     from amplifier_foundation import Bundle
 
-    base = _engine_native_base_bundle() if engine_native else await _load_base_bundle()
+    base = base_bundle if base_bundle is not None else _bare_base_bundle()
 
     orchestrator_config: dict[str, Any] = {
         "dot_source": dot_source,
@@ -934,12 +918,18 @@ async def run_pipeline(
     child_constraint: Callable[[Any], Any] | None = None,
     spawn_timeout: float | None = None,
     source_dir: Path | str | None = None,
-    engine_native: bool = False,
+    bundle: str | None = None,
 ) -> PipelineResult:
-    """Run a DOT pipeline through the attractor engine, standalone.
+    """Run a DOT pipeline through the engine, standalone.
 
     High-level convenience: builds the prepared bundle, session, and spawn
     wiring itself, then drives the engine via ``drive_engine``.
+
+    Bare by default: no bundle fetch, no profile auto-load, no
+    ``session.spawn`` capability -- every box node runs through the worker
+    registry's ``direct`` worker. Pass ``bundle`` (an explicit bundle
+    reference, e.g. a ``git+https://...`` bundle YAML) to opt into an
+    opinionated experience by declaration -- see the ``bundle`` arg below.
 
     Args:
         dot_source: The DOT digraph source text.
@@ -954,17 +944,16 @@ async def run_pipeline(
             and used for the CLI's own preflight checks. It does not alter
             engine routing -- the DOT's own ``llm_provider`` node attributes
             and the profiles map determine routing.
-        profiles: llm_provider -> agent-name routing map. Defaults to
-            ``DEFAULT_PROFILES`` if not given (unless ``engine_native=True``,
-            in which case it defaults to ``{}`` -- see below).
+        profiles: llm_provider -> agent-name routing map. Explicit callers
+            win outright; otherwise defaults to ``bundle``'s own declared
+            ``profiles`` (if any), else ``{}``.
         worker: Run-level worker-selection default (EXTENSIONS.md Sec40 /
             DESIGN-worker-registry-core-split.md P1 item 3, P3 item 2).
-            ``None`` (default) leaves the existing capability-fallback chain
-            as the sole selector -- unaffected for every caller that predates
-            this parameter. When ``engine_native=True`` and ``worker`` is
-            ``None``, this resolves to ``"direct"`` explicitly (the
-            ``dot-runner`` personality's engine-native default). Precedence
-            is always: per-node ``worker=`` attribute > this value > fallback.
+            Explicit callers win outright; otherwise defaults to ``bundle``'s
+            own declared ``worker`` (if any); with no ``bundle`` and no
+            explicit ``worker``, resolves to ``"direct"``. Precedence is
+            always: per-node ``worker=`` attribute > this value > the
+            engine's own spawn-if-available-else-direct fallback chain.
         hooks: Optional hooks object forwarded to the engine.
         interviewer: Optional interviewer object forwarded to the handler
             registry (human-in-the-loop gate seam).
@@ -982,23 +971,28 @@ async def run_pipeline(
             (possibly modified) child ``Bundle`` -- the generic seam a
             consumer uses to constrain a spawned agent (e.g. a filesystem
             sandbox that denies writes to protected paths, or a read-only
-            tool set for an ask-style pipeline). Unused when
-            ``engine_native=True`` (no agents are ever spawned on that path).
+            tool set for an ask-style pipeline). Unused unless ``bundle`` is
+            given (no agents are ever spawned without one).
         spawn_timeout: Optional timeout (seconds) wrapping each child spawn
             in ``asyncio.wait_for`` -- a long-running box node that hangs
             then fails loud rather than blocking the whole pipeline
-            forever. ``None`` (default) means no timeout. Unused when
-            ``engine_native=True``.
-        engine_native: DESIGN-worker-registry-core-split.md P3. ``False``
-            (default) is the legacy ``attractor`` personality: unchanged
-            behavior -- attractor-pipeline base bundle (local sibling or
-            git fallback), ``DEFAULT_PROFILES`` fallback, ``session.spawn``
-            registered. ``True`` is the ``dot-runner`` personality: a bare
-            engine-native base bundle (zero network reach into any pattern
-            repo), empty profiles unless explicitly supplied, no
-            ``session.spawn`` capability registered at all (so every box
-            node runs through the ``direct`` worker), and ``worker``
-            defaults to ``"direct"``.
+            forever. ``None`` (default) means no timeout. Unused unless
+            ``bundle`` is given.
+        bundle: Explicit bundle reference (e.g. ``"git+https://github.com/
+            microsoft/amplifier-bundle-attractor@main#subdirectory=bundles/
+            attractor-pipeline.yaml"``) to compose as this run's base bundle
+            instead of the bare default -- the preserved mechanism for an
+            opinionated experience, declared rather than assumed (mirrors
+            the CLI's ``--bundle``/``DOT_RUNNER_BUNDLE``). ``None`` (the
+            default): no bundle is loaded, zero network reach into any
+            pattern repo, and ``session.spawn`` is never registered. When
+            given: the referenced bundle is composed as the base (its own
+            ``agents:`` block, if any, becomes spawnable), ``session.spawn``
+            IS registered, and its own declared ``session.orchestrator.config``
+            (``worker``/``profiles``) becomes this run's effective default
+            unless ``worker=``/``profiles=`` explicitly override it. The
+            engine has zero built-in knowledge of what the reference
+            contains -- this is mechanism, not policy.
 
     Returns:
         A ``PipelineResult`` with status, notes, logs_dir, and raw JSON.
@@ -1006,7 +1000,7 @@ async def run_pipeline(
     if logs_root is not None:
         logs_dir = Path(logs_root).expanduser().resolve()
     else:
-        logs_dir = Path(tempfile.mkdtemp(prefix="attractor-run-"))
+        logs_dir = Path(tempfile.mkdtemp(prefix="dot-runner-run-"))
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else Path.cwd()
@@ -1017,14 +1011,24 @@ async def run_pipeline(
     if not dot_source.startswith("git+https://"):
         (logs_dir / "pipeline.dot").write_text(dot_source, encoding="utf-8")
 
-    if engine_native:
-        # ENGINE-NATIVE (dot-runner): no implicit attractor-agent routing --
-        # an explicit empty mapping unless the caller supplied one.
-        resolved_profiles = dict(profiles) if profiles else {}
-        resolved_worker = worker or "direct"
-    else:
-        resolved_profiles = dict(profiles) if profiles else dict(DEFAULT_PROFILES)
+    loaded_bundle: Any = None
+    declared_worker: str | None = None
+    declared_profiles: dict[str, str] = {}
+    if bundle:
+        loaded_bundle = await _load_named_bundle(bundle)
+        declared_worker, declared_profiles = _declared_worker_and_profiles(
+            loaded_bundle
+        )
+
+    if worker is not None:
         resolved_worker = worker
+    elif bundle:
+        resolved_worker = declared_worker  # may be None -- fallback chain decides
+    else:
+        resolved_worker = "direct"
+    resolved_profiles = (
+        dict(profiles) if profiles is not None else dict(declared_profiles)
+    )
 
     prepared = await _build_prepared(
         dot_source,
@@ -1033,15 +1037,14 @@ async def run_pipeline(
         profiles=resolved_profiles,
         extra_overlays=extra_overlays,
         worker=resolved_worker,
-        engine_native=engine_native,
+        base_bundle=loaded_bundle,
     )
     session = await prepared.create_session(session_cwd=cwd_path)
-    if not engine_native:
-        # ENGINE-NATIVE never registers session.spawn: there is no
-        # agent-carrying bundle to spawn against, and registering it anyway
-        # would make AmplifierBackend's capability-fallback chain prefer the
-        # "spawn" worker over "direct" -- the exact unreachable-direct-path
-        # inversion DESIGN-worker-registry-core-split.md Sec1.1 item 2 names.
+    if bundle:
+        # Only registered when the caller explicitly opted in via `bundle` --
+        # see this function's docstring. Never registered by default, so a
+        # bare run's fallback chain and `direct`-only reachability are
+        # unaffected by this mechanism's mere existence.
         session.coordinator.register_capability(
             "session.spawn",
             make_spawn_fn(
@@ -1067,7 +1070,6 @@ async def run_pipeline(
                 transform=transform,
                 validate=validate,
                 source_dir=str(source_dir) if source_dir else None,
-                engine_native=engine_native,
             )
     finally:
         # The engine creates its manifest at run start. Stamp runner-owned
@@ -1107,7 +1109,7 @@ async def resume_pipeline(
     extra_overlays: Sequence[Any] | None = None,
     child_constraint: Callable[[Any], Any] | None = None,
     spawn_timeout: float | None = None,
-    engine_native: bool = False,
+    bundle: str | None = None,
 ) -> PipelineResult:
     """Resume an interrupted pipeline run from its checkpoint (spec §5.3).
 
@@ -1142,7 +1144,8 @@ async def resume_pipeline(
         cwd: Working directory for the resumed run.  Behaves exactly as on
             ``run_pipeline`` (process-level wiring cannot be serialized).
         provider, profiles, hooks, interviewer, transform, validate,
-        extra_overlays, child_constraint, spawn_timeout: as ``run_pipeline``.
+        extra_overlays, child_constraint, spawn_timeout, bundle: as
+            ``run_pipeline``.
 
     Returns:
         A ``PipelineResult`` whose ``logs_dir`` is ``run_dir``.
@@ -1176,18 +1179,30 @@ async def resume_pipeline(
                 f"--param key(s) {collisions!r} collide with context restored "
                 "from the checkpoint. Restored state wins on resume, so the "
                 "param would be silently discarded. Remove the param, or start "
-                "a new run with 'attractor run' if you need a different value."
+                "a new run with 'dot-runner run' if you need a different value."
             )
 
     cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else Path.cwd()
     cwd_path.mkdir(parents=True, exist_ok=True)
 
-    if engine_native:
-        resolved_profiles = dict(profiles) if profiles else {}
-        resolved_worker = worker or "direct"
-    else:
-        resolved_profiles = dict(profiles) if profiles else dict(DEFAULT_PROFILES)
+    loaded_bundle: Any = None
+    declared_worker: str | None = None
+    declared_profiles: dict[str, str] = {}
+    if bundle:
+        loaded_bundle = await _load_named_bundle(bundle)
+        declared_worker, declared_profiles = _declared_worker_and_profiles(
+            loaded_bundle
+        )
+
+    if worker is not None:
         resolved_worker = worker
+    elif bundle:
+        resolved_worker = declared_worker
+    else:
+        resolved_worker = "direct"
+    resolved_profiles = (
+        dict(profiles) if profiles is not None else dict(declared_profiles)
+    )
 
     prepared = await _build_prepared(
         resolved_dot_source,
@@ -1196,10 +1211,10 @@ async def resume_pipeline(
         profiles=resolved_profiles,
         extra_overlays=extra_overlays,
         worker=resolved_worker,
-        engine_native=engine_native,
+        base_bundle=loaded_bundle,
     )
     session = await prepared.create_session(session_cwd=cwd_path)
-    if not engine_native:
+    if bundle:
         session.coordinator.register_capability(
             "session.spawn",
             make_spawn_fn(
@@ -1225,7 +1240,6 @@ async def resume_pipeline(
                 transform=transform,
                 validate=validate,
                 resume_checkpoint=checkpoint,
-                engine_native=engine_native,
             )
     finally:
         _augment_manifest_provenance(logs_dir, provider)

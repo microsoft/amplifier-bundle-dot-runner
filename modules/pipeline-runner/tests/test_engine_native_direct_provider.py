@@ -14,7 +14,7 @@ provider is available -- cannot execute node" regardless of what API key a
 user had set.
 
 These tests exercise the REAL chain end to end:
-    run_pipeline(engine_native=True) -> drive_engine -> AmplifierBackend
+    run_pipeline() -> drive_engine -> AmplifierBackend
     -> WorkerRegistry -> DirectWorker -> unified_llm.generate()
 
 Nothing in that chain is mocked except the ONE seam the acceptance bar
@@ -102,7 +102,7 @@ class FakeBundle:
 
 
 def _patch_bundle_prep(monkeypatch) -> None:
-    monkeypatch.setattr(runner_mod, "_engine_native_base_bundle", lambda: FakeBundle())
+    monkeypatch.setattr(runner_mod, "_bare_base_bundle", lambda: FakeBundle())
 
 
 def _make_box_dot(*, llm_model: str = "claude-x") -> str:
@@ -181,7 +181,6 @@ def test_box_node_executes_via_direct_worker_real_chain(monkeypatch, tmp_path):
             _make_box_dot(),
             cwd=tmp_path / "work",
             logs_root=tmp_path / "logs",
-            engine_native=True,
         )
     )
 
@@ -215,15 +214,15 @@ def test_box_node_without_fix_fails_with_misleading_message(monkeypatch, tmp_pat
 
 # ---------------------------------------------------------------------------
 # 2. Cross-personality resume: a run interrupted mid-graph resumes cleanly
-#    under engine_native=True via the same fixed drive_engine chain.
+#    via the same fixed drive_engine chain.
 # ---------------------------------------------------------------------------
 
 
-def test_resume_engine_native_executes_pending_box_node(monkeypatch, tmp_path):
+def test_resume_executes_pending_box_node(monkeypatch, tmp_path):
     """Interrupt after node 1 (tool node, no provider needed), resume with
-    engine_native=True: the pending box node must reach the `direct` worker
+    the pending box node must reach the `direct` worker
     exactly like a fresh run -- the reviewer's synthetic
-    resume_pipeline(engine_native=True) scenario, now green."""
+    resume_pipeline() scenario, now green."""
     _patch_bundle_prep(monkeypatch)
     client = _FakeDirectClient(_report_outcome_response("success"))
     _patch_from_env(monkeypatch, client)
@@ -246,7 +245,6 @@ def test_resume_engine_native_executes_pending_box_node(monkeypatch, tmp_path):
             dot_source,
             cwd=cwd,
             logs_root=logs_root,
-            engine_native=True,
         )
     )
     # The fake client answers ANY node dispatched to `direct` -- including
@@ -274,7 +272,6 @@ def test_resume_engine_native_executes_pending_box_node(monkeypatch, tmp_path):
         runner_mod.resume_pipeline(
             logs_root,
             cwd=cwd,
-            engine_native=True,
         )
     )
 
@@ -337,7 +334,6 @@ def test_cli_run_with_no_provider_key_is_clean_no_traceback(monkeypatch, tmp_pat
     parser = cli.build_parser(prog="dot-runner")
     args = parser.parse_args(["run", str(dot_path), "--cwd", str(tmp_path)])
     args.prog_name = "dot-runner"
-    args.engine_native = True
 
     rc = cli.cmd_run(args)
 

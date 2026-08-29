@@ -1,4 +1,4 @@
-"""`attractor resume` CLI surface — AC-6 fail-loud contract (issue #224).
+"""`dot-runner resume` CLI surface — AC-6 fail-loud contract (issue #224).
 
 Every way a checkpoint can be unusable must exit non-zero with a message that
 names the cause and says what to do, and must leave the run directory
@@ -130,13 +130,16 @@ def test_already_completed_run_is_refused(tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 1
     assert "already completed" in err
+    # This remedy text is loop-pipeline's own (checkpoint.py) -- out of
+    # scope for this lane (loop-pipeline untouched), so it still names the
+    # legacy command verbatim. Pinned here, not silently changed.
     assert "attractor run" in err
 
 
 def test_graph_mismatch_is_refused(tmp_path, capsys):
     run_dir = _run_dir(tmp_path, _checkpoint())
     other = tmp_path / "other.dot"
-    other.write_text(DOT.replace('echo a', 'echo CHANGED'))
+    other.write_text(DOT.replace("echo a", "echo CHANGED"))
     rc = cli.main(["resume", str(run_dir), "--dot-file", str(other)])
     err = capsys.readouterr().err
     assert rc == 1

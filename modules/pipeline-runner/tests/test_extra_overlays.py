@@ -44,10 +44,7 @@ class FakeBundle:
 
 
 def _patch_base_bundle(monkeypatch) -> None:
-    async def fake_load_base_bundle():
-        return FakeBundle()
-
-    monkeypatch.setattr(runner_mod, "_load_base_bundle", fake_load_base_bundle)
+    monkeypatch.setattr(runner_mod, "_bare_base_bundle", lambda: FakeBundle())
 
 
 def test_extra_overlay_reaches_prepared_bundle_and_is_genuinely_invoked(

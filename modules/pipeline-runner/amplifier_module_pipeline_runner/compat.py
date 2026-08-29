@@ -154,18 +154,16 @@ def check_engine_compatibility() -> None:
     # engine description, and the reinstall command.
     missing_str = "\n  ".join(missing)
     message = (
-        f"attractor: INCOMPATIBLE ENGINE — runner requires {_ENGINE_MIN_DESCRIPTION}\n"
+        f"dot-runner: INCOMPATIBLE ENGINE — runner requires {_ENGINE_MIN_DESCRIPTION}\n"
         f"  but the installed engine is missing:\n"
         f"  {missing_str}\n"
         f"\n"
         f"  This is a version-skew problem: the runner was installed with a newer\n"
         f"  engine dependency than uv resolved from its cache.\n"
         f"\n"
-        f"  Fix: reinstall the runner, forcing a fresh engine resolution:\n"
-        f"    uv tool install --reinstall \\\n"
-        f"      'amplifier-module-pipeline-runner @ "
-        f"git+https://github.com/microsoft/amplifier-bundle-dot-runner"
-        f"@main#subdirectory=modules/pipeline-runner'\n"
+        f"  Fix: reinstall dot-runner, forcing a fresh engine resolution:\n"
+        f"    uv tool install --reinstall "
+        f"git+https://github.com/microsoft/amplifier-bundle-dot-runner\n"
         f"\n"
         f"  Or, if running from the repo tree:\n"
         f"    cd modules/pipeline-runner && uv sync --reinstall"
