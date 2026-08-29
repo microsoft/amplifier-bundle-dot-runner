@@ -53,7 +53,6 @@ from typing import Any
 
 from ..backend import (
     _MAX_TOOL_LOOP_ROUNDS,
-    _STATUS_MAP,
     _build_unified_tools,
     _default_model_stable_only,
     _outcome_from_structured_output,
