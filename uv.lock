@@ -136,7 +136,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "amplifier-core", specifier = ">=0.1.0" },
-    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=main" },
+    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?branch=main" },
     { name = "amplifier-module-loop-pipeline", extras = ["remote"], directory = "modules/loop-pipeline" },
 ]
 

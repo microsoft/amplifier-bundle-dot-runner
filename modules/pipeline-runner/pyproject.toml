@@ -10,18 +10,43 @@ authors = [
 dependencies = [
     "amplifier-core>=0.1.0",
     # PUBLISHED requirement -- floats on @main deliberately, and must keep floating.
-    # uv identifies a git dependency by its REF STRING, not by the commit that ref
-    # resolves to, so ANY non-`@main` ref here (SHA or tag) collides with every other
-    # `amplifier-foundation @ ...@main` declaration in the ecosystem the moment the two
-    # refs name different commits:
+    #
+    # WAVE 6 (feat/agent-always-installed) shape change: this used to be a direct
+    # reference (`amplifier-foundation @ git+...@main`). It is now a plain named
+    # requirement redirected via [tool.uv.sources] below -- SAME ref (`main`
+    # branch), DIFFERENT declaration shape, and the shape is now load-bearing.
+    #
+    # Why: amplifier-agent (microsoft/amplifier-agent, now embedded at this
+    # repo's root -- modules/loop-amplifier-agent's peer library) declares
+    # amplifier-foundation as a plain named requirement redirected via its OWN
+    # `[tool.uv.sources] amplifier-foundation = { git = ..., branch = "main" }`.
+    # uv identifies a git requirement by its REF-KIND representation, not just
+    # the commit it resolves to: a `@main`-suffixed direct URL and a
+    # `branch = "main"` sources-redirect are DIFFERENT representations of "the
+    # same ref" to uv's resolver, even though they print identically --
+    # confirmed empirically (`uv tool install`/`uv pip install` on this
+    # package plus amplifier-agent both declaring "@main" text still raised
+    # "Requirements contain conflicting URLs for package amplifier-foundation").
+    # Matching amplifier-agent's own declaration SHAPE (not just its ref) is
+    # what makes the two co-resolve -- root's own `[tool.uv] override-
+    # dependencies` (pyproject.toml) fixes this for `uv lock`/`uv sync`
+    # invoked FROM the root project, but does NOT reach `uv tool install
+    # git+<url>` (verified: override-dependencies is resolution-root-scoped
+    # and a git/tool install never treats the fetched project as that root),
+    # so the shape itself must match for the primary distribution path to work.
+    #
+    # A SHA pin (either shape) still collides with every other
+    # `amplifier-foundation` declaration in the ecosystem the moment the two
+    # name different commits:
     #     Requirements contain conflicting URLs for package `amplifier-foundation`
     # A SHA pin on this line did exactly that and blocked every wiki-weaver install (#213).
     # The CI determinism that pin bought (microsoft-amplifier/amplifier-support#391) is
     # preserved out-of-band by the [tool.uv] override-dependencies entry below, which uv
     # applies ONLY when this project is the resolution root and never propagates to
-    # anyone who depends on us.
+    # anyone who depends on us. That override matches by package NAME, so it is
+    # unaffected by this shape change -- it still fires, and still only for our own CI.
     # Bump procedure: see compat.py's module docstring.
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
+    "amplifier-foundation>=1.0.0",
     "amplifier-module-loop-pipeline[remote] @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-pipeline",
 ]
 
@@ -51,8 +76,13 @@ package = true
 # somebody else's dependency. So our CI resolves a fixed foundation commit while every
 # consumer resolves plain `@main`.
 #
-# `[tool.uv.sources]` was measured NOT to work here: uv reads a git dependency's sources
-# out of its checked-out pyproject.toml, so a rev there reintroduces the exact conflict.
+# `[tool.uv.sources]` with a `rev` was measured NOT to work here: uv reads a git
+# dependency's sources out of its checked-out pyproject.toml, so a `rev` there
+# reintroduces the exact conflict for every consumer. This is DIFFERENT from
+# the `branch = "main"` sources-redirect adopted above for the *published*
+# line: that one deliberately still floats (matches every other `@main`
+# consumer's ref), it just changed SHAPE, not ref. Only a fixed `rev`/SHA in
+# `[tool.uv.sources]` was ever the measured-broken case.
 # A `constraint-dependencies` entry does not work either -- a git URL in a constraint is
 # itself a second conflicting URL.
 #
@@ -63,6 +93,12 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
+# WAVE 6 (feat/agent-always-installed): matches microsoft/amplifier-agent's own
+# `[tool.uv.sources]` declaration shape for the exact same package+ref -- see
+# the long comment on the `amplifier-foundation` dependency line above for why
+# the shape (not just the ref) has to match for co-resolution. Still floats on
+# `main` deliberately (same "published requirement must float" reasoning).
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
 amplifier-module-loop-pipeline = { path = "../loop-pipeline" }
 amplifier-module-remote-source = { path = "../remote-source" }
 
