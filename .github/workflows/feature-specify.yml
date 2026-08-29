@@ -1,0 +1,701 @@
+# Feature Specify -- the FEATURE sibling of the "specify" stage in the issue
+# -> attractor -> PR system. See .github/capsule-pipeline/README.md for what
+# this is, its provenance (ported from microsoft/amplifier-bundle-attractor),
+# and the deliberate deltas this port carries.
+#
+# ENGINE-REPO NOTE (read before editing): this workflow runs INSIDE the
+# engine's own repository -- see capsule-specify.yml's "Detach the engine"
+# step comment for the full rationale; the same detachment happens here.
+#
+# Trigger: a human applies the `ready:feature-spec` label to an issue. The
+# defect lane's epistemic anchor (RED-at-base, informative BECAUSE it could
+# have been green) breaks structurally on a feature ask: an absent
+# capability makes EVERY candidate gate red at base -- correct, wrong, and
+# vacuous alike -- so RED stops discriminating. feature-capsule.dot replaces
+# the anchor with BINDING maintainer-authored acceptance criteria, delivered
+# over the authenticated issue-comment channel and pinned by digest before
+# any budget is spent -- GitHub computes each comment's `author_association`
+# server-side from the commenting account's real relationship to this
+# repository, unforgeable by a filer.
+#
+# What it does, at minimum:
+#   1. Check out the repo (fetch-depth 60, for the discrimination commit
+#      below) and record the base SHA.
+#   2. Materialize the issue's title+body as a file (issue_file).
+#   3. Materialize authenticated maintainer comments as criteria_file, in
+#      the exact delimiter format feature-capsule.dot's `criteria_gate` parses.
+#   4. Run .github/capsule-pipeline/feature-capsule.dot end-to-end via the
+#      detached engine snapshot.
+#   5. Classify, gate, publish a capsule PR (or post a finding/failure),
+#      always commenting back on the issue.
+#
+# Job cannot join "CI Gate (all checks passed)" (.github/workflows/ci.yml)
+# for the same isolation reason as capsule-specify.yml.
+name: Feature Specify
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to run the feature-specify stage against"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: feature-specify-issue-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  specify:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ready:feature-spec'
+    name: "Run feature-capsule.dot on issue #${{ github.event.issue.number || inputs.issue_number }}"
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+    # feature-capsule.dot's own max_pipeline_duration is the engine's
+    # internal wall (see the vendored file's provenance box); the job wall
+    # must clear that plus setup/PR-creation overhead.
+    timeout-minutes: 250
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 60, not the default 1 and not 0 (full history). The
+          # discrimination check below needs a real, unrelated commit to
+          # re-run the gate at; the default shallow clone gives it exactly
+          # one commit to choose from.
+          fetch-depth: 60
+
+      - name: Record base SHA and issue metadata
+        id: base
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "run_id=$(date -u +%Y%m%dT%H%M%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: "Pick the discrimination commit (feature-capsule.dot's later_commit)"
+        id: discrim
+        # feature-capsule.dot's `discrimination_check` re-runs the authored
+        # gate at an UNRELATED commit that also lacks the demanded
+        # capability and requires RED there: a gate that greens on unrelated
+        # code is over-broad. At specify time base_sha IS the tip of main,
+        # so no LATER commit exists -- an ancestor satisfies the same
+        # requirement at least as strongly (the capability is even more
+        # certainly absent there). HEAD~30 is far enough back to be
+        # genuinely unrelated, near enough that the tree still has the same
+        # module layout. Guarded: if the clone cannot reach that far, the
+        # param is omitted and the node records its documented skip.
+        run: |
+          set -euo pipefail
+          later=""
+          if git rev-parse --verify --quiet "HEAD~30^{commit}" >/dev/null; then
+            later="$(git rev-parse "HEAD~30")"
+            echo "discrimination commit: $later ($(git log -1 --format='%h %s' "$later"))"
+          else
+            echo "::warning::Could not resolve HEAD~30 (clone shallower than expected: $(git rev-list --count HEAD) commit(s) available). Omitting later_commit -- feature-capsule.dot's discrimination_check will record its documented skip instead of running."
+          fi
+          echo "later_commit=$later" >> "$GITHUB_OUTPUT"
+
+      - name: "Idempotency guard: do not re-spend the budget on an issue that already has a feature capsule"
+        id: idem
+        # The capsule branch this workflow pushes carries a run timestamp,
+        # so the exact name is not stable across runs -- the stable fact is
+        # the PREFIX, `feature-capsule/issue-<n>-`. This is a SKIP, not a
+        # failure: re-labeling is a normal human action. To deliberately
+        # re-run (e.g. after the maintainer posts corrected criteria), merge
+        # or delete the existing feature-capsule branch first.
+        run: |
+          set -euo pipefail
+          SKIP=false
+          EXISTING="$(git ls-remote --heads origin "refs/heads/feature-capsule/issue-${ISSUE_NUMBER}-*" | awk '{print $2}' | sed 's#^refs/heads/##' | paste -sd' ' -)"
+          if [ -n "$EXISTING" ]; then
+            SKIP=true
+            echo "::notice::A feature capsule branch already exists for issue #${ISSUE_NUMBER}: ${EXISTING}. Skipping this run (idempotency) rather than spending a second multi-hour budget on a competing capsule."
+          fi
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+          echo "existing=$EXISTING" >> "$GITHUB_OUTPUT"
+
+      - name: "Detach the engine: snapshot this repo's own modules/ out of the workspace"
+        if: steps.idem.outputs.skip != 'true'
+        # See capsule-specify.yml's identically named step for the full
+        # rationale and mechanism (local tar snapshot, root form, pinned to
+        # this run's own base SHA -- no clone, no bundles/ copy needed).
+        run: |
+          set -euo pipefail
+          ENGINE_SRC="$RUNNER_TEMP/engine-src"
+          rm -rf "$ENGINE_SRC"
+          mkdir -p "$ENGINE_SRC"
+          tar -cf - \
+            --exclude='.git' \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.github/capsule-pipeline/proposals' \
+            . \
+          | tar -xf - -C "$ENGINE_SRC"
+          echo "engine snapshot: local checkout ($GITHUB_WORKSPACE) -> $ENGINE_SRC"
+          echo "engine snapshot provenance: base SHA $(git rev-parse HEAD)"
+          for required in \
+            "pyproject.toml" \
+            "modules/pipeline-runner/pyproject.toml" \
+            "modules/loop-pipeline/pyproject.toml" \
+            "modules/unified-llm-client/pyproject.toml" \
+            "modules/remote-source/pyproject.toml" \
+            "modules/loop-agent/pyproject.toml"; do
+            if [ ! -f "$ENGINE_SRC/$required" ]; then
+              echo "::error::Engine snapshot at $ENGINE_SRC is missing $required -- the detached engine would be unusable and the run step would fail later with a confusing uv error. Refusing to start." >&2
+              exit 1
+            fi
+          done
+          if [ -n "$(find "$ENGINE_SRC" -name .venv -print -quit)" ]; then
+            echo "::error::Engine snapshot at $ENGINE_SRC contains a .venv -- the tar exclusion did not hold, so the engine is not actually detached from the workspace. Refusing to start." >&2
+            exit 1
+          fi
+          echo "engine snapshot verified: root package + pipeline-runner project present, no .venv carried in"
+
+      - name: Materialize the issue as issue_file
+        id: issue
+        if: steps.idem.outputs.skip != 'true'
+        # BACKGROUND ONLY: feature-capsule.dot never reads acceptance
+        # criteria from the issue body (see the workflow header). Same
+        # trust model / retry-with-backoff / zero-shell-interpolation
+        # construction as capsule-specify.yml's identical step.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/capsule-run"
+          issue_file="$RUNNER_TEMP/capsule-run/issue.md"
+          err_file="$RUNNER_TEMP/capsule-run/issue-view.err"
+
+          max_attempts=5
+          attempt=1
+          issue_json=""
+          while :; do
+            issue_json="$(gh issue view "$ISSUE_NUMBER" \
+              --repo "${{ github.repository }}" \
+              --json title,body,url,number 2>"$err_file")"
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::gh issue view failed after $attempt attempts (rc=$rc)"
+              cat "$err_file" >&2 || true
+              exit 1
+            fi
+            sleep_s=$(( attempt * attempt * 3 ))
+            echo "gh issue view attempt $attempt/$max_attempts failed (rc=$rc); retrying in ${sleep_s}s" >&2
+            cat "$err_file" >&2 || true
+            sleep "$sleep_s"
+            attempt=$((attempt + 1))
+          done
+          set -e
+
+          ISSUE_TITLE_RAW="$(printf '%s' "$issue_json" | jq -r '.title')"
+          ISSUE_URL_RAW="$(printf '%s' "$issue_json" | jq -r '.url')"
+          ISSUE_NUM_RAW="$(printf '%s' "$issue_json" | jq -r '.number')"
+
+          {
+            printf '# %s\n\n' "$ISSUE_TITLE_RAW"
+            printf 'Issue: %s (#%s)\n\n' "$ISSUE_URL_RAW" "$ISSUE_NUM_RAW"
+            printf 'The issue body below is filer-supplied, unauthenticated background text. feature-capsule.dot NEVER reads acceptance criteria from it -- binding criteria arrive only via criteria_file (authenticated maintainer comments; see the next step).\n\n'
+            printf '%s' "$issue_json" | jq -j '.body // ""'
+            printf '\n\n[END OF FILER-SUPPLIED ISSUE BODY]\n'
+          } > "$issue_file"
+
+          echo "file=$issue_file" >> "$GITHUB_OUTPUT"
+          echo "--- issue_file contents ---"
+          cat "$issue_file"
+
+      - name: Materialize the authenticated maintainer comments as criteria_file
+        id: criteria
+        if: steps.idem.outputs.skip != 'true'
+        # WHAT feature-capsule.dot's criteria_gate PARSES: a stream of
+        #   === COMMENT author=<login> id=<id> updated_at=<iso8601> ===
+        #   <body>
+        # blocks, eligible comments only (author_association in {OWNER,
+        # MEMBER, COLLABORATOR}, non-Bot -- server-side, unforgeable),
+        # oldest-first, from which the gate extracts a `## Acceptance
+        # criteria (feature-capsule)` block requiring `Owned-by: @<login>`
+        # matching the delimiter's authenticated author, a `Scope:` line,
+        # and at least one `AC-<n>:` line.
+        #
+        # NO CAP (unlike issue_file's 30000-char cap): criteria_file is read
+        # by an AWK PARSER, not a model -- truncating here could silently
+        # drop one of two conflicting maintainers and convert a designed
+        # refusal (`conflicting_criteria`) into a false accept.
+        #
+        # CRLF NORMALIZATION + DELIMITER NEUTRALIZATION: the gate's anchors
+        # are line-anchored and CR-intolerant, and its comment-opening rule
+        # (`/^=== COMMENT /`) is unconditional and untested against nesting
+        # -- an unfenced OR fenced paste of that exact line inside an
+        # authenticated comment could otherwise open a forged attributed
+        # block. CRs are stripped and any body line matching the delimiter
+        # regex is space-prefixed before it is written, so the only real
+        # delimiter lines in criteria_file are the ones this step emits,
+        # attributed solely from GitHub's authenticated per-comment metadata.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/capsule-run"
+          criteria_file="$RUNNER_TEMP/capsule-run/criteria.md"
+          comments_json="$RUNNER_TEMP/capsule-run/issue-comments.json"
+          eligible_json="$RUNNER_TEMP/capsule-run/maintainer-comments.json"
+          err_file="$RUNNER_TEMP/capsule-run/issue-comments.err"
+
+          max_attempts=5
+          attempt=1
+          while :; do
+            if gh api --paginate \
+                 "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments" \
+                 2>"$err_file" | jq -s 'add // []' > "$comments_json"; then
+              break
+            fi
+            rc=$?
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::gh api issues/comments failed after $attempt attempts (rc=$rc)"
+              cat "$err_file" >&2 || true
+              exit 1
+            fi
+            sleep_s=$(( attempt * attempt * 3 ))
+            echo "gh api issues/comments attempt $attempt/$max_attempts failed (rc=$rc); retrying in ${sleep_s}s" >&2
+            cat "$err_file" >&2 || true
+            sleep "$sleep_s"
+            attempt=$((attempt + 1))
+          done
+          set -e
+
+          jq '[.[] | select(
+                ((.author_association == "OWNER")
+                 or (.author_association == "MEMBER")
+                 or (.author_association == "COLLABORATOR"))
+                and ((.user.type // "") != "Bot"))]' \
+            "$comments_json" > "$eligible_json"
+
+          n_total="$(jq 'length' "$comments_json")"
+          n_eligible="$(jq 'length' "$eligible_json")"
+
+          jq -r 'def neutralize_delimiters:
+                   gsub("\r"; "")
+                   | split("\n")
+                   | map(if startswith("=== COMMENT ") then " " + . else . end)
+                   | join("\n");
+                 .[]
+                 | "=== COMMENT author=\(.user.login) id=\(.id) updated_at=\(.updated_at) ===\n"
+                   + ((.body // "") | neutralize_delimiters)' \
+            "$eligible_json" | tr -d '\r' > "$criteria_file"
+
+          bytes="$(wc -c < "$criteria_file" | tr -d ' ')"
+          echo "file=$criteria_file" >> "$GITHUB_OUTPUT"
+          echo "eligible=$n_eligible" >> "$GITHUB_OUTPUT"
+          echo "CRITERIA MATERIALIZED: ${n_eligible} of ${n_total} issue comment(s) authenticated as OWNER/MEMBER/COLLABORATOR and non-Bot; ${bytes} bytes written to ${criteria_file} (no cap applied -- see this step's comment for why)."
+          if [ "$n_eligible" -eq 0 ]; then
+            echo "::warning::No eligible authenticated maintainer comments on issue #${ISSUE_NUMBER}. criteria_file is empty, so feature-capsule.dot's criteria_gate will take its designed polite-refusal path (no_criteria) before spending any model budget. This is a correct outcome, not an error -- the issue BODY is never trusted for criteria."
+          fi
+          echo "--- criteria_file contents ---"
+          cat "$criteria_file"
+
+      - uses: actions/setup-python@v5
+        if: steps.idem.outputs.skip != 'true'
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        if: steps.idem.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@v4
+
+      - name: "Preflight: the critique judge is unserviceable without an OpenAI key"
+        id: preflight
+        if: steps.idem.outputs.skip != 'true'
+        # feature-capsule.dot's critique node (this pipeline's ONE judgment
+        # node) declares llm_provider="openai" -- a second model family,
+        # deliberately. With `--worker loop-agent`, that attribute flows
+        # straight through the named-worker path -- no dual-provider bundle
+        # mount needed.
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::feature-specify: OPENAI_API_KEY secret is missing. feature-capsule.dot's critique node requires llm_provider=\"openai\" -- a second model family is the point: the judge must be independent of the maker's family -- and the engine cross-checks every declared provider at startup, refusing to start without a serviceable credential for it. Refusing to start here too, so the failure is visible before the run's multi-hour budget is spent. Provision OPENAI_API_KEY as a repo secret, then re-run." >&2
+            exit 1
+          fi
+          echo "OPENAI_API_KEY is present -- the second-family critique judge (OpenAI) can be honored. Proceeding."
+
+      - name: Run feature-capsule.dot (feature specify stage)
+        id: run
+        if: steps.idem.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/capsule-run/out" "$RUNNER_TEMP/capsule-run/logs"
+          # DETACHED ENGINE: --project points at the $RUNNER_TEMP snapshot
+          # taken before any maker touched the tree (root form). --cwd,
+          # target_dir and the .dot path below deliberately still point at
+          # the WORKSPACE.
+          uv run --project "$RUNNER_TEMP/engine-src" dot-runner run \
+            .github/capsule-pipeline/feature-capsule.dot \
+            --worker loop-agent \
+            --cwd "$GITHUB_WORKSPACE" \
+            --logs-root "$RUNNER_TEMP/capsule-run/logs" \
+            --on-human-gate auto-approve \
+            --param issue_file="${{ steps.issue.outputs.file }}" \
+            --param criteria_file="${{ steps.criteria.outputs.file }}" \
+            --param target_dir="$GITHUB_WORKSPACE" \
+            --param base_sha="${{ steps.base.outputs.sha }}" \
+            --param later_commit="${{ steps.discrim.outputs.later_commit }}" \
+            --param uplift_dir="$GITHUB_WORKSPACE/.github/capsule-pipeline/vendor" \
+            --param capsule_out="$RUNNER_TEMP/capsule-run/out" \
+            --param max_iterations=8 \
+            --param gate_time_ceiling=180
+          echo "attractor_exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: "Fence the capsule pair: record sha256 of every capsule_out file"
+        if: always() && steps.idem.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          bash .github/capsule-pipeline/capsule_pair_fence.sh record \
+            "$RUNNER_TEMP/capsule-run/out" \
+            "$RUNNER_TEMP/capsule-pair.sha256"
+
+      - name: "Capsule artifacts: a secret finding FAILS the run, never redacts"
+        id: capsule_secret_gate
+        if: always() && steps.idem.outputs.skip != 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CAPSULE_PR_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "capsule_clean=false" >> "$GITHUB_OUTPUT"
+          if python3 .github/capsule-pipeline/scrub_secrets.py scan \
+              "$RUNNER_TEMP/capsule-run/out"; then
+            echo "capsule_clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Secret-shaped material found in the CAPSULE ARTIFACTS (see the scan findings above for file/line/shape; values are never printed). These artifacts are never redacted in place. The capsule PR is BLOCKED and this run fails. Rotate any credential the findings implicate, then re-run." >&2
+            exit 1
+          fi
+
+      - name: Scrub secrets from run evidence
+        if: always() && steps.idem.outputs.skip != 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CAPSULE_PR_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 .github/capsule-pipeline/scrub_secrets.py scrub \
+            "$RUNNER_TEMP/capsule-run/logs" \
+            "$GITHUB_WORKSPACE/.ai"
+
+      - name: Classify the result
+        id: classify
+        if: always() && steps.idem.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/capsule-run/out"
+          kind="failure"
+          id=""
+          if ls "$OUT"/*.verify.sh >/dev/null 2>&1; then
+            kind="capsule"
+            id="$(basename "$(ls "$OUT"/*.verify.sh | head -1)" .verify.sh)"
+          elif [ -f "$GITHUB_WORKSPACE/.ai/findings/no-criteria.md" ]; then
+            kind="no_criteria"
+          elif [ -f "$GITHUB_WORKSPACE/.ai/findings/cant-write-gate.md" ]; then
+            kind="cant_gate"
+          fi
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Classified as: kind=$kind id=$id"
+
+      - name: "Execute the SHIPPED gate at the pinned base SHA"
+        id: gate_exec
+        if: always() && steps.classify.outputs.kind == 'capsule' && steps.capsule_secret_gate.outputs.capsule_clean == 'true'
+        # Capped at 300s: feature-capsule.dot's own gate_time_ceiling is 180s.
+        run: |
+          set -euo pipefail
+          echo "gate_ok=false" >> "$GITHUB_OUTPUT"
+          bash .github/capsule-pipeline/verify_shipped_gate.sh \
+            --lane feature \
+            --capsule-dir "$RUNNER_TEMP/capsule-run/out" \
+            --id "${{ steps.classify.outputs.id }}" \
+            --repo "$GITHUB_WORKSPACE" \
+            --base-sha "${{ steps.base.outputs.sha }}" \
+            --log-dir "$RUNNER_TEMP/capsule-run/logs/shipped-gate" \
+            --timeout 300
+          echo "gate_ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open feature capsule PR
+        id: pr
+        if: always() && steps.classify.outputs.kind == 'capsule' && steps.capsule_secret_gate.outputs.capsule_clean == 'true' && steps.gate_exec.outputs.gate_ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/capsule-run/out"
+          ID="${{ steps.classify.outputs.id }}"
+          ISSUE="$ISSUE_NUMBER"
+          BRANCH="feature-capsule/issue-${ISSUE}-${{ steps.base.outputs.run_id }}"
+          DEST=".github/capsule-pipeline/proposals/issue-${ISSUE}"
+
+          cd "$GITHUB_WORKSPACE"
+          if [ -n "$(git status --porcelain)" ] || [ "$(git rev-parse HEAD)" != "${{ steps.base.outputs.sha }}" ]; then
+            echo "::error::Workspace is not clean at the pinned base SHA after the pipeline run -- refusing to build a capsule PR from an unproven tree." >&2
+            git status --porcelain >&2 || true
+            exit 1
+          fi
+
+          bash .github/capsule-pipeline/capsule_pair_fence.sh verify \
+            "$OUT" "$RUNNER_TEMP/capsule-pair.sha256"
+
+          git checkout -b "$BRANCH"
+          mkdir -p "$DEST"
+          cp "$OUT"/"$ID".md "$OUT"/"$ID".verify.sh "$DEST"/
+          chmod +x "$DEST/$ID.verify.sh"
+          for extra in base-sha discrimination.md criteria-digest; do
+            f="$OUT/$ID.$extra"
+            [ -f "$f" ] && cp "$f" "$DEST/"
+          done
+          for f in "$OUT/$ID".*.py "$OUT/$ID".*.json; do
+            [ -f "$f" ] && cp "$f" "$DEST/"
+          done
+
+          echo "ship-what-you-verified: re-running the shipped-gate check against the COMMITTED set ($DEST)"
+          bash .github/capsule-pipeline/verify_shipped_gate.sh \
+            --lane feature \
+            --capsule-dir "$GITHUB_WORKSPACE/$DEST" \
+            --id "$ID" \
+            --repo "$GITHUB_WORKSPACE" \
+            --base-sha "${{ steps.base.outputs.sha }}" \
+            --log-dir "$RUNNER_TEMP/capsule-run/logs/shipped-gate-committed" \
+            --timeout 300
+          echo "ship-what-you-verified: the committed set reproduces the verified capsule. Proceeding to commit."
+
+          COMMIT_MSG_FILE="$RUNNER_TEMP/capsule-run/commit-msg.txt"
+          {
+            echo "specify(feature): work capsule for issue #${ISSUE} (${ID})"
+            echo
+            echo "Produced by the feature-capsule.dot specify-stage pipeline from issue"
+            echo "#${ISSUE}, pinned to base SHA ${{ steps.base.outputs.sha }}, anchored to"
+            echo "maintainer-authored acceptance criteria delivered over the authenticated"
+            echo "issue-comment channel and pinned by digest. This PR is the specify-stage"
+            echo "artifact for human review -- it contains no implementation; merging it is"
+            echo "the signal to proceed to the implement stage."
+            echo
+            echo "🤖 Generated with [Amplifier](https://github.com/microsoft/amplifier)"
+            echo
+            echo "Co-Authored-By: Amplifier <240397093+microsoft-amplifier@users.noreply.github.com>"
+          } > "$COMMIT_MSG_FILE"
+
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              add "$DEST"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -F "$COMMIT_MSG_FILE"
+          git push origin "$BRANCH"
+
+          BODY_FILE="$RUNNER_TEMP/capsule-run/pr-body.md"
+          {
+            echo "## Feature specify-stage work capsule for #${ISSUE}"
+            echo
+            echo "Refs #${ISSUE}. Produced by \`feature-capsule.dot\` (see"
+            echo "\`.github/capsule-pipeline/\`), pinned to base SHA"
+            echo "\`${{ steps.base.outputs.sha }}\`, anchored to maintainer-authored"
+            echo "acceptance criteria (not RED-at-base -- an absent capability makes"
+            echo "every candidate gate red, so red cannot discriminate for a feature ask)."
+            echo
+            echo "1. **Criteria fidelity, both directions**: the declared \`criteria_digest\`"
+            echo "   pins exactly which authenticated maintainer comment(s) this capsule"
+            echo "   answers -- verify it still matches the issue thread."
+            echo "2. **Non-vacuity (feature sense)**: a capability STUB must NOT green the gate."
+            echo
+            echo "This PR contains **no implementation** -- merging it approves the"
+            echo "definition of done; implementing a real fix is a separate, later stage."
+            echo
+            echo "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$BODY_FILE"
+
+          url=$(gh pr create --repo "${{ github.repository }}" \
+            --title "specify(feature): work capsule for issue #${ISSUE}" \
+            --body-file "$BODY_FILE" \
+            --base main --head "$BRANCH")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on the issue with the outcome
+        if: always() && steps.idem.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          CAPSULE_SECRET_GATE: ${{ steps.capsule_secret_gate.outcome }}
+          GATE_EXEC: ${{ steps.gate_exec.outcome }}
+          PR_STEP: ${{ steps.pr.outcome }}
+        run: |
+          set -euo pipefail
+          COMMENT="$RUNNER_TEMP/capsule-run/comment.md"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          KIND="${{ steps.classify.outputs.kind }}"
+
+          if [ "$KIND" = "capsule" ] && [ -z "${PR_URL:-}" ]; then
+            KIND="capsule_blocked"
+          fi
+
+          case "$KIND" in
+            capsule)
+              {
+                echo "**Feature specify stage: work capsule opened.**"
+                echo
+                echo "$PR_URL"
+                echo
+                echo "Please review the proposed definition of done before merging (merging"
+                echo "approves the capsule; it does not implement anything)."
+                echo
+                echo "Workflow run: $RUN_URL"
+              } > "$COMMENT"
+              ;;
+            capsule_blocked)
+              {
+                echo "**Feature specify stage: a work capsule was produced, but a pre-publication check failed -- no PR was opened.**"
+                echo
+                echo "**What happened:** the pipeline converged on a work capsule, but one"
+                echo "of the checks that runs between producing it and publishing it did"
+                echo "not pass, so nothing was pushed."
+                echo
+                echo "**What happens next:** a maintainer will personally review this issue"
+                echo "and follow up. The capsule itself is preserved in this run's evidence."
+                echo
+                echo "<details>"
+                echo "<summary>Which check blocked it (for maintainers)</summary>"
+                echo
+                echo "| check | outcome |"
+                echo "| --- | --- |"
+                echo "| capsule artifacts free of secret-shaped material | \`${CAPSULE_SECRET_GATE:-did not run}\` |"
+                echo "| shipped gate executes at the pinned base SHA | \`${GATE_EXEC:-did not run}\` |"
+                echo "| open capsule PR (includes the pair-integrity fence) | \`${PR_STEP:-did not run}\` |"
+                echo
+                echo "Workflow run: $RUN_URL"
+                echo
+                echo "</details>"
+              } > "$COMMENT"
+              ;;
+            no_criteria)
+              {
+                echo "**Feature specify stage: no binding acceptance criteria found yet.**"
+                echo
+                echo "**What happened:** this pipeline requires maintainer-authored"
+                echo "acceptance criteria, delivered as an issue COMMENT from an OWNER,"
+                echo "MEMBER, or COLLABORATOR of this repository (never the issue body)."
+                echo "None was found."
+                echo
+                echo "**If you filed this issue and are not a maintainer:** this is expected"
+                echo "-- a maintainer needs to post a \`## Acceptance criteria"
+                echo "(feature-capsule)\` comment with \`Owned-by:\`, \`Scope:\`, and at least"
+                echo "one \`AC-<n>:\` line before this pipeline can proceed. Re-apply the"
+                echo "\`ready:feature-spec\` label."
+                echo
+                echo "Workflow run: $RUN_URL"
+              } > "$COMMENT"
+              ;;
+            cant_gate)
+              {
+                echo "**Feature specify stage: the automated pipeline couldn't produce a verified work plan for this yet.**"
+                echo
+                echo "**What happened:** the pipeline could not prove within its budget that"
+                echo "the gate it wrote genuinely discriminates (absent on a stub, present on"
+                echo "a real implementation)."
+                echo
+                echo "**What happens next:** a maintainer will personally review this issue"
+                echo "and follow up."
+                echo
+                echo "<details>"
+                echo "<summary>Technical finding (for maintainers)</summary>"
+                echo
+                cat "$GITHUB_WORKSPACE/.ai/findings/cant-write-gate.md" 2>/dev/null || echo "(finding file missing)"
+                echo
+                echo "Workflow run: $RUN_URL"
+                echo
+                echo "</details>"
+              } > "$COMMENT"
+              ;;
+            *)
+              {
+                echo "**Feature specify stage: the automated pipeline couldn't produce a verified work plan for this yet.**"
+                echo
+                echo "**What happened:** the pipeline ran, but did not converge on a proven"
+                echo "work capsule within its iteration budget."
+                echo
+                echo "**What happens next:** a maintainer will personally review this issue"
+                echo "and follow up."
+                echo
+                echo "<details>"
+                echo "<summary>Technical postmortem (for maintainers)</summary>"
+                echo
+                echo '````'
+                cat "$GITHUB_WORKSPACE/.ai/postmortem/report.md" 2>/dev/null || echo "(no postmortem report was written)"
+                echo '````'
+                echo
+                echo "Workflow run: $RUN_URL"
+                echo
+                echo "</details>"
+              } > "$COMMENT"
+              ;;
+          esac
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body-file "$COMMENT"
+
+      - name: "Residual secret gate: block the upload if anything secret-shaped remains"
+        id: secret_gate
+        if: always() && steps.idem.outputs.skip != 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CAPSULE_PR_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "upload_ok=false" >> "$GITHUB_OUTPUT"
+          if python3 .github/capsule-pipeline/scrub_secrets.py gate \
+              --never-redact "$RUNNER_TEMP/capsule-run/out" \
+              "$RUNNER_TEMP/capsule-run" \
+              "$GITHUB_WORKSPACE/.ai"; then
+            echo "upload_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::The residual secret gate BLOCKED the run-evidence artifact upload (see the scan findings above for file/line/shape; values are never printed). Nothing was uploaded. Rotate any credential the findings implicate before touching this run's evidence." >&2
+            exit 1
+          fi
+
+      - name: Upload run evidence (logs, .ai state, capsule_out)
+        if: always() && steps.idem.outputs.skip != 'true' && steps.secret_gate.outputs.upload_ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-specify-issue-${{ env.ISSUE_NUMBER }}-${{ steps.base.outputs.run_id }}
+          path: |
+            ${{ runner.temp }}/capsule-run/logs
+            ${{ runner.temp }}/capsule-run/out
+            ${{ github.workspace }}/.ai
+          if-no-files-found: warn
+
+      - name: Fail the job on genuine non-convergence
+        if: always() && steps.idem.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          KIND="${{ steps.classify.outputs.kind }}"
+          if [ "$KIND" = "failure" ]; then
+            echo "::error::feature-capsule.dot did not converge (no capsule, no recorded finding) -- see the postmortem comment posted on the issue and the uploaded run evidence."
+            exit 1
+          fi
