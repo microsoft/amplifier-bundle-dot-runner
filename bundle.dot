@@ -35,7 +35,6 @@ digraph dot_runner {
         mod_loop_pipeline [label="Core Execution Engine\n(loop-pipeline)", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
         mod_pipeline_runner [label="Command-Line Launcher\n(pipeline-runner)", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
         mod_remote_source [label="Remote Pipeline Fetcher\n(remote-source)", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
-        mod_tool_report_outcome [label="Success/Fail Reporting Tool\n(tool-report-outcome)", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
     }
 
     subgraph cluster_legend {
@@ -61,5 +60,4 @@ digraph dot_runner {
 
 
     root_dot_runner -> beh_dot_runner_core [label="composes"]
-    beh_dot_runner_core -> mod_tool_report_outcome [label="uses", penwidth=0.8]
 }

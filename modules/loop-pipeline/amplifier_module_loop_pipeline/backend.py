@@ -64,7 +64,7 @@ from .status_contract import build_status_file_contract, current_node_status_pat
 
 # NOTE: `.workers` is imported LAZILY inside `AmplifierBackend.__init__`
 # (not here at module level). `workers/direct_worker.py` imports several
-# helpers back FROM this module (`_find_report_outcome_call`,
+# helpers back FROM this module (`_outcome_from_structured_output`,
 # `_MAX_TOOL_LOOP_ROUNDS`, etc.) -- a top-level `from .workers import ...`
 # here would run during THIS module's own top-level execution, before those
 # names are defined below, producing a circular partial-init ImportError.
@@ -766,77 +766,37 @@ class AmplifierBackend:
             return Outcome(status=StageStatus.FAIL, failure_reason=str(e))
 
         # Parse outcome from result.
-        # spec §35 Precedence Policy: a structured report_outcome verdict
-        # supersedes contradicting trailing prose.  Check for an explicit
-        # metadata.report_outcome envelope FIRST, before inspecting the prose
-        # output.  Only when no explicit verdict is present does the output
-        # content (empty-output path or _parse_outcome) determine the outcome.
+        #
+        # WAVE 5 repair (2026-08-30, maintainer ruling): report_outcome is
+        # REMOVED (specs/EXTENSIONS.md §35 RETCON, dated status: REMOVED).
+        # There is no metadata.report_outcome precedence read here anymore.
+        # The spec's own channels are what remain: an empty final message is
+        # recovered from the orchestrator's own completion status below
+        # (spec §4.5 treats a clean completion with empty prose as SUCCESS),
+        # and non-empty output is still run through _parse_outcome's
+        # fail-closed JSON-verdict ladder (§25). status.json (§41) is applied
+        # afterward by the handler layer, unaffected by this method.
         output = result.get("output", "") if isinstance(result, dict) else str(result)
-
-        # Hoist the spawn-result verdict check so it applies regardless of
-        # whether output is empty or non-empty (spec §35).
-        spawn_outcome = _outcome_from_spawn_result(result)
-        if spawn_outcome is not None and spawn_outcome.is_explicit:
-            # An explicit metadata.report_outcome verdict was present and
-            # mapped to a valid status.  Honor it unconditionally — the child's
-            # prose output is preserved in the transcript below but does not
-            # override the structured routing signal.
-            session_id = result.get("session_id") if isinstance(result, dict) else None
-            if session_id:
-                spawn_outcome.session_id = session_id
-            # support#498 (was the output.strip() guard for issue #287): a
-            # child can carry an explicit verdict AND no closing prose (it did
-            # its work via tool calls and ended on a terminal report_outcome).
-            # "work → report_outcome → end" is the normal agentic turn shape,
-            # not an edge case — and the engine's own outcome ladder already
-            # treats this turn as legitimately completed for ROUTING
-            # (spawn_outcome is honored above regardless of output content).
-            # Recording must not contradict that: the exchange is still
-            # appended to the transcript whenever there is a recoverable
-            # outcome (spawn_outcome is not None), with the assistant half
-            # synthesized as an honest structured marker when prose is absent
-            # (see _synthesize_outcome_marker) instead of left empty.
-            #
-            # This preserves issue #287's REAL invariant — never emit a
-            # literal empty assistant message some providers reject — without
-            # losing the turn: the marker is always non-empty, and it is
-            # attributed tool-event content, never invented prose.
-            #
-            # The verdict is unaffected: spawn_outcome (status /
-            # preferred_label / is_explicit) is still returned exactly as the
-            # #231 parent-side fix made it.
-            if fidelity == "full" and graph is not None and thread_key is not None:
-                transcript_output = (
-                    output
-                    if output.strip()
-                    else _synthesize_outcome_marker(spawn_outcome)
-                )
-                self._append_to_transcript(
-                    thread_key, node.id, instruction, transcript_output
-                )
-            return spawn_outcome
 
         if not output.strip():
             # The child's FINAL assistant message was empty — but that does NOT
             # mean the child failed.  A child that did its work via tool calls
-            # (writing pages, then a terminal report_outcome) and ended on a tool
-            # call legitimately has no closing prose.  Before falling back, honor
-            # the SAME outcome sources the direct tool loop already uses: the
-            # child's report_outcome args and the orchestrator's completion
-            # status (captured in the spawn result, see _prepared.py spawn()).
-            # spawn_outcome is already computed above; reuse it here.
+            # and ended on a terminal tool call legitimately has no closing
+            # prose.  Before falling back, honor the orchestrator's own
+            # completion status (captured in the spawn result, see
+            # _prepared.py spawn()).
+            spawn_outcome = _outcome_from_spawn_result(result)
             if spawn_outcome is not None:
                 session_id = (
                     result.get("session_id") if isinstance(result, dict) else None
                 )
                 if session_id:
                     spawn_outcome.session_id = session_id
-                # support#498: this is the non-explicit twin of the
-                # explicit-verdict branch above — a recovered (non-explicit)
-                # outcome (e.g. orchestrator completion status=success with no
-                # report_outcome call) is still a recoverable outcome, so the
-                # exchange is appended with a synthesized marker rather than
-                # dropped.  See _synthesize_outcome_marker.
+                # support#498: a recovered (non-explicit) outcome (e.g.
+                # orchestrator completion status=success with no closing
+                # prose) is still a recoverable outcome, so the exchange is
+                # appended with a synthesized marker rather than dropped.
+                # See _synthesize_outcome_marker.
                 if fidelity == "full" and graph is not None and thread_key is not None:
                     self._append_to_transcript(
                         thread_key,
@@ -846,7 +806,7 @@ class AmplifierBackend:
                     )
                 return spawn_outcome
 
-            # Genuinely empty: no text, no report_outcome, no success status.
+            # Genuinely empty: no text, no success status.
             # support#498 / issue #287: this remains the ONE case that skips
             # the transcript append entirely — there is no recoverable outcome
             # to synthesize an honest marker from, so appending would mean
@@ -1307,30 +1267,6 @@ def _build_unified_tools(pipeline_tools: dict[str, Any]) -> list[Any]:
     return tools
 
 
-def _find_report_outcome_call(result: Any) -> dict[str, Any] | None:
-    """Return report_outcome call arguments from generate() result steps, or None.
-
-    Walks result.steps[i].tool_calls (each StepResult carries the tool calls
-    for that LLM exchange).  Using the immutable step record avoids the
-    ReportOutcomeTool.last_outcome shared-state bug: backend.clone() shallow-
-    copies self._tools, so parallel branches share the same tool object and
-    would race on last_outcome.  result.steps is created fresh per generate()
-    call and is never shared between branches.
-
-    Returns the LAST matching call (across all steps, in step/tool_calls
-    order), not the first.  A model that calls report_outcome more than once
-    in a single turn -- e.g. a tentative call followed by a corrected final
-    call -- intends its last call to be the real verdict; honoring the first
-    call instead would silently lock in a superseded decision.
-    """
-    found: dict[str, Any] | None = None
-    for step in getattr(result, "steps", []) or []:
-        for tc in getattr(step, "tool_calls", []) or []:
-            if getattr(tc, "name", None) == "report_outcome":
-                found = getattr(tc, "arguments", {}) or {}
-    return found
-
-
 def _outcome_from_structured_output(
     raw_json: str,
     parsed_obj: Any,
@@ -1339,17 +1275,20 @@ def _outcome_from_structured_output(
 ) -> Outcome:
     """Build the Outcome for a response_schema (EXT-23) structured-output node.
 
-    EXTENSIONS.md §25 policy, corrected in independent review round 2:
-    **format ≠ verdict.** Parseable schema output proves the model followed
-    the requested FORMAT; it does not prove the node asserted a VERDICT.
-    Schema-parsed output is therefore explicit ONLY when it carries a
-    recognized verdict, routed through the same verdict ladder as every
-    other outcome path:
+    EXTENSIONS.md §25 policy: **format ≠ verdict.** Parseable schema output
+    proves the model followed the requested FORMAT; it does not prove the
+    node asserted a VERDICT. Schema-parsed output is therefore explicit ONLY
+    when it carries a recognized verdict via a ``status`` field whose value
+    is a recognized ``StageStatus`` (the same rule ``_parse_outcome`` applies
+    to JSON responses).
 
-      1. a captured ``report_outcome`` tool call (authoritative, mirrors the
-         priority order of the non-schema paths), or
-      2. a ``status`` field whose value is a recognized ``StageStatus``
-         (the same rule ``_parse_outcome`` applies to JSON responses).
+    WAVE 5 repair (2026-08-30): the former ``report_outcome`` tool-call check
+    that used to run before the ``status`` field check is gone -- the tool
+    (and ``_find_report_outcome_call``) are removed repo-wide, no compat
+    window (specs/EXTENSIONS.md §35 RETCON, dated status: REMOVED). The
+    remaining ``status``-field ladder is the whole of §25's explicit-verdict
+    path for structured output now; ``result`` is accepted for call-site
+    signature stability but is no longer consulted.
 
     Generic structured output — ``{"name": "Alice"}``,
     ``{"assessment": "NOT CONVERGED"}`` — stays DERIVED
@@ -1362,22 +1301,7 @@ def _outcome_from_structured_output(
     stash) is preserved on every branch so downstream nodes keep access to
     the structured payload regardless of verdict classification.
     """
-    ro = _find_report_outcome_call(result)
-    if ro is not None:
-        ro_extra = ro.get("context_updates")
-        return Outcome(
-            status=_STATUS_MAP.get(ro.get("status", ""), StageStatus.FAIL),
-            notes=ro.get("notes") or raw_json,
-            failure_reason=ro.get("failure_reason"),
-            preferred_label=ro.get("preferred_label"),
-            suggested_next_ids=ro.get("suggested_next_ids"),
-            context_updates={
-                **ctx_updates,
-                **(ro_extra if isinstance(ro_extra, dict) else {}),
-            },
-            is_explicit=True,
-        )
-
+    del result  # unused -- kept for call-site signature stability, see above
     verdict: StageStatus | None = None
     if isinstance(parsed_obj, dict):
         status_val = parsed_obj.get("status")
@@ -1424,41 +1348,22 @@ _SPAWN_SUCCESS_STATUSES = frozenset(
 def _outcome_from_spawn_result(result: Any) -> Outcome | None:
     """Recover an Outcome from a spawn result whose final text was empty.
 
-    A child that completed its work via tool calls (and ended on a terminal
-    report_outcome) legitimately returns empty final text.  The spawn result
-    still carries the authoritative outcome in the SAME sources the direct
-    tool loop honors:
+    A child that completed its work via tool calls legitimately returns
+    empty final text.  The spawn result still carries a signal in the
+    orchestrator's own completion ``status``: a recognized success status
+    means the child finished cleanly; empty closing prose is acceptable
+    (spec Section 4.5 treats prose/empty success as SUCCESS).
 
-      1. ``metadata["report_outcome"]`` — the child's report_outcome arguments,
-         captured from its orchestrator:complete metadata.  Mirrors how
-         ``_run_with_tool_loop`` consults ``_find_report_outcome_call``.
-      2. ``status`` — the orchestrator's completion status.  A recognized
-         success status means the child finished cleanly; empty closing prose
-         is acceptable (spec Section 4.5 treats prose/empty success as SUCCESS).
+    WAVE 5 repair (2026-08-30): the former ``metadata["report_outcome"]``
+    branch is removed -- ``report_outcome`` is gone repo-wide, no compat
+    window (specs/EXTENSIONS.md §35 RETCON, dated status: REMOVED).
 
     Returns the recovered Outcome, or ``None`` when there is genuinely no
-    outcome signal (no report_outcome AND no success status), in which case the
-    caller falls back / fails loud as before.
+    success signal, in which case the caller falls back / fails loud as
+    before.
     """
     if not isinstance(result, dict):
         return None
-
-    metadata = result.get("metadata")
-    report_outcome = (
-        metadata.get("report_outcome") if isinstance(metadata, dict) else None
-    )
-    if isinstance(report_outcome, dict):
-        status = _STATUS_MAP.get(report_outcome.get("status", ""))
-        if status is not None:
-            return Outcome(
-                status=status,
-                failure_reason=report_outcome.get("failure_reason"),
-                notes=report_outcome.get("notes"),
-                preferred_label=report_outcome.get("preferred_label"),
-                suggested_next_ids=report_outcome.get("suggested_next_ids"),
-                context_updates=report_outcome.get("context_updates"),
-                is_explicit=True,
-            )
 
     if result.get("status") in _SPAWN_SUCCESS_STATUSES:
         status = _STATUS_MAP[result["status"]]

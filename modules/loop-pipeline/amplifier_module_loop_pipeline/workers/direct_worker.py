@@ -56,7 +56,6 @@ from ..backend import (
     _STATUS_MAP,
     _build_unified_tools,
     _default_model_stable_only,
-    _find_report_outcome_call,
     _outcome_from_structured_output,
     _parse_outcome,
     _resolve_concrete_model,
@@ -351,44 +350,23 @@ def _structured_output_result(node: Node, result: Any) -> tuple[str, Outcome]:
 def _tool_loop_result(node: Node, result: Any) -> tuple[str, Outcome]:
     """Map a ``GenerateResult`` to ``(output_text, Outcome)``.
 
-    Priority order -- resolved asymmetry (design doc gap-table row 2 merge;
-    RED-proven by ``tests/test_backend.py::
-    test_tool_loop_report_outcome_call_wins_over_trailing_json_text`` and
-    ``tests/test_report_outcome_multiturn_convergence.py::
-    test_report_outcome_wins_over_trailing_prose_across_three_turns``):
+    WAVE 5 repair (2026-08-30, maintainer ruling): the former ``report_outcome``
+    tool-call check that used to run here, AUTHORITATIVE and BEFORE
+    ``result.text``, is removed -- the tool is gone repo-wide, no compat
+    window (specs/EXTENSIONS.md Sec35 RETCON, dated status: REMOVED).  The
+    spec's own channels are what remain, in priority order:
 
-      1. report_outcome tool call -> AUTHORITATIVE, checked FIRST,
-         unconditionally -- regardless of what ``result.text`` also
-         contains. This is ``AmplifierBackend._run_with_tool_loop``'s
-         pre-merge behavior and the one EXTENSIONS.md Sec35 "Precedence
-         Policy" actually names ("structured report_outcome status
-         supersedes contradicting trailing prose ... The spawn path and the
-         direct tool-loop path sit on the same footing").
-      2. No report_outcome call -> result.text (JSON/fenced JSON/embedded/
-         prose) -> ``_parse_outcome`` handles all of these.
-      3. No text at all -> SUCCESS for non-goal_gate, FAIL for goal_gate
+      1. result.text (JSON/fenced JSON/embedded/prose) -> ``_parse_outcome``
+         handles all of these -- this is EXTENSIONS.md Sec25's fail-closed
+         explicit-verdict ladder, unchanged and no longer preceded by a
+         report_outcome check.
+      2. No text at all -> SUCCESS for non-goal_gate, FAIL for goal_gate
          (EXTENSIONS.md Sec25).
 
-    The former standalone ``DirectProviderBackend.run()`` checked
-    text-looks-like-JSON BEFORE the report_outcome call, despite its own
-    comment claiming "same priority order as _run_with_tool_loop" -- an
-    undisclosed divergence from Sec35 this merge closes in favor of the
-    documented, spec-cited rule.
+    ``status.json`` (Sec41) is applied afterward at the handler layer and is
+    unaffected by this function.
     """
     text = result.text or ""
-
-    lo = _find_report_outcome_call(result)
-    if lo is not None:
-        outcome = Outcome(
-            status=_STATUS_MAP.get(lo.get("status"), StageStatus.FAIL),
-            context_updates=lo.get("context_updates"),
-            failure_reason=lo.get("failure_reason"),
-            preferred_label=lo.get("preferred_label"),
-            suggested_next_ids=lo.get("suggested_next_ids"),
-            notes=lo.get("notes"),
-            is_explicit=True,
-        )
-        return text, outcome
 
     if text:
         outcome = _parse_outcome(text, node=node)

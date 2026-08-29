@@ -1,7 +1,0 @@
-bundle:
-  name: dot-runner-core
-  version: 0.1.0
-  description: Engine partial — report_outcome tool for pipeline child agents.
-tools:
-  - module: tool-report-outcome
-    source: ../modules/tool-report-outcome

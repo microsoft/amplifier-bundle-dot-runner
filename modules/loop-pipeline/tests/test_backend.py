@@ -668,44 +668,6 @@ def _install_fallback_spy(backend: AmplifierBackend) -> dict[str, Any]:
     return state
 
 
-@pytest.mark.asyncio
-async def test_spawn_empty_output_with_report_outcome_does_not_fall_back():
-    """Empty final text + a report_outcome in the spawn result => honor it.
-
-    The child did its work and reported an outcome via the report_outcome
-    tool; its final assistant message was just empty. The spawn path must
-    use that outcome and MUST NOT fall back to the direct tool loop.
-    """
-    coordinator = MockCoordinator(
-        spawn_result={
-            "output": "",  # no closing prose
-            "session_id": "c-1",
-            "status": "success",
-            "metadata": {
-                "report_outcome": {
-                    "status": "success",
-                    "notes": "Integrated source 2 into Foo and Bar pages.",
-                }
-            },
-        }
-    )
-    backend = AmplifierBackend(
-        coordinator=coordinator,
-        profiles={"anthropic": "attractor-anthropic"},
-        provider=object(),  # truthy => fallback is POSSIBLE if code chooses it
-    )
-    spy = _install_fallback_spy(backend)
-
-    node = _make_node(attrs={"llm_provider": "anthropic"})
-    result = await backend.run(node, "task", _make_context())
-
-    assert spy["called"] is False, (
-        "spawn path fell back to the direct tool loop even though the child "
-        "reported a valid outcome -- the report_outcome was discarded."
-    )
-    assert isinstance(result, Outcome)
-    assert result.status == StageStatus.SUCCESS
-    assert "Integrated source 2" in (result.notes or "")
 
 
 @pytest.mark.asyncio
@@ -741,53 +703,6 @@ async def test_spawn_empty_output_with_success_status_does_not_fall_back():
     assert result.status == StageStatus.SUCCESS
 
 
-@pytest.mark.asyncio
-async def test_spawn_nonempty_output_with_report_outcome_honors_metadata():
-    """Non-empty prose + metadata.report_outcome => metadata verdict wins (spec §35).
-
-    When the child's spawn result carries both non-empty prose output AND a
-    ``metadata.report_outcome`` envelope with a valid status and
-    ``preferred_label``, the parent backend must honor the structured verdict.
-    The returned Outcome must have ``is_explicit=True`` and ``preferred_label``
-    equal to the value from the metadata -- NOT None (which would be the result
-    of falling through to ``_parse_outcome``).
-
-    This is the regression test for the §35 Precedence Policy defect: the
-    previous code only consulted ``_outcome_from_spawn_result`` when
-    ``output.strip()`` was empty, silently discarding the structured verdict
-    for the normal LLM case where the child produces closing prose.
-    """
-    coordinator = MockCoordinator(
-        spawn_result={
-            "output": "The analysis is complete and the findings are documented.",
-            "session_id": "c-precedence",
-            "status": "success",
-            "metadata": {
-                "report_outcome": {
-                    "status": "success",
-                    "preferred_label": "validated",
-                    "notes": "All checks passed.",
-                }
-            },
-        }
-    )
-    backend = AmplifierBackend(
-        coordinator=coordinator,
-        profiles={"anthropic": "attractor-anthropic"},
-    )
-
-    node = _make_node(attrs={"llm_provider": "anthropic"})
-    result = await backend.run(node, "analyse", _make_context())
-
-    assert isinstance(result, Outcome)
-    assert result.is_explicit is True, (
-        "metadata.report_outcome must set is_explicit=True even when output is non-empty"
-    )
-    assert result.preferred_label == "validated", (
-        f"expected preferred_label='validated', got {result.preferred_label!r} -- "
-        "the structured verdict was discarded in favour of prose-based parsing"
-    )
-    assert result.status == StageStatus.SUCCESS
 
 
 @pytest.mark.asyncio
@@ -1939,114 +1854,8 @@ class _MockReportOutcomeTool:
         return _MockToolResult(output=f"recorded: {input.get('status', '?')}")
 
 
-@pytest.mark.asyncio
-async def test_tool_loop_report_outcome_terminal_action_empty_text():
-    """generate() calls report_outcome as terminal tool; result.text empty → step args used.
-
-    The backend extracts the outcome from result.steps[i].tool_calls (immutable after
-    generate() returns) — not from a mutable last_outcome field on the tool object.
-    This is race-free even when backend.clone() shares tool instances across parallel branches.
-    """
-    report_tool = _MockReportOutcomeTool()
-
-    mock_client = _MockUnifiedClient(
-        [
-            # Round 1: model calls report_outcome as its terminal action
-            _make_tool_call_response(
-                [
-                    {
-                        "id": "tc-1",
-                        "name": "report_outcome",
-                        "args": {
-                            "status": "fail",
-                            "failure_reason": "quality gate failed",
-                            "context_updates": {"quality_feedback": "fix X"},
-                        },
-                    }
-                ]
-            ),
-            # Round 2: empty text — no follow-up turn (extended thinking)
-            _make_text_response(""),
-        ]
-    )
-
-    coordinator = NoSpawnCoordinator()
-    backend = AmplifierBackend(
-        coordinator=coordinator,
-        profiles={},
-        provider=object(),
-        tools={"report_outcome": report_tool},
-        unified_client=mock_client,
-    )
-    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
-    result = await backend.run(node, "evaluate quality", _make_context())
-
-    assert result.status == StageStatus.FAIL
-    assert result.failure_reason == "quality gate failed"
-    assert result.context_updates == {"quality_feedback": "fix X"}
 
 
-@pytest.mark.asyncio
-async def test_tool_loop_report_outcome_no_cross_node_bleed():
-    """Each generate() call has its own result.steps — node 2 cannot see node 1's tool call.
-
-    Since outcome is read from result.steps (per-generate() immutable data) rather than
-    from shared mutable tool state, there is no cross-node bleed even when the same tool
-    object is registered in multiple backends.
-    """
-    report_tool = _MockReportOutcomeTool()
-
-    coordinator = NoSpawnCoordinator()
-
-    # Node 1: report_outcome called as terminal tool, result.text empty
-    mock_client_1 = _MockUnifiedClient(
-        [
-            _make_tool_call_response(
-                [
-                    {
-                        "id": "tc-1",
-                        "name": "report_outcome",
-                        "args": {
-                            "status": "fail",
-                            "failure_reason": "first node failed",
-                        },
-                    }
-                ]
-            ),
-            _make_text_response(""),
-        ]
-    )
-    backend1 = AmplifierBackend(
-        coordinator=coordinator,
-        profiles={},
-        provider=object(),
-        tools={"report_outcome": report_tool},
-        unified_client=mock_client_1,
-    )
-    node1 = _make_node(
-        id="node1", attrs={"llm_provider": "test", "llm_model": "test-model"}
-    )
-    result1 = await backend1.run(node1, "task 1", _make_context())
-
-    assert result1.status == StageStatus.FAIL
-    assert result1.failure_reason == "first node failed"
-
-    # Node 2: no tool call, plain text response — must NOT see node 1's result
-    mock_client_2 = _MockUnifiedClient([_make_text_response("plain text done")])
-    backend2 = AmplifierBackend(
-        coordinator=coordinator,
-        profiles={},
-        provider=object(),
-        tools={"report_outcome": report_tool},
-        unified_client=mock_client_2,
-    )
-    node2 = _make_node(
-        id="node2", attrs={"llm_provider": "test", "llm_model": "test-model"}
-    )
-    result2 = await backend2.run(node2, "task 2", _make_context())
-
-    # Plain text → SUCCESS (spec 4.5); must NOT inherit node1's FAIL
-    assert result2.status == StageStatus.SUCCESS
 
 
 @pytest.mark.asyncio
@@ -2083,105 +1892,8 @@ async def test_build_unified_tools_falls_back_to_input_schema():
     assert tools[0].parameters.get("required") == ["status"]
 
 
-@pytest.mark.asyncio
-async def test_tool_loop_report_outcome_call_wins_over_trailing_json_text():
-    """A valid report_outcome tool call is authoritative over trailing JSON-shaped text.
-
-    Reordered priority (see the report_outcome-priority-inversion fix): a model
-    that correctly calls report_outcome and then ALSO emits unrelated JSON-shaped
-    text (e.g. habitually summarizing in JSON, or echoing part of a written
-    artifact) must have its real tool-call verdict honored, not silently
-    discarded in favor of whatever the trailing text says. Prior to this fix,
-    the trailing JSON text won -- fail-UNSAFE, since a plausible-looking but
-    wrong verdict could silently override a correct one.
-    """
-    report_tool = _MockReportOutcomeTool()
-
-    mock_client = _MockUnifiedClient(
-        [
-            # Round 1: model calls report_outcome with the real verdict
-            _make_tool_call_response(
-                [
-                    {
-                        "id": "tc-1",
-                        "name": "report_outcome",
-                        "args": {"status": "fail", "failure_reason": "from tool call"},
-                    }
-                ]
-            ),
-            # Round 2: model also produces unrelated JSON-shaped text -- must NOT win
-            _make_text_response(
-                json.dumps({"status": "success", "notes": "unrelated trailing json"})
-            ),
-        ]
-    )
-
-    coordinator = NoSpawnCoordinator()
-    backend = AmplifierBackend(
-        coordinator=coordinator,
-        profiles={},
-        provider=object(),
-        tools={"report_outcome": report_tool},
-        unified_client=mock_client,
-    )
-    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
-    result = await backend.run(node, "evaluate", _make_context())
-
-    # The report_outcome tool call wins — must return "fail" from the tool call,
-    # not "success" from the unrelated trailing JSON text.
-    assert result.status == StageStatus.FAIL
-    assert result.failure_reason == "from tool call"
 
 
-@pytest.mark.asyncio
-async def test_tool_loop_report_outcome_last_call_wins_over_first():
-    """When report_outcome is called more than once in a turn, the LAST call wins.
-
-    A model may call report_outcome tentatively and then again with its final,
-    corrected verdict (e.g. after reconsidering). _find_report_outcome_call
-    must honor the last call, not the first, since the last call reflects the
-    model's actual final intent.
-    """
-    report_tool = _MockReportOutcomeTool()
-
-    mock_client = _MockUnifiedClient(
-        [
-            # Both report_outcome calls happen in the same round (same step).
-            _make_tool_call_response(
-                [
-                    {
-                        "id": "tc-1",
-                        "name": "report_outcome",
-                        "args": {
-                            "status": "fail",
-                            "failure_reason": "tentative first call",
-                        },
-                    },
-                    {
-                        "id": "tc-2",
-                        "name": "report_outcome",
-                        "args": {"status": "success", "notes": "corrected final call"},
-                    },
-                ]
-            ),
-            _make_text_response(""),
-        ]
-    )
-
-    coordinator = NoSpawnCoordinator()
-    backend = AmplifierBackend(
-        coordinator=coordinator,
-        profiles={},
-        provider=object(),
-        tools={"report_outcome": report_tool},
-        unified_client=mock_client,
-    )
-    node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
-    result = await backend.run(node, "evaluate", _make_context())
-
-    # The LAST report_outcome call wins, not the first.
-    assert result.status == StageStatus.SUCCESS
-    assert result.notes == "corrected final call"
 
 
 def test_clone_isolates_stateful_tool_instances():

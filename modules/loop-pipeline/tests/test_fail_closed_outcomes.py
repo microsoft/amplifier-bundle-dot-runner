@@ -294,19 +294,13 @@ def test_fc008_spawn_status_only_is_not_explicit():
         "EXTENSIONS.md §25 fix may not be applied."
     )
 
-    # With report_outcome in metadata → is_explicit=True (real verdict)
-    result_with_ro = {
-        "status": "success",
-        "output": "",
-        "metadata": {
-            "report_outcome": {"status": "success", "notes": "All done."}
-        },
-    }
-    outcome_with_ro = _outcome_from_spawn_result(result_with_ro)
-    assert outcome_with_ro is not None
-    assert outcome_with_ro.is_explicit is True, (
-        "Spawn result with report_outcome must have is_explicit=True"
-    )
+    # WAVE 5 repair (2026-08-30): the former "with report_outcome in metadata"
+    # half of this test is removed -- report_outcome is gone repo-wide, no
+    # compat window (specs/EXTENSIONS.md §35 RETCON, dated status: REMOVED).
+    # _outcome_from_spawn_result no longer has an explicit-verdict branch at
+    # all; every spawn-result recovery is is_explicit=False (the JSON-verdict
+    # ladder in _parse_outcome, checked on non-empty output, is the only
+    # explicit-verdict source left on the spawn path -- EXTENSIONS.md §25).
 
 
 # ---------------------------------------------------------------------------
