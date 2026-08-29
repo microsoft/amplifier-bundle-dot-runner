@@ -1,7 +1,7 @@
 [project]
 name = "amplifier-module-pipeline-runner"
 version = "0.1.0"
-description = "Reusable engine-driving library + CLI for standalone attractor DOT pipeline runs"
+description = "Reusable engine-driving library + CLI for standalone DOT pipeline runs"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
@@ -26,12 +26,12 @@ dependencies = [
 ]
 
 [project.scripts]
-attractor = "amplifier_module_pipeline_runner.cli:main"
-# DESIGN-worker-registry-core-split.md P3: the engine-native personality of
-# the SAME shared CLI implementation (cli.py's `main_dot_runner`) -- default
-# worker `direct`, zero runtime reach into any pattern repo. See cli.py's
-# module docstring for the "one binary, two names" shape.
-dot-runner = "amplifier_module_pipeline_runner.cli:main_dot_runner"
+# The `attractor` console script has been removed entirely (band-aid rip,
+# CONTEXT_POISONING doctrine -- no alias, no shim, no deprecation window).
+# `dot-runner` is the only command; see cli.py's module docstring for the
+# `--bundle`/`DOT_RUNNER_BUNDLE` mechanism that preserves an opinionated
+# experience (e.g. the attractor pattern) by explicit declaration.
+dot-runner = "amplifier_module_pipeline_runner.cli:main"
 
 [build-system]
 requires = [

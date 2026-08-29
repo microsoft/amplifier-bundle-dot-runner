@@ -15,11 +15,11 @@ and injects it into the session config before the session is created. Both consu
 Tool-only pipelines remain unaffected (tool nodes always root at `--cwd` via
 `context.target_dir`).
 
-**Historical note:** prior to issue-142, the workaround was to invoke `attractor run`
+**Historical note:** prior to issue-142, the workaround was to invoke `dot-runner run`
 with the process working directory equal to `--cwd`:
 
 ```sh
-cd <workdir> && attractor run pipeline.dot --cwd .
+cd <workdir> && dot-runner run pipeline.dot --cwd .
 ```
 
 This workaround is no longer required for box/agent nodes.

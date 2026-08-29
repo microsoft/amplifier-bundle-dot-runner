@@ -219,7 +219,7 @@ def test_ac1_resumed_run_completes_and_matches_the_control(
 
     # -- executed-node union == the control's executed-node sequence ----------
     full_trace = _trace(logs)
-    resumed_trace = full_trace[len(interrupted_trace):]
+    resumed_trace = full_trace[len(interrupted_trace) :]
     interrupted_nodes = [r["node_id"] for r in interrupted_trace]
     resumed_nodes = [r["node_id"] for r in resumed_trace]
     control_nodes = [r["node_id"] for r in _trace(control_logs)]
@@ -230,7 +230,7 @@ def test_ac1_resumed_run_completes_and_matches_the_control(
     )
     # ... and the resumed traversal routed off the resume point exactly as the
     # uninterrupted one did.
-    assert resumed_nodes == control_nodes[len(interrupted_nodes):]
+    assert resumed_nodes == control_nodes[len(interrupted_nodes) :]
 
 
 def test_ac2_completed_nodes_are_not_re_executed(interrupted_run):
@@ -250,7 +250,7 @@ def test_ac2_completed_nodes_are_not_re_executed(interrupted_run):
 
     # ... corroborated by the run's own records: no trace record for a or b
     # was appended by the resumed process.
-    resumed_trace = _trace(logs)[len(interrupted_trace):]
+    resumed_trace = _trace(logs)[len(interrupted_trace) :]
     resumed_nodes = [r["node_id"] for r in resumed_trace]
     assert "a" not in resumed_nodes
     assert "b" not in resumed_nodes
@@ -391,12 +391,18 @@ class FileHooks:
             f.write(json.dumps({"event": name, "data": data}) + "\\n")
 
 
+# drive_engine carries no implicit profiles default post band-aid-rip
+# (CONTEXT_POISONING doctrine) -- this stub coordinator's own agent name
+# must be supplied explicitly, the same way any real caller now must.
+PROFILES = {"anthropic": "attractor-agent-anthropic"}
+
+
 async def main():
     dot_source = Path(DOT_PATH).read_text()
     if MODE == "run":
         outcome = await drive_engine(
             dot_source, StubCoordinator(), cwd=WORK, logs_root=LOGS,
-            hooks=FileHooks(), transform=True,
+            hooks=FileHooks(), transform=True, profiles=PROFILES,
         )
     else:
         from amplifier_module_loop_pipeline.checkpoint import (
@@ -407,6 +413,7 @@ async def main():
         outcome = await drive_engine(
             cp.graph_dot_source, StubCoordinator(), cwd=WORK, logs_root=LOGS,
             hooks=FileHooks(), transform=True, resume_checkpoint=cp,
+            profiles=PROFILES,
         )
     print(outcome.status.value)
 

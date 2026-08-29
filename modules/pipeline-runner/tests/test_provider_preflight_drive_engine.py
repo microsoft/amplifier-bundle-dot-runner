@@ -1,11 +1,13 @@
 """drive_engine startup provider preflight (issue #155).
 
-The incident invoker was exactly this path: `attractor run` -> run_pipeline ->
-drive_engine with DEFAULT_PROFILES mapping all three providers.  The 'openai'
-PROFILE existed, but no OPENAI_API_KEY did -- so the critique_b node crashed
-on every visit (`resolve_latest_for: no adapter found for provider 'openai'`)
-and the graph's transient-recovery routing drained the entire iteration
-budget against a defect that had nothing to do with the work.
+The incident invoker was exactly this path: an opinionated CLI personality ->
+run_pipeline -> drive_engine with a profiles map naming all three providers
+(the attractor pattern's own provider->agent routing, supplied explicitly
+here -- drive_engine itself carries no such default post band-aid-rip). The
+'openai' PROFILE existed, but no OPENAI_API_KEY did -- so the critique_b node
+crashed on every visit (`resolve_latest_for: no adapter found for provider
+'openai'`) and the graph's transient-recovery routing drained the entire
+iteration budget against a defect that had nothing to do with the work.
 
 These tests pin the fix: drive_engine now refuses AT STARTUP -- before any
 node executes, before any LLM call -- naming the node, the provider, and the
@@ -40,6 +42,15 @@ digraph dual {
     start -> critique_b -> done
 }
 """
+
+# drive_engine carries no implicit profiles default post band-aid-rip
+# (CONTEXT_POISONING doctrine -- no attractor-specific policy lives in the
+# engine). These tests supply their own map explicitly, matching
+# _StubCoordinator's own config["agents"] keys below.
+_STUB_PROFILES = {
+    "openai": "attractor-agent-openai",
+    "anthropic": "attractor-agent-anthropic",
+}
 
 
 class _StubCoordinator:
@@ -76,7 +87,9 @@ class _StubCoordinator:
 def test_drive_engine_refuses_at_startup_missing_credential(
     tmp_path, monkeypatch
 ) -> None:
-    """Incident configuration: openai profile mounted (DEFAULT_PROFILES),
+    """Incident configuration: openai profile explicitly mounted (mirroring
+    the attractor pattern's own provider->agent map -- an explicit caller
+    argument now that drive_engine itself carries no such default),
     OPENAI_API_KEY absent -> refuse before ANY node executes."""
     from amplifier_module_loop_pipeline.preflight import ProviderPreflightError
 
@@ -90,6 +103,7 @@ def test_drive_engine_refuses_at_startup_missing_credential(
                 coordinator,
                 cwd=tmp_path,
                 logs_root=tmp_path / "logs",
+                profiles=_STUB_PROFILES,
                 transform=True,
             )
         )
@@ -118,6 +132,7 @@ def test_drive_engine_runs_when_declared_provider_is_serviceable(
             coordinator,
             cwd=tmp_path,
             logs_root=tmp_path / "logs",
+            profiles=_STUB_PROFILES,
             transform=True,
         )
     )
@@ -234,7 +249,9 @@ def test_drive_engine_refuses_when_profile_names_an_absent_agent(
     assert not coordinator.spawn_calls, "zero spawns -- zero budget spent"
 
 
-def test_drive_engine_runs_when_the_named_agent_is_present(tmp_path, monkeypatch) -> None:
+def test_drive_engine_runs_when_the_named_agent_is_present(
+    tmp_path, monkeypatch
+) -> None:
     """The no-false-refusal crux (#196's disease, inverted).
 
     SAME graph, SAME credentials, SAME profiles map as the test above -- the
@@ -262,7 +279,9 @@ def test_drive_engine_runs_when_the_named_agent_is_present(tmp_path, monkeypatch
     assert "attractor-openai" in coordinator.spawn_calls
 
 
-def test_drive_engine_preflight_sees_exactly_the_keys_the_spawn_resolves_against() -> None:
+def test_drive_engine_preflight_sees_exactly_the_keys_the_spawn_resolves_against() -> (
+    None
+):
     """Same dict, same moment.
 
     ``_spawn_resolvable_agents`` returns the keys of ``coordinator.config
@@ -274,7 +293,9 @@ def test_drive_engine_preflight_sees_exactly_the_keys_the_spawn_resolves_against
     from amplifier_module_loop_pipeline import _spawn_resolvable_agents
 
     coordinator = _AgentsCoordinator("attractor-anthropic", "attractor-openai")
-    backend_indexes_into = (getattr(coordinator, "config", None) or {}).get("agents", {})
+    backend_indexes_into = (getattr(coordinator, "config", None) or {}).get(
+        "agents", {}
+    )
 
     assert backend_indexes_into is coordinator.config["agents"]
     assert set(_spawn_resolvable_agents(coordinator)) == set(backend_indexes_into)

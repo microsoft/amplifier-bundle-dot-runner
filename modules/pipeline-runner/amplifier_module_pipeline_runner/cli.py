@@ -1,23 +1,22 @@
-"""attractor / dot-runner: run an arbitrary DOT pipeline standalone.
+"""dot-runner: run an arbitrary DOT pipeline standalone.
 
-ONE shared implementation, TWO console-script personalities
-(DESIGN-worker-registry-core-split.md P3, "one binary, two names"):
+The engine-native CLI (DESIGN-worker-registry-core-split.md P3 renamed this
+module's sole personality after removing the legacy ``attractor`` entry
+point entirely -- no alias, no shim, no deprecation window). Default worker
+``direct``; zero runtime reach into any pattern repo (no bundle fetch, no
+profile auto-load, no ``session.spawn`` capability) *unless* the caller
+explicitly opts in via ``--bundle <ref>`` (or the ``DOT_RUNNER_BUNDLE`` env
+var) -- see ``runner.run_pipeline``'s ``bundle`` parameter. That flag is the
+preserved mechanism for an opinionated experience (e.g. the attractor
+pattern's provider->agent routing and full coding-agent spawning): the
+engine has zero built-in knowledge of what any referenced bundle contains,
+it simply composes whatever is declared at the ref and honors that bundle's
+own ``session.orchestrator.config`` (``worker``/``profiles``) as the
+effective default unless overridden. Mechanism, not policy.
 
-* ``attractor`` -- the legacy, opinionated entry point. UNCHANGED behavior:
-  auto-loads the attractor pattern bundle, its provider->agent profiles map,
-  and (via that bundle's own agent configs) ``loop-agent`` as the effective
-  default worker. Prints ONE deprecation-window notice to stderr per
-  invocation (never stdout -- see ``_print_deprecation_notice``).
-* ``dot-runner`` -- the new, engine-native entry point. Default worker
-  ``direct``; zero runtime reach into any pattern repo (no attractor-bundle
-  fetch, no profiles auto-load, no ``session.spawn`` capability at all).
-
-Both personalities share every subcommand (``run``/``resume``/``doctor``/
-``trace``/``lint``), every argument, and every code path below -- the two
-``main*`` entry points differ only in the ``prog``/``engine_native`` values
-threaded through ``_main``. Fails loud: a missing provider API key, missing
-DOT source, unknown worker name, or a pipeline error all print a clear
-message and exit non-zero. No fallbacks, no synthetic success.
+Fails loud: a missing provider API key, missing DOT source, unknown worker
+name, or a pipeline error all print a clear message and exit non-zero. No
+fallbacks, no synthetic success.
 
 Subcommands:
     run       <dot_file>   run a DOT pipeline
@@ -41,54 +40,21 @@ from . import runner
 from .compat import IncompatibleEngineError, check_engine_compatibility
 from .params import parse_params
 
-# DESIGN-worker-registry-core-split.md P3 item 3: "a printed notice" on the
-# legacy `attractor` entry point -- what's changing, that `dot-runner` is the
-# engine-native command, that `attractor`'s opinionated behavior continues
-# through the window. No date promises (per the design doc's own P3 window
-# language: "flipping to the engine-native default when the recipes repo
-# lands" -- no fixed date named there either). stderr-only: this CLI has no
-# --quiet/--json output mode to respect (checked -- cmd_run/cmd_resume always
-# print their human-readable lines and the trailing JSON line together; there
-# is nothing here that parses `attractor`'s own stdout machine-readably that
-# a stderr-only notice could corrupt).
-_DEPRECATION_NOTICE = (
-    "attractor: NOTICE -- this command's opinionated defaults (auto-loading "
-    "the attractor pattern bundle, its provider->agent profiles map, and "
-    "loop-agent as the effective default worker) are being split out from "
-    "the plain engine. The engine-native command is now also available as "
-    "`dot-runner` (default worker: `direct`; no bundle/profile auto-load; "
-    "zero runtime reach into any pattern repo). `attractor` keeps today's "
-    "opinionated behavior UNCHANGED through a deprecation window (no fixed "
-    "date) -- switch to `dot-runner` only when you want the engine-native "
-    "defaults instead of attractor's."
-)
+# Env var read by both `run` and `resume` as the fallback source of the
+# explicit bundle reference when `--bundle` is not passed on the command
+# line. This is the ONLY place dot-runner reads it -- a bare mechanism, no
+# policy about what the referenced bundle should contain.
+_BUNDLE_ENV_VAR = "DOT_RUNNER_BUNDLE"
 
 
-def _print_deprecation_notice() -> None:
-    """Print the P3 deprecation-window notice -- stderr only, once."""
-    print(_DEPRECATION_NOTICE, file=sys.stderr)
-
-
-def build_parser(prog: str = "attractor") -> argparse.ArgumentParser:
-    """Build the shared argument parser for either console-script personality.
-
-    ``prog`` selects only the argparse-reported program name and the
-    top-level description text -- every subcommand, argument, default, and
-    help string below is IDENTICAL between personalities (the ``--worker``
-    flag included: P1 deliberately deferred it to P3, and both personalities
-    gained it together rather than forking the parser). The default
-    ``prog="attractor"`` reproduces the pre-P3 parser byte-for-byte for every
-    existing caller of ``build_parser()`` with no arguments.
-    """
-    if prog == "dot-runner":
-        description = (
-            "Run an arbitrary DOT pipeline directly via the engine's worker "
-            "registry -- engine-native defaults (default worker: `direct`; "
-            "no attractor-bundle or profile auto-load; zero runtime reach "
-            "into any pattern repo)."
-        )
-    else:
-        description = "Run an attractor DOT pipeline standalone."
+def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
+    """Build the argument parser for the ``dot-runner`` CLI."""
+    description = (
+        "Run an arbitrary DOT pipeline directly via the engine's worker "
+        "registry -- engine-native defaults (default worker: `direct`; no "
+        "bundle or profile auto-load; zero runtime reach into any pattern "
+        "repo unless --bundle is given)."
+    )
     parser = argparse.ArgumentParser(prog=prog, description=description)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -124,12 +90,26 @@ def build_parser(prog: str = "attractor") -> argparse.ArgumentParser:
             "run-level worker-selection default (EXTENSIONS.md Sec40 / "
             "DESIGN-worker-registry-core-split.md P1 item 3, P3 item 2). "
             "Feeds the worker registry's `default_worker`; a node's own "
-            "`worker=` attribute still wins over this flag. An unknown name "
-            "is refused at run time with a clean error listing every "
-            "registered worker -- never a stack trace. Omitted (the "
-            "default): `dot-runner` resolves to `direct`; `attractor` "
-            "leaves its existing capability-fallback chain (spawn if "
-            "available, else direct) unaffected."
+            "`worker=` attribute still wins over this flag. Omitted (the "
+            "default): resolves to `direct` unless --bundle is given and "
+            "the referenced bundle declares its own worker default."
+        ),
+    )
+    run.add_argument(
+        "--bundle",
+        default=None,
+        metavar="REF",
+        help=(
+            "explicit bundle reference to compose as this run's base bundle "
+            "(e.g. a git+https://... bundle YAML) -- the mechanism for an "
+            "opinionated experience (provider->agent profiles, session.spawn "
+            "capability, a full coding-agent worker) declared explicitly "
+            "rather than assumed. The engine has no built-in knowledge of "
+            "what the reference contains: it composes it and honors its own "
+            "session.orchestrator.config (worker/profiles) as this run's "
+            "effective default, unless --worker overrides it. Omitted (the "
+            "default): falls back to the DOT_RUNNER_BUNDLE environment "
+            "variable, else no bundle is loaded and the engine runs bare."
         ),
     )
     run.add_argument(
@@ -144,7 +124,7 @@ def build_parser(prog: str = "attractor") -> argparse.ArgumentParser:
             "working directory for the pipeline -- where box-node agents and "
             "tool-node commands write files (default: current directory; "
             "created if it doesn't exist). NOTE: for pipelines with box/agent "
-            "nodes, run from within this directory (e.g. `cd <dir> && attractor "
+            "nodes, run from within this directory (e.g. `cd <dir> && dot-runner "
             "run pipeline.dot --cwd .`) -- see KNOWN_ISSUES.md (loop-agent cwd)."
         ),
     )
@@ -216,6 +196,12 @@ def build_parser(prog: str = "attractor") -> argparse.ArgumentParser:
         help="run-level worker-selection default, same as on 'run'.",
     )
     resume.add_argument(
+        "--bundle",
+        default=None,
+        metavar="REF",
+        help="explicit bundle reference, same as on 'run'.",
+    )
+    resume.add_argument(
         "--cwd",
         default=None,
         help=(
@@ -238,7 +224,7 @@ def build_parser(prog: str = "attractor") -> argparse.ArgumentParser:
     )
     trace.add_argument(
         "run_dir",
-        help="path to the run directory produced by 'attractor run'",
+        help="path to the run directory produced by 'dot-runner run'",
     )
 
     lint_p = sub.add_parser(
@@ -283,13 +269,19 @@ def _stdin_is_usable() -> bool:
         return False
 
 
+def _resolve_bundle_ref(args: argparse.Namespace) -> str | None:
+    """Resolve the explicit ``--bundle`` reference: flag wins, else env var.
+
+    Both are the SAME mechanism (an explicit bundle reference to compose as
+    this run's base bundle) -- the flag is just the higher-precedence source
+    when both are present. Neither implies anything about what the
+    referenced bundle contains.
+    """
+    return getattr(args, "bundle", None) or os.environ.get(_BUNDLE_ENV_VAR)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    # ``prog``/``engine_native`` are set by ``_main`` before dispatch. A
-    # direct caller (e.g. a test building ``args`` straight from
-    # ``build_parser().parse_args()``) gets the attractor-personality
-    # defaults, unchanged from before this parameter existed.
-    prog = getattr(args, "prog_name", "attractor")
-    engine_native = getattr(args, "engine_native", False)
+    prog = getattr(args, "prog_name", "dot-runner")
 
     # --- Resolve DOT source: --dot-source wins, else read dot_file ---
     source_dir: str | None = None
@@ -345,7 +337,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.logs_root:
         logs_root = Path(args.logs_root).expanduser()
     else:
-        logs_root = Path(tempfile.mkdtemp(prefix="attractor-run-"))
+        logs_root = Path(tempfile.mkdtemp(prefix="dot-runner-run-"))
 
     # --- Resolve pipeline working directory ---
     if args.cwd:
@@ -394,6 +386,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
         interviewer = ConsoleInterviewer()
 
+    bundle = _resolve_bundle_ref(args)
+
     print(f"{prog}: running pipeline cwd={cwd} logs={logs_root}")
 
     try:
@@ -403,11 +397,11 @@ def cmd_run(args: argparse.Namespace) -> int:
                 params=params or None,
                 provider=args.provider,
                 worker=args.worker,
+                bundle=bundle,
                 logs_root=logs_root,
                 cwd=cwd,
                 interviewer=interviewer,
                 source_dir=source_dir,
-                engine_native=engine_native,
             )
         )
     except Exception as e:  # noqa: BLE001 -- fail loud with the real error, no fallback
@@ -457,8 +451,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
     """
     from amplifier_module_loop_pipeline.checkpoint import CheckpointResumeError
 
-    prog = getattr(args, "prog_name", "attractor")
-    engine_native = getattr(args, "engine_native", False)
+    prog = getattr(args, "prog_name", "dot-runner")
 
     run_dir = Path(args.run_dir).expanduser()
     if not run_dir.is_dir():
@@ -518,6 +511,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
             return 1
         interviewer = ConsoleInterviewer()
 
+    bundle = _resolve_bundle_ref(args)
+
     print(f"{prog}: resuming run cwd={cwd} logs={run_dir}")
 
     try:
@@ -528,9 +523,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 params=params or None,
                 provider=args.provider,
                 worker=args.worker,
+                bundle=bundle,
                 cwd=cwd,
                 interviewer=interviewer,
-                engine_native=engine_native,
             )
         )
     except CheckpointResumeError as e:
@@ -574,7 +569,7 @@ def cmd_trace(args: argparse.Namespace) -> int:
     """
     import collections
 
-    prog = getattr(args, "prog_name", "attractor")
+    prog = getattr(args, "prog_name", "dot-runner")
 
     run_dir = Path(args.run_dir).expanduser()
     if not run_dir.is_dir():
@@ -642,20 +637,19 @@ def cmd_lint(args: argparse.Namespace) -> int:
     """Static topological lint of a .dot pipeline file.
 
     Parses the DOT file and runs the full basin-lint rule set:
-    structural rules (LINT-001–018), topological rules (TOPO-001–010),
-    and command-content rules (CMD-001–002, which inspect tool_command
+    structural rules (LINT-001-018), topological rules (TOPO-001-010),
+    and command-content rules (CMD-001-002, which inspect tool_command
     strings for pipe-masked exit codes and always-true sentinels).
 
     Exit-code contract:
-        ERROR-severity diagnostics → exit 1.
-        WARNING-only (or clean) → exit 0 (unless --strict).
+        ERROR-severity diagnostics -> exit 1.
+        WARNING-only (or clean) -> exit 0 (unless --strict).
         --strict: exit 1 on any diagnostic (ERROR or WARNING).
 
     This command does not run the pipeline. It is safe to use in CI
-    before committing a .dot file. Pure-static -- identical for both
-    console-script personalities, so it needs no engine_native branching.
+    before committing a .dot file.
     """
-    prog = getattr(args, "prog_name", "attractor")
+    prog = getattr(args, "prog_name", "dot-runner")
 
     dot_path = Path(args.dot_file).expanduser()
     if not dot_path.is_file():
@@ -723,7 +717,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    prog = getattr(args, "prog_name", "attractor")
+    prog = getattr(args, "prog_name", "dot-runner")
 
     ok = True
 
@@ -754,8 +748,8 @@ _DISPATCH = {
 }
 
 
-def _main(argv: list[str] | None, *, prog: str, engine_native: bool) -> int:
-    """Shared entry-point body for both console-script personalities.
+def main(argv: list[str] | None = None) -> int:
+    """``dot-runner`` console-script entry point -- the only CLI personality.
 
     Fail loud at startup if the installed engine is incompatible with this
     runner. This catches version-skew before any node runs (incident
@@ -767,27 +761,11 @@ def _main(argv: list[str] | None, *, prog: str, engine_native: bool) -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    if not engine_native:
-        # Legacy personality only -- `dot-runner` never prints this (it IS
-        # the engine-native command the notice points toward).
-        _print_deprecation_notice()
-
-    parser = build_parser(prog=prog)
+    parser = build_parser(prog="dot-runner")
     args = parser.parse_args(argv)
-    args.prog_name = prog
-    args.engine_native = engine_native
+    args.prog_name = "dot-runner"
 
     return _DISPATCH[args.command](args)
-
-
-def main(argv: list[str] | None = None) -> int:
-    """``attractor`` console-script entry point -- unchanged personality."""
-    return _main(argv, prog="attractor", engine_native=False)
-
-
-def main_dot_runner(argv: list[str] | None = None) -> int:
-    """``dot-runner`` console-script entry point -- engine-native personality."""
-    return _main(argv, prog="dot-runner", engine_native=True)
 
 
 if __name__ == "__main__":
