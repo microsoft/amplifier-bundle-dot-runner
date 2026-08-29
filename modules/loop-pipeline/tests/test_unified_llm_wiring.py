@@ -501,7 +501,3 @@ class _MockReportOutcomeTool:
 
     async def execute(self, input: dict) -> _MockToolResult:
         return _MockToolResult(output=f"recorded: {input.get('status', '?')}")
-
-
-
-

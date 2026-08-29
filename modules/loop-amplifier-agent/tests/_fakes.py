@@ -394,6 +394,10 @@ def make_fake_deps(
       * ``"prepared"``   -> the FakePreparedBundle instance actually used
       * ``"session"``    -> the FakeSession instance actually created
       * ``"inject_provider_calls"`` -> list of (provider_name, kwargs) tuples
+      * ``"inject_routing_matrix_calls"`` -> list of provider_name values
+        every ``inject_routing_matrix(prepared, provider)`` call actually
+        passed (amplifier-agent docs/INTEGRATION.md's separate, required
+        routing-matrix injection alongside ``inject_provider``)
       * ``"prepare_bundle_for_session_calls"`` -> list of
         ``{"host_config": ..., "workspace": ...}`` dicts (gap 1)
       * ``"spawn_sub_session_calls"`` -> list of kwargs dicts every
@@ -416,6 +420,7 @@ def make_fake_deps(
     """
     captured: dict[str, Any] = {
         "inject_provider_calls": [],
+        "inject_routing_matrix_calls": [],
         "prepare_bundle_for_session_calls": [],
         "spawn_sub_session_calls": [],
     }
@@ -438,6 +443,9 @@ def make_fake_deps(
         prepared_arg: Any, provider_name: str, **kwargs: Any
     ) -> None:
         captured["inject_provider_calls"].append((provider_name, kwargs))
+
+    def fake_inject_routing_matrix(prepared_arg: Any, provider_name: str) -> None:
+        captured["inject_routing_matrix_calls"].append(provider_name)
 
     def fake_prepare_bundle_for_session(
         prepared_arg: Any, *, host_config: Any, workspace: str
@@ -496,6 +504,7 @@ def make_fake_deps(
         CliApprovalSystem=FakeCliApprovalSystem,
         CliDisplaySystem=FakeCliDisplaySystem,
         inject_provider=fake_inject_provider,
+        inject_routing_matrix=fake_inject_routing_matrix,
         prepare_bundle_for_session=fake_prepare_bundle_for_session,
         resolve_workspace=fake_resolve_workspace,
         hydrate_agent_overlay=fake_hydrate_agent_overlay,

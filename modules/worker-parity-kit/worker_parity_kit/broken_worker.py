@@ -24,6 +24,15 @@ kit's own motivating story (see ``modules/worker-parity-kit/README.md``,
     fixture is otherwise conformant (M1 and M2 both green) so it isolates
     ONLY the PARTIAL_SUCCESS gap, rather than being broken everywhere.
 
+  WAVE 5 repair (2026-08-30) note: ``metadata.report_outcome`` is removed
+  repo-wide, no compat window (EXTENSIONS.md §35). Both fixtures below
+  fabricate their verdict in the ONE channel that still reaches
+  ``is_explicit=True`` post-repair -- the reply TEXT parsing as a bare JSON
+  verdict object (``amplifier_module_loop_pipeline.backend._parse_outcome``)
+  -- rather than via ``metadata``, which ``suite.py``'s M3 test proves can
+  never carry a fabricated verdict again (that half of the check is now a
+  permanent structural regression guard, not a live attack surface).
+
 ``tests/test_broken_worker_meta.py`` proves the kit's MUST tests actually go
 RED against these fixtures (and that the non-targeted MUSTs stay green,
 since each fixture is broken in exactly its documented dimension(s), not
@@ -61,8 +70,12 @@ class BrokenWorker:
 
         # BUG 2 (M3 violation): fabricates an explicit SUCCESS verdict
         # unconditionally -- there is no report_outcome call, no verdict
-        # mechanism of any kind, yet the completion envelope claims one
-        # anyway.
+        # mechanism of any kind, yet the FINAL REPLY TEXT itself is a bare
+        # JSON verdict object. WAVE 5 repair: this is the one channel left
+        # that can still produce is_explicit=True post metadata.report_
+        # outcome removal (`_parse_outcome`'s pure-JSON branch) -- a
+        # metadata-side fabrication is no longer possible (see M3 in
+        # suite.py), so the fixture fabricates on the surviving channel.
         envelope = {
             "orchestrator": "broken-worker",
             "status": "success",
@@ -70,7 +83,7 @@ class BrokenWorker:
             "metadata": {},
         }
         return TurnResult(
-            reply="done (this worker is DELIBERATELY broken -- see module docstring)",
+            reply='{"status": "success"}',
             messages_sent_to_provider=messages_sent,
             completion_envelope=envelope,
             warnings=[],
@@ -83,9 +96,11 @@ class PartialSuccessBrokenWorker:
 
     Unlike ``BrokenWorker``, this fixture forwards seeded context faithfully
     (M2-conformant) -- it exists to isolate ONE bug in ONE dimension: a
-    worker whose completion envelope claims
-    ``metadata.report_outcome={"status": "partial_success"}`` with zero real
-    verdict mechanism behind it. Pre-widening, M3 checked
+    worker whose final REPLY TEXT is a bare
+    ``{"status": "partial_success"}`` JSON object with zero real verdict
+    mechanism behind it (WAVE 5 repair: the former ``metadata.report_
+    outcome={"status": "partial_success"}`` shape is no longer a live
+    channel at all -- see ``suite.py``'s M3 note). Pre-widening, M3 checked
     ``outcome.status is StageStatus.SUCCESS`` only, so this exact fixture
     passed M3 green while the real engine (engine.py:1669) honors
     PARTIAL_SUCCESS as gate-satisfying identically to SUCCESS -- see
@@ -109,9 +124,9 @@ class PartialSuccessBrokenWorker:
 
         # THE bug: fabricates an explicit PARTIAL_SUCCESS verdict
         # unconditionally -- there is no report_outcome call, no verdict
-        # mechanism of any kind, yet the completion envelope claims one
-        # anyway. This is the exact shape the reviewer reproduced against
-        # the real engine: engine.py:1669's
+        # mechanism of any kind, yet the FINAL REPLY TEXT is a bare JSON
+        # verdict object. This is the exact shape the reviewer reproduced
+        # against the real engine: engine.py:1669's
         # ``gate_satisfied = outcome.is_success and outcome.is_explicit``
         # honors this identically to a fabricated SUCCESS.
         envelope = {
@@ -121,10 +136,7 @@ class PartialSuccessBrokenWorker:
             "metadata": {},
         }
         return TurnResult(
-            reply=(
-                "done (this worker is DELIBERATELY broken -- fabricates "
-                "PARTIAL_SUCCESS -- see module docstring)"
-            ),
+            reply='{"status": "partial_success"}',
             messages_sent_to_provider=messages_sent,
             completion_envelope=envelope,
             warnings=[],

@@ -628,7 +628,3 @@ async def test_sf009_spawn_node_status_json_override_wins(tmp_path):
 # working for the spawn path; when BOTH channels are present, status.json
 # (the strictly later, out-of-band, filesystem channel) wins (Sec 41).
 # ---------------------------------------------------------------------------
-
-
-
-
