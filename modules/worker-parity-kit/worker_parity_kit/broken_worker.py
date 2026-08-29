@@ -67,7 +67,7 @@ class BrokenWorker:
             "orchestrator": "broken-worker",
             "status": "success",
             "turn_count": 1,
-            "metadata": {"report_outcome": {"status": "success"}},
+            "metadata": {},
         }
         return TurnResult(
             reply="done (this worker is DELIBERATELY broken -- see module docstring)",
@@ -118,7 +118,7 @@ class PartialSuccessBrokenWorker:
             "orchestrator": "broken-worker-partial-success",
             "status": "partial_success",
             "turn_count": 1,
-            "metadata": {"report_outcome": {"status": "partial_success"}},
+            "metadata": {},
         }
         return TurnResult(
             reply=(

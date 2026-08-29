@@ -159,18 +159,13 @@ class DirectWorkerHarness:
             _messages_as_dicts(client.requests[-1].messages) if client.requests else []
         )
 
-        # M3 authority: metadata.report_outcome is the ONLY channel an
-        # Outcome may carry is_explicit=True through (EXTENSIONS.md Sec35).
-        # Faithfully mirror the worker's REAL outcome -- never synthesize a
-        # report_outcome envelope the worker did not itself produce.
+        # WAVE 5 repair (2026-08-30): report_outcome is gone repo-wide, no
+        # compat window (specs/EXTENSIONS.md §35 RETCON, dated status: REMOVED).
+        # metadata never carries a report_outcome envelope any more -- the
+        # spec-native channels (returned Outcome / status.json, EXTENSIONS.md
+        # §41) are the only explicit-verdict transport left. Never synthesize
+        # a fabricated envelope the worker did not itself produce.
         metadata: dict[str, Any] = {}
-        if outcome.is_explicit:
-            metadata["report_outcome"] = {
-                "status": outcome.status.value,
-                "preferred_label": outcome.preferred_label,
-                "notes": outcome.notes,
-                "failure_reason": outcome.failure_reason,
-            }
         completion_envelope = {
             "orchestrator": "loop-pipeline.direct",
             "status": outcome.status.value,

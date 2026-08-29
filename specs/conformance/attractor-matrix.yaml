@@ -290,7 +290,8 @@ rows:
         - modules/loop-pipeline/tests/test_conditions.py::test_outcome_resolves_status_when_no_preferred_label
     notes: >
       Canonical defines `outcome` as `outcome.status` only, with `preferred_label`
-      as a separate key. Load-bearing for report_outcome-driven routing. Not
+      as a separate key. Load-bearing for outcome-driven routing (report_outcome itself is REMOVED as of
+      the 2026-08-30 WAVE 5 repair; see EXTENSIONS.md Sec 35's dated status note). Not
       behavior-neutral: a canonical graph matching `outcome=<status>` changes
       meaning when a node also sets a preferred_label (EXTENSIONS section 22,
       "Compatibility").
@@ -1016,4 +1017,6 @@ rows:
       overwhelming common case (CodergenHandler's own routine audit-trail write matches
       itself). A malformed override fails loudly, never silently (see EXTENSIONS.md Sec 41 for
       the full precedence discussion against Sec 25's fail-closed ladder and Sec 35's
-      report_outcome transport).
+      report_outcome transport -- REMOVED as of the 2026-08-30 WAVE 5 repair; see
+      Sec 35's dated "status: REMOVED" note. status.json/returned-Outcome are the
+      whole of the explicit-verdict story now).

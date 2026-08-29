@@ -2471,6 +2471,70 @@ still honored unchanged -- see
 own mounting of it are NOT deleted by this RETCON -- only `loop-amplifier-agent`'s reach-in copy is.
 
 ---
+### status: REMOVED (2026-08-30, maintainer ruling, WAVE 5 -- `feat/spec-repair`)
+
+**Ruling:** "we allowed drift from the spec to creep in; this release is a repair of that misstep."
+`report_outcome` is REMOVED, full stop -- no compat window, no deprecation period. The WAVE 4 RETCON
+above (dated 2026-08-29) said removal was "tracked as a follow-up, not done here"; this note is that
+follow-up, landing one day later in the same repair effort. This entry's BODY (the completion-envelope
+shape, the ordering barrier, the precedence policy) stays put -- the ledger is append-only and describes
+what shipped historically -- but none of it is live code any more as of this note.
+
+**What actually changed:**
+
+- `modules/tool-report-outcome/` (the `ReportOutcomeTool` module, its `mount()`, its tests) is DELETED
+  in full -- not deprecated, not left importable behind a flag.
+- `loop-pipeline`'s `backend.py` no longer reads `metadata.report_outcome` anywhere: the former
+  hoisted precedence check in `AmplifierBackend._run_with_spawn` is gone, `_outcome_from_spawn_result`
+  only recovers the orchestrator's own lifecycle `status` (never an explicit verdict), and
+  `_find_report_outcome_call` is deleted outright (it was the shared helper both the spawn path and
+  `_outcome_from_structured_output` called). The direct-worker tool loop
+  (`workers/direct_worker.py::_tool_loop_result`) no longer checks for a `report_outcome` tool call
+  either. **What is NOT orphaned:** §25's fail-closed explicit-verdict ladder (`_parse_outcome`
+  against `result.text` / spawn `output`, with the empty-text goal-gate-fails-closed rule) is
+  unconditionally reachable now -- it was already the SECOND rung of the old priority order, so
+  deleting the report_outcome-checked-first rung above it left the remaining ladder intact and,
+  for the direct path, simplifies to exactly §25's ladder with nothing preceding it. §41's
+  `status.json` read-side (`status_file.py::read_status_override`) is wired at the handler layer,
+  entirely outside `backend.py`'s spawn/tool-loop methods, so it is untouched by any of this.
+- `loop-agent` no longer mounts, resets, or reads a `report_outcome` tool: the per-invocation
+  `last_outcome` reset, the `_report_outcome_tool` lookup, and the `metadata.report_outcome`
+  population in `_emit_completion` are all deleted. `orchestrator:complete`'s `metadata` is now always
+  `{}` -- `loop-agent`'s own "OWNED, not a reach-in" mechanism the WAVE 4 note preserved is exactly
+  what this note retires. Its provider-default system prompts
+  (`prompts/system-{anthropic,gemini,openai}.md`) drop the "report_outcome (legacy, still honored)"
+  section entirely; the status-file contract is the only taught verdict channel now.
+  `loop-amplifier-agent` already emitted an empty `metadata.report_outcome` since WAVE 4 (ruling 5)
+  and required no further change to that specific behavior.
+- `worker-parity-kit`'s fixtures (`broken_worker.py`) and consumer suite (`suite.py`) are re-anchored:
+  the deliberately-broken fixtures fabricate a bare `"status": "success"` / `"partial_success"`
+  lifecycle envelope with **empty** `metadata` (no verdict mechanism of any kind) instead of a fake
+  `metadata.report_outcome` -- proving M3 ("never fabricate a verdict") against the SAME real reader
+  (`backend._outcome_from_spawn_result`) the suite always used, now exercising the returned-Outcome /
+  `status.json` reality rather than a channel that no longer exists.
+- Tests that PINNED the removed precedence are deleted with the behavior, not weakened:
+  `test_direct_worker_section35_precedence_regression.py`,
+  `test_report_outcome_multiturn_convergence.py`, `pipeline-runner/tests/
+  test_spawn_report_outcome_transport.py`, and the `test_sf010_*`/`test_sf011_*` pair in
+  `test_status_file_contract.py` (SF-009 stays -- it does not depend on report_outcome). Six
+  `report_outcome`-named tests in `loop-pipeline/tests/test_backend.py` and two in
+  `test_unified_llm_wiring.py` are likewise deleted. `test_fail_closed_outcomes.py`'s FC-008 keeps
+  its still-true `is_explicit=False` status-only half and drops the now-false "with report_outcome"
+  half. `loop-pipeline/tests/test_worker_parity.py`'s `DirectWorkerHarness` no longer synthesizes a
+  `metadata.report_outcome` envelope -- it never had a real mechanism producing one.
+- `bundle.md` and `behaviors/dot-runner.yaml` (the partial that mounted `tool-report-outcome`) are
+  updated/deleted accordingly; `pyproject.toml` dependency edges onto `amplifier-module-tool-report-
+  outcome` are removed from `pipeline-runner`, `worker-parity-kit`'s comments, and
+  `loop-amplifier-agent`.
+
+**Precedence, restated one more time:** the spec's own channels -- the returned `Outcome`/`str`, the
+`status.json` audit-trail file (§4.5 / Appendix C / §41), and process exit codes -- are the WHOLE of
+the explicit-verdict story now. There is no third, tool-call-shaped channel layered on top.
+
+**Conformance matrix:** rows pinning `report_outcome` behavior are flipped/removed alongside this note
+(`specs/conformance/attractor-matrix.yaml`); see that file's own comments for the specific rows.
+
+---
 
 ## 36. Startup Provider Preflight and No-Fallback Profile Resolution (Fail-Loud)
 

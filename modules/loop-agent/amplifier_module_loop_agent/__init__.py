@@ -430,16 +430,11 @@ class AgentOrchestrator:
                 "self_delegation_depth", config.current_depth
             )
 
-        # EXTENSIONS.md 35: the mounted report tool's `last_outcome` is a single
-        # semantic completion register that OUTLIVES an invocation (the tool
-        # instance is mounted once per session, and a session is reused across
-        # execute() calls).  Reset it here, before the loop runs, so invocation
-        # N+1 can never inherit invocation N's verdict and report a stale
-        # envelope as if the child had just asserted it.
-        report_tool = self._report_outcome_tool(self._session)
-        if report_tool is not None:
-            report_tool.last_outcome = None
-
+        # WAVE 5 repair (2026-08-30, maintainer ruling): report_outcome is
+        # REMOVED repo-wide, no compat window (specs/EXTENSIONS.md §35 RETCON,
+        # dated status: REMOVED). There is no mounted report tool to reset
+        # between invocations any more -- the status-file contract
+        # (EXTENSIONS.md §41) is the taught, spec-native verdict channel.
         return await self._session.process_input(prompt)
 
     async def execute(
@@ -461,14 +456,14 @@ class AgentOrchestrator:
         build the child's result dict, and a missing emission is
         indistinguishable there from "the child had nothing to say".
 
-        The envelope has two deliberately separate layers:
-
-          * top-level `status` is LIFECYCLE ONLY (success / incomplete /
-            cancelled) -- how the invocation ended, never what the node
-            decided;
-          * `metadata.report_outcome` is the SEMANTIC verdict -- the child's
-            own `report_outcome` arguments, and the only thing that lets a
-            parent record `is_explicit=True`.
+        WAVE 5 repair (2026-08-30, maintainer ruling): report_outcome is
+        REMOVED repo-wide, no compat window (specs/EXTENSIONS.md §35 RETCON,
+        dated status: REMOVED). Top-level `status` is LIFECYCLE ONLY (success
+        / incomplete / cancelled) -- how the invocation ended. `metadata` is
+        always `{}` now: there is no report_outcome verdict channel left to
+        populate it with. A parent recovers an explicit verdict only via the
+        spec-native channels -- the returned Outcome / status.json
+        (EXTENSIONS.md §41) -- never from this envelope's metadata.
 
         The return contract is unchanged: this still returns the loop's final
         string, so every existing caller is unaffected.
@@ -543,12 +538,6 @@ class AgentOrchestrator:
         """Terminal condition of the session's most recent invocation."""
         return getattr(session, "termination_reason", "natural")
 
-    @staticmethod
-    def _report_outcome_tool(session: AgentSession | None) -> Any | None:
-        """Return the mounted report_outcome tool, when this session has one."""
-        tools = getattr(session, "_tools", None)
-        return tools.get("report_outcome") if tools is not None else None
-
     async def _emit_completion(
         self,
         hooks: Any,
@@ -559,18 +548,15 @@ class AgentOrchestrator:
     ) -> None:
         """Emit the single `orchestrator:complete` envelope for an invocation.
 
-        `metadata` is `{}` unless this invocation both COMPLETED and left a
-        successful report behind -- a status-only completion carries no
+        `metadata` is always `{}` -- WAVE 5 repair (2026-08-30): report_outcome
+        is REMOVED repo-wide, no compat window (specs/EXTENSIONS.md §35
+        RETCON, dated status: REMOVED). A status-only completion carries no
         verdict, which is exactly what keeps a downstream goal gate
-        fail-closed (EXTENSIONS.md 25).
+        fail-closed (EXTENSIONS.md 25); the spec-native status.json channel
+        (EXTENSIONS.md §41) is how an explicit verdict reaches the parent now.
         """
-        report_tool = self._report_outcome_tool(self._session)
-        report_outcome = getattr(report_tool, "last_outcome", None)
-        metadata = (
-            {"report_outcome": report_outcome}
-            if include_report and isinstance(report_outcome, dict)
-            else {}
-        )
+        del include_report  # kept for call-site signature stability; unused now
+        metadata: dict[str, Any] = {}
 
         await hooks.emit(
             ORCHESTRATOR_COMPLETE,

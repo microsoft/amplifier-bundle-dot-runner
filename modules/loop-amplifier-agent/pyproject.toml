@@ -24,13 +24,6 @@ dependencies = [
     # repo's modules (see pipeline-runner/pyproject.toml's own comment on
     # why a SHA pin here would collide with other consumers' `@main` refs).
     "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main",
-    # Local sibling module: this adapter mounts the REAL ReportOutcomeTool
-    # directly onto the per-turn amplifier-agent session coordinator (the
-    # probe-proven mechanism -- see amplifier_module_loop_amplifier_agent's
-    # module docstring). Path-sourced below, mirroring how
-    # modules/pipeline-runner sources this exact same sibling for its own
-    # producer+verdict+consumer transport test.
-    "amplifier-module-tool-report-outcome",
 ]
 
 [project.entry-points."amplifier.modules"]
@@ -44,12 +37,11 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.uv.sources]
-amplifier-module-tool-report-outcome = { path = "../tool-report-outcome", editable = true }
 # Test-only, same-repo path source (dev dependency-group member below). The
 # integration test (tests/test_spawn_report_outcome_transport.py) drives the
 # REAL consumer (loop-pipeline's AmplifierBackend) against this module's REAL
-# producer, mirroring pipeline-runner's own transport test verbatim for this
-# adapter. Editable so the test always runs the working tree's modules.
+# orchestrator, mirroring pipeline-runner's own transport test verbatim for
+# this adapter. Editable so the test always runs the working tree's modules.
 amplifier-module-loop-pipeline = { path = "../loop-pipeline", editable = true }
 # Test-only, same-repo path source: tests/test_worker_parity.py wires this
 # module's REAL orchestrator into worker-parity-kit's shared M1-M3 + TARGET

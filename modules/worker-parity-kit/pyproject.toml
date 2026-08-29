@@ -17,7 +17,7 @@ dependencies = [
     # bare path) so this survives external consumption via
     # `git+https://...@main#subdirectory=modules/worker-parity-kit` (mirrors
     # loop-amplifier-agent's own sibling-module dependency pattern -- see
-    # its pyproject.toml's amplifier-module-tool-report-outcome entry). The
+    # its own pyproject.toml comments for the local/editable dev pattern). The
     # [tool.uv.sources] path override below is for local/editable dev so CI
     # and local runs always exercise the working tree's loop-pipeline, not
     # a stale @main fetch.
