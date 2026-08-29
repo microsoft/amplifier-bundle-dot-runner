@@ -17,7 +17,7 @@ docs) lives in the repos that consume this one.
 | `bundle.md` | Root bundle (`dot-runner`) — includes the `dot-runner-core` behavior. |
 | `behaviors/dot-runner.yaml` | Engine partial (`dot-runner-core`) — mounts the `report_outcome` tool. |
 | `modules/loop-pipeline` | **The engine.** DOT parser, validator, graph execution engine, handler dispatch. |
-| `modules/pipeline-runner` | The `attractor` CLI (`run` / `resume` / `doctor` / `trace` / `lint`) and the `drive_engine` / `run_pipeline` library surface. |
+| `modules/pipeline-runner` | Two console scripts sharing one implementation (`run` / `resume` / `doctor` / `trace` / `lint`): the engine-native `dot-runner` and the legacy, opinionated `attractor`. Plus the `drive_engine` / `run_pipeline` library surface. |
 | `modules/unified-llm-client` | Provider-agnostic LLM client — a faithful implementation of the Attractor Unified LLM Client spec. |
 | `modules/remote-source` | Content-addressed `git+https://` fetcher (Layer A), used by `loop-pipeline[remote]` to materialize remote `.dot` graphs. |
 | `modules/tool-report-outcome` | The `report_outcome` tool module — lets a child agent set a structured pipeline verdict. |
@@ -98,8 +98,32 @@ corresponding commit here.
 
 ```bash
 uv tool install "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/pipeline-runner"
-attractor --help
-attractor lint path/to/pipeline.dot
+dot-runner --help
+dot-runner lint path/to/pipeline.dot
+```
+
+### Two CLIs, one implementation
+
+`modules/pipeline-runner` installs **two** console scripts from the same
+code (DESIGN-worker-registry-core-split.md P3 — "one binary, two names"):
+
+| Command | Personality | Default worker | Base bundle |
+|---|---|---|---|
+| `dot-runner` | **Engine-native.** The plain engine, nothing else. | `direct` (registry, in-repo — unified-llm-client + a provider key) | A bare bundle. Zero runtime reach into any pattern repo: no attractor bundle, no provider→agent profiles, no `session.spawn`. |
+| `attractor` | **Legacy, opinionated** — unchanged through a deprecation window (no fixed date). Prints one notice to stderr per invocation. | today's capability-fallback chain (effectively `loop-agent`, via the attractor bundle's own agent configs) | Auto-loads `amplifier-bundle-attractor`'s pattern bundle (local sibling checkout, else `git+…@main`) — same as before P3. |
+
+Both accept `run` / `resume` / `doctor` / `trace` / `lint`, and both accept
+`--worker <name>` on `run`/`resume` (EXTENSIONS.md §40 — feeds the worker
+registry's run-level `default_worker`; a node's own `worker=` attribute
+still wins). An unknown `--worker` name is refused with a clean error naming
+every registered worker — never a stack trace.
+
+```bash
+# engine-native: runs every box node through the `direct` worker
+dot-runner run path/to/pipeline.dot
+
+# same pipeline, opinionated attractor experience (unchanged)
+attractor run path/to/pipeline.dot
 ```
 
 ### Pattern (b) — mount as an Amplifier bundle

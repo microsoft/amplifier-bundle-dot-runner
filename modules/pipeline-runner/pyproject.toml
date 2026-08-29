@@ -27,6 +27,11 @@ dependencies = [
 
 [project.scripts]
 attractor = "amplifier_module_pipeline_runner.cli:main"
+# DESIGN-worker-registry-core-split.md P3: the engine-native personality of
+# the SAME shared CLI implementation (cli.py's `main_dot_runner`) -- default
+# worker `direct`, zero runtime reach into any pattern repo. See cli.py's
+# module docstring for the "one binary, two names" shape.
+dot-runner = "amplifier_module_pipeline_runner.cli:main_dot_runner"
 
 [build-system]
 requires = [
