@@ -66,11 +66,12 @@ if "amplifier_core" not in sys.modules:
     _stub_msg.ToolCallBlock = _StubToolCallBlock  # type: ignore[attr-defined]
     sys.modules["amplifier_core.message_models"] = _stub_msg
 
-from amplifier_module_loop_pipeline import DirectProviderBackend
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.dot_parser import parse_dot
 from amplifier_module_loop_pipeline.engine import PipelineEngine
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 from amplifier_module_loop_pipeline.outcome import StageStatus
 from amplifier_module_loop_pipeline.pipeline_events import (
     PIPELINE_COMPLETE,
@@ -82,8 +83,6 @@ from amplifier_module_loop_pipeline.pipeline_events import (
 )
 from amplifier_module_loop_pipeline.transforms import apply_transforms
 from amplifier_module_loop_pipeline.validation import validate_or_raise
-from amplifier_module_loop_pipeline.handlers.context import HandlerContext
-
 
 # ---------------------------------------------------------------------------
 # Fixture directory helpers
@@ -206,7 +205,7 @@ def _make_integration_engine(
     validate_or_raise(graph)
 
     # Backend that routes through unified_llm.generate() -> mock client
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),  # truthy sentinel
         unified_client=mock_client,
         hooks=hooks,
@@ -837,7 +836,7 @@ def _make_production_engine(
     _normalize_node_types(graph)
     # Skip validate_or_raise — production DOTs use non-standard shapes
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),  # truthy sentinel
         unified_client=mock_client,
         hooks=hooks,
@@ -1214,7 +1213,9 @@ class TestConsensusPipeline:
         hooks = RecordingHooks()
         client = MockUnifiedClient(
             [
-                _routing_response(preferred_label="needs_dod"),  # CheckDoD -> DefineDoD_FanOut
+                _routing_response(
+                    preferred_label="needs_dod"
+                ),  # CheckDoD -> DefineDoD_FanOut
                 _routing_response(),  # DefineDoD_Gemini (parallel branch)
                 _routing_response(),  # DefineDoD_GPT (parallel branch)
                 _routing_response(),  # DefineDoD_Opus (parallel branch)
@@ -1312,7 +1313,9 @@ class TestConsensusPipeline:
                 _routing_response(),  # ReviewGemini (parallel branch)
                 _routing_response(),  # ReviewGPT (parallel branch)
                 _routing_response(),  # ReviewOpus (parallel branch)
-                _routing_response(preferred_label="retry"),  # ReviewConsensus -> Postmortem
+                _routing_response(
+                    preferred_label="retry"
+                ),  # ReviewConsensus -> Postmortem
                 _routing_response(),  # Postmortem -> Plan_FanOut (loop_restart)
                 # --- Second pass ---
                 _routing_response(),  # PlanGemini (parallel branch)

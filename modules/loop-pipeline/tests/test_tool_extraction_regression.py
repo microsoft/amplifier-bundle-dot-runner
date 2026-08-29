@@ -41,11 +41,10 @@ if "amplifier_foundation" not in sys.modules:
 
 unified_llm = pytest.importorskip("unified_llm")
 
-from amplifier_module_loop_pipeline import DirectProviderBackend  # noqa: E402
-from amplifier_module_loop_pipeline.backend import AmplifierBackend  # noqa: E402
-from amplifier_module_loop_pipeline.context import PipelineContext  # noqa: E402
-from amplifier_module_loop_pipeline.graph import Node  # noqa: E402
-from amplifier_module_loop_pipeline.outcome import StageStatus  # noqa: E402
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
+from amplifier_module_loop_pipeline.context import PipelineContext
+from amplifier_module_loop_pipeline.graph import Node
+from amplifier_module_loop_pipeline.outcome import StageStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -66,7 +65,7 @@ def _make_node(node_id: str = "extract") -> Node:
     )
 
 
-def _make_tool_call(args: dict[str, Any]) -> "unified_llm.types.ToolCall":
+def _make_tool_call(args: dict[str, Any]) -> unified_llm.types.ToolCall:
     """Build a ToolCall for the synthetic __structured_output__ tool."""
     return unified_llm.ToolCall(
         id="call_struct_01",
@@ -79,7 +78,7 @@ def _make_generate_result(
     *,
     text: str = "",
     tool_args: dict[str, Any] | None = None,
-) -> "unified_llm.GenerateResult":  # type: ignore[name-defined]
+) -> unified_llm.GenerateResult:  # type: ignore[name-defined]
     """Build a GenerateResult with optional __structured_output__ tool call.
 
     When ``text`` is empty and ``tool_args`` is provided, the result simulates
@@ -97,7 +96,9 @@ def _make_generate_result(
         model="claude-sonnet-4-20250514",
         provider="anthropic",
         message=unified_llm.Message.assistant(text),
-        finish_reason=unified_llm.FinishReason(reason="tool_calls" if tool_args else "stop"),
+        finish_reason=unified_llm.FinishReason(
+            reason="tool_calls" if tool_args else "stop"
+        ),
         usage=unified_llm.Usage(input_tokens=5, output_tokens=10, total_tokens=15),
     )
     step = StepResult(
@@ -113,7 +114,9 @@ def _make_generate_result(
         text=text,
         finish_reason=response.finish_reason,
         usage=response.usage,
-        total_usage=unified_llm.Usage(input_tokens=5, output_tokens=10, total_tokens=15),
+        total_usage=unified_llm.Usage(
+            input_tokens=5, output_tokens=10, total_tokens=15
+        ),
         steps=[step],
         response=response,
         tool_calls=tool_calls,
@@ -147,9 +150,10 @@ def _make_amplifier_backend(
 
 def _make_direct_backend(
     unified_client: Any = _DEFAULT_UNIFIED_CLIENT_STUB,
-) -> DirectProviderBackend:
-    """Create a DirectProviderBackend wrapping the given mock client."""
-    return DirectProviderBackend(
+) -> AmplifierBackend:
+    """Create an AmplifierBackend (no coordinator -> the `direct` worker
+    handles every node) wrapping the given mock client."""
+    return AmplifierBackend(
         provider=MagicMock(),
         tools={},
         hooks=None,
@@ -221,7 +225,9 @@ class TestAmplifierBackendToolExtraction:
         from unified_llm.types import ToolCall
 
         node = _make_node()
-        unrelated_tc = ToolCall(id="c1", name="report_outcome", arguments={"status": "success"})
+        unrelated_tc = ToolCall(
+            id="c1", name="report_outcome", arguments={"status": "success"}
+        )
 
         response = unified_llm.Response(
             id="r1",

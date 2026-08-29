@@ -69,16 +69,16 @@ if "amplifier_core" not in sys.modules:
 
 unified_llm = pytest.importorskip("unified_llm")
 
-from amplifier_module_loop_pipeline.backend import AmplifierBackend  # noqa: E402
-from amplifier_module_loop_pipeline.context import PipelineContext  # noqa: E402
-from amplifier_module_loop_pipeline.dot_parser import parse_dot  # noqa: E402
-from amplifier_module_loop_pipeline.graph import Edge, Graph, Node  # noqa: E402
-from amplifier_module_loop_pipeline.outcome import StageStatus  # noqa: E402
-from amplifier_module_loop_pipeline.transforms import (  # noqa: E402
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
+from amplifier_module_loop_pipeline.context import PipelineContext
+from amplifier_module_loop_pipeline.dot_parser import parse_dot
+from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
+from amplifier_module_loop_pipeline.outcome import StageStatus
+from amplifier_module_loop_pipeline.transforms import (
     apply_transforms,
     resolve_response_schemas,
 )
-from amplifier_module_loop_pipeline.validation import (  # noqa: E402
+from amplifier_module_loop_pipeline.validation import (
     validate_or_raise,
 )
 
@@ -158,7 +158,7 @@ def _make_minimal_graph(node: Node, source_dir: str = "") -> Graph:
     )
 
 
-def _make_generate_result(text: str = "") -> "unified_llm.GenerateResult":  # type: ignore[name-defined]
+def _make_generate_result(text: str = "") -> unified_llm.GenerateResult:  # type: ignore[name-defined]
     """Build a minimal GenerateResult for mocking."""
     response = unified_llm.Response(
         id="r1",
@@ -650,14 +650,14 @@ class TestDirectProviderBackendWiring:
     @pytest.mark.asyncio
     async def test_direct_backend_passes_response_format(self) -> None:
         """When response_schema is set, DirectProviderBackend passes ResponseFormat."""
-        from amplifier_module_loop_pipeline import DirectProviderBackend
+        from amplifier_module_loop_pipeline.backend import AmplifierBackend
 
         schema = _INLINE_SCHEMA_DICT
         json_response = json.dumps({"name": "Bob"})
         mock_client = _MockUnifiedClient(text=json_response)
 
         node = _make_node_with_schema(schema)
-        backend = DirectProviderBackend(
+        backend = AmplifierBackend(
             provider=MagicMock(),
             unified_client=mock_client,
         )
@@ -678,13 +678,13 @@ class TestDirectProviderBackendWiring:
     @pytest.mark.asyncio
     async def test_direct_backend_no_response_format_when_no_schema(self) -> None:
         """When response_schema is absent, DirectProviderBackend passes no response_format."""
-        from amplifier_module_loop_pipeline import DirectProviderBackend
+        from amplifier_module_loop_pipeline.backend import AmplifierBackend
 
         json_response = json.dumps({"status": "success"})
         mock_client = _MockUnifiedClient(text=json_response)
 
         node = _make_node_no_schema()
-        backend = DirectProviderBackend(
+        backend = AmplifierBackend(
             provider=MagicMock(),
             unified_client=mock_client,
         )
@@ -701,7 +701,7 @@ class TestDirectProviderBackendWiring:
 # ---------------------------------------------------------------------------
 
 
-def _make_tool_loop_backend(text: str) -> "AmplifierBackend":
+def _make_tool_loop_backend(text: str) -> AmplifierBackend:
     """AmplifierBackend wired to the tool-loop path with a canned response."""
     return AmplifierBackend(
         coordinator=MagicMock(
@@ -743,9 +743,7 @@ class TestStructuredOutputVerdictPolicy:
         emitting non-verdict structured output must not be able to satisfy
         its gate.
         """
-        backend = _make_tool_loop_backend(
-            json.dumps({"assessment": "NOT CONVERGED"})
-        )
+        backend = _make_tool_loop_backend(json.dumps({"assessment": "NOT CONVERGED"}))
         node = _make_node_with_schema(_INLINE_SCHEMA_DICT)
         outcome = await backend._run_with_tool_loop(
             node=node, instruction="Judge", reasoning_effort=None
@@ -787,9 +785,7 @@ class TestStructuredOutputVerdictPolicy:
     @pytest.mark.asyncio
     async def test_unrecognized_status_value_is_derived(self) -> None:
         """{"status": "NOT CONVERGED"} — unrecognized value is NOT a verdict."""
-        backend = _make_tool_loop_backend(
-            json.dumps({"status": "NOT CONVERGED"})
-        )
+        backend = _make_tool_loop_backend(json.dumps({"status": "NOT CONVERGED"}))
         node = _make_node_with_schema(_INLINE_SCHEMA_DICT)
         outcome = await backend._run_with_tool_loop(
             node=node, instruction="Judge", reasoning_effort=None
@@ -800,10 +796,10 @@ class TestStructuredOutputVerdictPolicy:
     @pytest.mark.asyncio
     async def test_direct_backend_same_policy(self) -> None:
         """DirectProviderBackend shares the classifier — same policy both paths."""
-        from amplifier_module_loop_pipeline import DirectProviderBackend
+        from amplifier_module_loop_pipeline.backend import AmplifierBackend
 
         # Non-verdict → DERIVED
-        backend = DirectProviderBackend(
+        backend = AmplifierBackend(
             provider=MagicMock(),
             unified_client=_MockUnifiedClient(
                 text=json.dumps({"assessment": "NOT CONVERGED"})
@@ -815,7 +811,7 @@ class TestStructuredOutputVerdictPolicy:
         assert outcome.is_explicit is False
 
         # Verdict-shaped → explicit
-        backend2 = DirectProviderBackend(
+        backend2 = AmplifierBackend(
             provider=MagicMock(),
             unified_client=_MockUnifiedClient(
                 text=json.dumps({"status": "success", "notes": "converged"})
@@ -830,17 +826,15 @@ class TestGoalGateStructuredOutput:
     """Full-engine red/green for goal_gate + response_schema nodes."""
 
     def _engine(self, response_text: str, tmp_path: Path, goal_gate: bool):
-        from amplifier_module_loop_pipeline import DirectProviderBackend
+        from amplifier_module_loop_pipeline.backend import AmplifierBackend
         from amplifier_module_loop_pipeline.engine import PipelineEngine
         from amplifier_module_loop_pipeline.handlers import HandlerRegistry
         from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 
         attrs: dict[str, Any] = {"goal_gate": "true"} if goal_gate else {}
-        node = _make_node_with_schema(
-            _INLINE_SCHEMA_DICT, id="judge", attrs=attrs
-        )
+        node = _make_node_with_schema(_INLINE_SCHEMA_DICT, id="judge", attrs=attrs)
         graph = _make_minimal_graph(node)
-        backend = DirectProviderBackend(
+        backend = AmplifierBackend(
             provider=MagicMock(),
             unified_client=_MockUnifiedClient(text=response_text),
         )
@@ -889,9 +883,7 @@ class TestGoalGateStructuredOutput:
         self, tmp_path: Path
     ) -> None:
         """Non-gate schema node returning {"name": "Alice"} succeeds as before."""
-        engine = self._engine(
-            json.dumps({"name": "Alice"}), tmp_path, goal_gate=False
-        )
+        engine = self._engine(json.dumps({"name": "Alice"}), tmp_path, goal_gate=False)
         outcome = await engine.run()
         assert outcome.is_success, "non-gate schema node behavior must be unchanged"
         judge_outcome = engine.node_outcomes["judge"]

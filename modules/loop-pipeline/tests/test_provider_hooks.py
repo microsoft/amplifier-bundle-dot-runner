@@ -50,9 +50,9 @@ if "amplifier_core" not in sys.modules:
     sys.modules["amplifier_core.message_models"] = _stub_msg
 
 from amplifier_module_loop_pipeline.pipeline_events import (
+    PROVIDER_ERROR,
     PROVIDER_REQUEST,
     PROVIDER_RESPONSE,
-    PROVIDER_ERROR,
 )
 
 
@@ -429,7 +429,6 @@ async def test_amplifier_backend_deny_hook_aborts_llm_call():
 # ---------------------------------------------------------------------------
 # Task 8: DirectProviderBackend emit pattern
 # ---------------------------------------------------------------------------
-from amplifier_module_loop_pipeline import DirectProviderBackend
 
 
 @pytest.mark.asyncio
@@ -440,7 +439,7 @@ async def test_direct_backend_emits_provider_request():
         [_make_text_response('{"status": "success", "notes": "done"}')]
     )
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
         hooks=hooks,
@@ -463,7 +462,7 @@ async def test_direct_backend_emits_provider_response():
         [_make_text_response('{"status": "success", "notes": "done"}')]
     )
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
         hooks=hooks,
@@ -492,7 +491,7 @@ async def test_direct_backend_emits_provider_error():
         )
     )
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
         hooks=hooks,
@@ -514,7 +513,7 @@ async def test_direct_backend_deny_hook_aborts_llm_call():
     hooks.set_deny("not approved")
     mock_client = MockUnifiedClient([_make_text_response("should not reach")])
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
         hooks=hooks,
@@ -560,7 +559,7 @@ async def test_direct_backend_works_without_hooks():
         [_make_text_response('{"status": "success", "notes": "done"}')]
     )
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
         hooks=None,
