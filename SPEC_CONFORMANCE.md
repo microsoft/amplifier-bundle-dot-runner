@@ -43,6 +43,26 @@ Maintainer ruling, 2026-08-14. The five rules that decide every disposition in t
    the conformance matrix. "The spec didn't anticipate this shape" is a reason to file an extension
    entry, not to skip one.
 
+**Postures ruled 2026-08-29 (maintainer ruling batch).** Current-state pointers only; narrative,
+tests and evidence live in the Changelog below and in `specs/EXTENSIONS.md` -- not duplicated here.
+
+- **One CLI.** `dot-runner` is the only command; the standalone `attractor` entry point is deleted
+  (`README.md`, "Getting started"). A bundle's opinion -- which worker runs a node, which model
+  backs it -- arrives through composition (`--bundle`, config): mechanism, never a second command
+  name.
+- **Spec-channels-first; extensions are retconned, not defended.** Artifact files, tool exit codes,
+  and a node-written `status.json` (canonical spec §4.5 / Appendix C; read-side conformance
+  restoration at §41, auto-injected into every spawned worker's instruction) are the taught,
+  implemented outcome mechanism, with a pure-JSON verdict as its sharpest reading (§25).
+  `report_outcome` is RETCONNED to a legacy compatibility window -- functional, no longer taught as
+  primary (§35's dated RETCON note); AP-4 names the anti-pattern of teaching it as primary. The same
+  posture governs extensions generally: a spec-intended design alternative is documented FIRST, and
+  the disposition is ledgered whether it leaves the extension in place (§16/§17/§29: DEMOTE, not
+  BACK-OUT) or removes it behind a deprecation window (§23: BACK-OUT).
+- **`llm_provider` is spec-first.** A node that declares `llm_provider` alone resolves to a live
+  per-provider default model out of the box (§42) -- this repo's own ecosystem conventions get a
+  vote only after the spec's own meaning is honored.
+
 ## How to use this file
 
 1. Each gap has a stable ID (`ULM-*`, `CAL-*`, `ATX-*`), a spec reference, an impl reference,
