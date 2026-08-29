@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] Checked what the strongdm/attractor nlspec says about this (cite section) — or N/A with reason
+- [ ] nlspec evidence: cited section(s) + holistic-context note (spec silence ≠ support; silence → extension process or design guidance)
 - [ ] Tests pass (`uv run pytest -q` in each touched module)
 - [ ] `ruff check` / `ruff format --check` clean
 - [ ] Diff scope matches the description above (no unrelated files)
