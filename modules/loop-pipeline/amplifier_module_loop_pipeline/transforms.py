@@ -20,11 +20,40 @@ from __future__ import annotations
 import json
 import os
 import re
+import warnings
 from typing import Any, Protocol, runtime_checkable
 
 from .context import PipelineContext
 from .graph import Graph
 from .stylesheet import apply_stylesheet, parse_stylesheet
+
+# ---------------------------------------------------------------------------
+# EXTENSIONS.md Sec23 -- BACK-OUT (maintainer ruling, 2026-08-29, Lane F
+# extensions-undo audit).
+#
+# Usage census found zero shipped .dot graphs declaring response_schema=
+# across amplifier-bundle-dot-runner, amplifier-bundle-attractor
+# (examples/**, .github/capsule-pipeline/**), amplifier-resolver-dot-graph,
+# and amplifier-resolve -- only this engine's own test fixtures exercise it.
+# The mechanism duplicates two spec-native verdict channels that already
+# carry structured output: the Sec25 fail-closed pure-JSON goal_gate
+# verdict, and the Sec41 status.json channel. Behavior is NOT removed here
+# -- only a loud, non-suppressible deprecation warning is added, per the
+# deprecation-window precedent this module already uses for
+# DirectProviderBackend (amplifier_module_loop_pipeline/__init__.py).
+# Removal is tracked as a follow-up issue (see this change's PR body).
+# ---------------------------------------------------------------------------
+_RESPONSE_SCHEMA_DEPRECATION_MSG = (
+    "Node '{node_id}': response_schema= is deprecated (EXTENSIONS.md Sec23; "
+    "maintainer ruling 2026-08-29 -- BACK-OUT, deprecation window open). "
+    "No shipped .dot graph across amplifier-bundle-dot-runner, "
+    "amplifier-bundle-attractor, amplifier-resolver-dot-graph, or "
+    "amplifier-resolve declares response_schema=. It duplicates two "
+    "spec-native verdict channels: the Sec25 fail-closed pure-JSON "
+    "goal_gate verdict, and the Sec41 status.json channel. Migrate to one "
+    "of those instead. This attribute keeps working, unchanged, through "
+    "the deprecation window; removal is tracked as a follow-up issue."
+)
 
 # ---------------------------------------------------------------------------
 # L-17: Shared variable expansion utility
@@ -249,6 +278,14 @@ def resolve_response_schemas(graph: Graph) -> Graph:
         raw = node.response_schema
         if raw is None:
             continue
+        # BACK-OUT deprecation warning (EXTENSIONS.md Sec23) -- see module
+        # banner above. Fires once per node declaring response_schema=,
+        # every time this transform runs; behavior is unchanged.
+        warnings.warn(
+            _RESPONSE_SCHEMA_DEPRECATION_MSG.format(node_id=node.id),
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if isinstance(raw, dict):
             continue  # already a dict (e.g., programmatically constructed node)
         node.response_schema = _resolve_response_schema_value(
