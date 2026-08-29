@@ -77,6 +77,73 @@ _BASE_BUNDLE: Any = None
 _DEPS_INSTALLED = False
 
 
+class NoProviderConfiguredError(RuntimeError):
+    """No LLM provider is configured for the engine-native ``direct`` worker.
+
+    Raised by ``_bootstrap_direct_provider`` (called from ``drive_engine``
+    only when ``engine_native=True``) when ``unified_llm.Client.from_env()``
+    finds zero supported API keys in the environment.
+
+    This is the user-facing replacement for the misleading, engine-internal
+    ``AmplifierBackend`` message a missing provider used to produce --
+    "Neither session.spawn nor a direct provider is available -- cannot
+    execute node" -- which names an internal implementation detail
+    (``session.spawn``) a ``dot-runner`` user never registered and has no
+    way to act on. This message instead names exactly what to do: set one
+    of the supported provider API key environment variables.
+
+    See DESIGN-worker-registry-core-split.md P3 (reviewer-caught blocker):
+    ``dot-runner``'s advertised default worker could not execute any
+    box/LLM node because ``drive_engine``'s ``AmplifierBackend(...)`` call
+    never passed ``provider=``, so ``AmplifierBackend.run()``'s
+    ``elif self._provider is not None`` dispatch gate was never satisfied
+    on the engine-native path (that gate is pre-existing ``loop-pipeline``
+    contract, untouched by this fix).
+    """
+
+
+def _bootstrap_direct_provider() -> tuple[Any, Any]:
+    """Construct a real LLM provider for the engine-native ``direct`` worker.
+
+    Reuses ``unified_llm.Client.from_env()`` -- the SAME environment-key
+    detection ``DirectWorker._get_or_create_unified_client()`` already falls
+    back to when no ``unified_client`` is supplied (ANTHROPIC_API_KEY /
+    OPENAI_API_KEY / GEMINI_API_KEY, GOOGLE_API_KEY as a Gemini alias -- see
+    ``unified_llm/client.py``'s own ``from_env()``). No parallel
+    credential-detection system is introduced here.
+
+    Returns ``(provider, unified_client)`` -- the SAME constructed
+    ``unified_llm.Client`` instance for both. ``AmplifierBackend`` forwards
+    ``provider=`` to ``DirectWorker`` purely as the truthy selector that
+    gates ``AmplifierBackend.run()``'s ``elif self._provider is not None``
+    Path-B dispatch (see ``backend.py`` -- this is how the existing hosted
+    path's ``_build_backend`` already uses a mounted provider object: as a
+    truthiness flag, never invoked directly); ``unified_client=`` is the
+    object ``DirectWorker`` actually calls. Handing it the SAME already-
+    constructed client (rather than leaving it to lazily build its own)
+    means the environment is probed exactly once per run and a test can
+    substitute the client at exactly this one seam.
+
+    Raises:
+        NoProviderConfiguredError: no supported provider API key is present.
+            Actionable and user-facing -- never the misleading engine-
+            internal "Neither session.spawn nor a direct provider is
+            available" wording a missing bootstrap used to surface instead.
+    """
+    import unified_llm
+
+    try:
+        client = unified_llm.Client.from_env()
+    except unified_llm.ConfigurationError as exc:
+        supported = ", ".join(sorted(set(PROVIDER_KEY_ENV.values())))
+        raise NoProviderConfiguredError(
+            "no LLM provider is configured for the `direct` worker. Set one "
+            f"of the following environment variables and retry: {supported} "
+            "(GOOGLE_API_KEY is also accepted as an alias for Gemini)."
+        ) from exc
+    return client, client
+
+
 @dataclass
 class PipelineResult:
     """Result of a ``run_pipeline`` invocation.
@@ -195,6 +262,7 @@ async def drive_engine(
     validate: bool = True,
     source_dir: str | None = None,
     resume_checkpoint: Any = None,
+    engine_native: bool = False,
 ) -> "Outcome":
     """Drive the attractor engine directly against an already-built coordinator.
 
@@ -372,6 +440,25 @@ async def drive_engine(
             hooks if hooks is not None else getattr(coordinator, "hooks", None)
         )
 
+        # Engine-native provider bootstrap (DESIGN-worker-registry-core-
+        # split.md P3 blocker fix): the `dot-runner` personality never
+        # registers `session.spawn`, so `direct` is the ONLY worker that can
+        # ever execute a box/LLM node on this path -- and `AmplifierBackend`
+        # only reaches that worker when its OWN `provider=` truthy gate is
+        # satisfied (`backend.py`'s `elif self._provider is not None`,
+        # pre-existing loop-pipeline contract, untouched here). Without this,
+        # `default_worker="direct"` alone was never enough: a box node would
+        # fail with the engine-internal "Neither session.spawn nor a direct
+        # provider is available" message regardless of what API key the user
+        # had set. Scoped strictly to `engine_native=True` -- the legacy
+        # `attractor` personality always registers `session.spawn` and is
+        # completely unaffected (`direct_provider`/`direct_unified_client`
+        # stay `None`, identical to pre-fix `AmplifierBackend(...)` calls).
+        direct_provider: Any = None
+        direct_unified_client: Any = None
+        if engine_native:
+            direct_provider, direct_unified_client = _bootstrap_direct_provider()
+
         backend = AmplifierBackend(
             # The SAME coordinator the preflight above read
             # `config["agents"]` from, and the SAME profiles dict it judged:
@@ -387,6 +474,9 @@ async def drive_engine(
             # capability-fallback chain as the sole selector -- unchanged
             # behavior for every caller that predates this parameter.
             default_worker=default_worker,
+            # Engine-native only (see above) -- both None on the legacy path.
+            provider=direct_provider,
+            unified_client=direct_unified_client,
         )
         registry = HandlerRegistry(
             HandlerContext(
@@ -977,6 +1067,7 @@ async def run_pipeline(
                 transform=transform,
                 validate=validate,
                 source_dir=str(source_dir) if source_dir else None,
+                engine_native=engine_native,
             )
     finally:
         # The engine creates its manifest at run start. Stamp runner-owned
@@ -1134,6 +1225,7 @@ async def resume_pipeline(
                 transform=transform,
                 validate=validate,
                 resume_checkpoint=checkpoint,
+                engine_native=engine_native,
             )
     finally:
         _augment_manifest_provenance(logs_dir, provider)
