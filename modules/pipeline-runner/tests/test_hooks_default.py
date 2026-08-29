@@ -86,6 +86,14 @@ class _CoordinatorNoHooks:
 def _run(monkeypatch, coordinator, hooks):
     captor = _Captor()
     _install_patches(monkeypatch, captor)
+    # `drive_engine` unconditionally bootstraps a direct-worker LLM provider
+    # (post-band-aid-rip: the engine has no more attractor personality to
+    # fall back on) unless the coordinator advertises a `session.spawn`
+    # capability -- these bare test-double coordinators don't. This suite
+    # tests hooks-defaulting only (every downstream construction point is
+    # patched to a fake below), so a dummy credential is enough to satisfy
+    # the bootstrap without a real provider ever being invoked.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-hooks-default")
     # Pass a non-str graph so parse_dot is skipped; transform/validate off so
     # apply_transforms/validate_or_raise are never called.
     asyncio.run(

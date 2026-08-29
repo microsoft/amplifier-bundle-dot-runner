@@ -80,6 +80,13 @@ async def test_console_mode_scripted_stdin_takes_second_choice(monkeypatch, tmp_
     so this assertion proves real stdin-driven selection, not a fallback.
     """
     monkeypatch.setattr(sys, "stdin", io.StringIO("B\n"))
+    # `drive_engine` unconditionally bootstraps a direct-worker LLM
+    # provider (post-band-aid-rip: no attractor personality/session.spawn
+    # to fall back on) unless the coordinator advertises `session.spawn`
+    # -- this bare `object()` coordinator does not. `_GATE_DOT` has no
+    # box/LLM node, so a dummy credential satisfies the bootstrap without
+    # a real provider ever being invoked.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-console-gate")
     hooks = _RecordingHooks()
 
     outcome = await drive_engine(
@@ -106,6 +113,13 @@ async def test_console_mode_scripted_stdin_takes_second_choice(monkeypatch, tmp_
 async def test_console_mode_scripted_stdin_takes_first_choice(monkeypatch, tmp_path):
     """Complementary case: piped stdin "A\\n" routes through path_a."""
     monkeypatch.setattr(sys, "stdin", io.StringIO("A\n"))
+    # `drive_engine` unconditionally bootstraps a direct-worker LLM
+    # provider (post-band-aid-rip: no attractor personality/session.spawn
+    # to fall back on) unless the coordinator advertises `session.spawn`
+    # -- this bare `object()` coordinator does not. `_GATE_DOT` has no
+    # box/LLM node, so a dummy credential satisfies the bootstrap without
+    # a real provider ever being invoked.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-console-gate")
     hooks = _RecordingHooks()
 
     outcome = await drive_engine(
