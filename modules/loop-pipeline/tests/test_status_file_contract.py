@@ -499,3 +499,235 @@ def test_sf008e_skipped_is_a_recognized_value_not_malformed(tmp_path):
     assert result is None, (
         "a matching SKIPPED status.json must be a no-op, not malformed"
     )
+
+
+# ---------------------------------------------------------------------------
+# SF-009: spawn path -- backend injects the absolute status.json path into
+# the child's instruction (WAVE 4); a spawned child that writes a
+# contradicting status.json wins, exactly like the direct/tool paths above.
+# ---------------------------------------------------------------------------
+
+import re
+from types import SimpleNamespace
+
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
+
+
+class _SpawnStatusFileCoordinator:
+    """Minimal coordinator exposing ``session.spawn``, capturing the exact
+    instruction text the real ``AmplifierBackend._run_with_spawn`` builds.
+
+    ``on_spawn`` receives the full ``spawn_kwargs`` dict for every spawn
+    call, so it can parse the injected absolute status.json path out of
+    ``spawn_kwargs["instruction"]`` -- the WAVE 4 load-bearing behavior: a
+    spawned child (loop-agent OR loop-amplifier-agent) has no way to know
+    that path except by being told, in its instruction, by the backend.
+    """
+
+    def __init__(self, on_spawn) -> None:
+        self._on_spawn = on_spawn
+        self.session = SimpleNamespace()
+        # A non-loop-pipeline orchestrator module avoids backend.py's
+        # recursion guard (ValueError: "child would inherit or re-enter
+        # loop-pipeline") -- any real spawn worker name is fine here since
+        # the actual orchestrator is never invoked (spawn_fn is faked).
+        self.config: dict = {
+            "agents": {
+                "attractor-anthropic": {
+                    "session": {"orchestrator": {"module": "loop-agent"}}
+                }
+            }
+        }
+
+    def get_capability(self, name: str):
+        return self._spawn_fn if name == "session.spawn" else None
+
+    async def _spawn_fn(self, **kwargs):
+        return await self._on_spawn(kwargs)
+
+
+_STATUS_PATH_RE = re.compile(r"^\s{4}(/\S+status\.json)\s*$", re.MULTILINE)
+
+
+@pytest.mark.asyncio
+async def test_sf009_spawn_node_status_json_override_wins(tmp_path):
+    """SF-009 (WAVE 4): a SPAWNED child -- no in-process report_outcome call,
+    no metadata channel at all -- writes a contradicting status.json to the
+    EXACT absolute path the backend told it, extracted from its own
+    instruction text. The engine honors the file, exactly like the tool
+    (SF-001) and codergen-string (SF-002) paths.
+
+    RED without WAVE 4's `status_contract.py` injection: pre-WAVE-4 main
+    never puts an absolute status.json path into the spawn instruction at
+    all, so `_STATUS_PATH_RE` would find nothing and this test would fail
+    at the "path was injected" assertion below, before ever reaching the
+    override-wins assertions -- proving the injection is what makes a
+    spawned child's status-file contract possible in the first place.
+    """
+    logs_root = str(tmp_path / "logs")
+    seen_instructions: list[str] = []
+
+    async def on_spawn(kwargs):
+        instruction = kwargs["instruction"]
+        seen_instructions.append(instruction)
+        match = _STATUS_PATH_RE.search(instruction)
+        assert match is not None, (
+            "spawn instruction never carried an absolute status.json path -- "
+            f"status_contract.py injection is missing. instruction={instruction!r}"
+        )
+        status_path = match.group(1)
+        assert os.path.isabs(status_path)
+        assert status_path == os.path.abspath(
+            os.path.join(logs_root, "implement", "status.json")
+        )
+        os.makedirs(os.path.dirname(status_path), exist_ok=True)
+        with open(status_path, "w") as f:
+            json.dump(
+                {
+                    "outcome": "fail",
+                    "preferred_label": "Bad",
+                    "notes": "spawned child asserted failure via status.json",
+                },
+                f,
+            )
+        # A real spawned child with no in-process verdict tool: plain
+        # cheerful prose, empty metadata -- exactly what a hosted
+        # loop-agent/loop-amplifier-agent child yields when its only
+        # explicit channel is the status file.
+        return {
+            "output": "All done, looks great!",
+            "status": "success",
+            "session_id": "child-1",
+            "metadata": {},
+        }
+
+    backend = AmplifierBackend(
+        coordinator=_SpawnStatusFileCoordinator(on_spawn),
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    engine = _make_engine(_CODERGEN_DOT, backend=backend, logs_root=logs_root)
+    await engine.run()
+
+    outcome = engine.node_outcomes["implement"]
+    assert outcome.status == StageStatus.FAIL, (
+        f"status.json override must win over the spawn's own prose/lifecycle "
+        f"outcome, got {outcome.status!r}"
+    )
+    assert outcome.is_explicit is True
+    assert outcome.preferred_label == "Bad"
+    assert "bad" in engine.completed_nodes
+    assert "ok" not in engine.completed_nodes
+
+    # The instruction sent to the child must still carry the ORIGINAL prompt
+    # text too -- the contract is appended, never a replacement.
+    assert "do the thing" in seen_instructions[0]
+
+
+# ---------------------------------------------------------------------------
+# SF-010 / SF-011: compat window -- Sec 35's metadata.report_outcome keeps
+# working for the spawn path; when BOTH channels are present, status.json
+# (the strictly later, out-of-band, filesystem channel) wins (Sec 41).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sf010_spawn_metadata_report_outcome_alone_still_works(tmp_path):
+    """SF-011->naming note: this is the COMPAT-WINDOW half -- a spawned
+    child using ONLY the OLD Sec 35 ``metadata.report_outcome`` channel (no
+    status.json at all) must still be honored exactly as before. WAVE 4
+    retcons the TAUGHT/preferred channel, not the mechanism: Sec 35 keeps
+    functioning through the deprecation window (EXTENSIONS.md Sec 35's
+    dated RETCON note).
+    """
+    logs_root = str(tmp_path / "logs")
+
+    async def on_spawn(kwargs):
+        # No status.json written at all -- the ONLY signal is the
+        # metadata.report_outcome envelope, exactly like a pre-WAVE-4
+        # loop-agent child that called the report_outcome tool mid-turn.
+        return {
+            "output": "",
+            "status": "success",
+            "session_id": "child-1",
+            "metadata": {
+                "report_outcome": {
+                    "status": "success",
+                    "preferred_label": "OK",
+                    "notes": "legacy report_outcome verdict, no status.json",
+                }
+            },
+        }
+
+    backend = AmplifierBackend(
+        coordinator=_SpawnStatusFileCoordinator(on_spawn),
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    engine = _make_engine(_CODERGEN_DOT, backend=backend, logs_root=logs_root)
+    await engine.run()
+
+    outcome = engine.node_outcomes["implement"]
+    assert outcome.status == StageStatus.SUCCESS
+    assert outcome.is_explicit is True
+    assert outcome.preferred_label == "OK"
+    assert "ok" in engine.completed_nodes
+    assert "bad" not in engine.completed_nodes
+
+
+@pytest.mark.asyncio
+async def test_sf011_spawn_both_channels_present_status_json_wins(tmp_path):
+    """SF-041 precedence pin, spawn path: a spawned child reports SUCCESS via
+    the OLD ``metadata.report_outcome`` channel (Sec 35) mid-turn, but its
+    LATER, out-of-band status.json write (Sec 4.5 / Appendix C, read via
+    Sec 41) contradicts it with FAIL. Per EXTENSIONS.md Sec 41's documented
+    ordering ("a report_outcome verdict is already folded into
+    handler_outcome... a node-written status.json that still diverges at
+    that point is a STRICTLY LATER, out-of-band correction, and wins"),
+    status.json must win -- pinning that this ordering already holds (or is
+    made to hold) for the spawn path specifically, not just the direct/tool
+    paths SF-001/SF-002 already covered.
+    """
+    logs_root = str(tmp_path / "logs")
+
+    async def on_spawn(kwargs):
+        if kwargs.get("instruction") is None:
+            return {"output": "downstream", "status": "success", "metadata": {}}
+        status_path = os.path.join(logs_root, "implement", "status.json")
+        os.makedirs(os.path.dirname(status_path), exist_ok=True)
+        with open(status_path, "w") as f:
+            json.dump(
+                {
+                    "outcome": "fail",
+                    "preferred_label": "Bad",
+                    "notes": "later, out-of-band status.json correction",
+                },
+                f,
+            )
+        return {
+            "output": "",
+            "status": "success",
+            "session_id": "child-1",
+            "metadata": {
+                "report_outcome": {
+                    "status": "success",
+                    "preferred_label": "OK",
+                    "notes": "earlier, in-turn report_outcome call",
+                }
+            },
+        }
+
+    backend = AmplifierBackend(
+        coordinator=_SpawnStatusFileCoordinator(on_spawn),
+        profiles={"anthropic": "attractor-anthropic"},
+    )
+    engine = _make_engine(_CODERGEN_DOT, backend=backend, logs_root=logs_root)
+    await engine.run()
+
+    outcome = engine.node_outcomes["implement"]
+    assert outcome.status == StageStatus.FAIL, (
+        "status.json (Sec 41, strictly-later out-of-band channel) must win "
+        f"over an earlier metadata.report_outcome verdict, got {outcome.status!r}"
+    )
+    assert outcome.is_explicit is True
+    assert outcome.preferred_label == "Bad"
+    assert "bad" in engine.completed_nodes
+    assert "ok" not in engine.completed_nodes

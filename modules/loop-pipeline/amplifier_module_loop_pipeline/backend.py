@@ -60,6 +60,7 @@ from .fidelity import (
 from .graph import Edge, Graph, Node, resolve_bool_attr
 from .outcome import Outcome, StageStatus
 from .pipeline_events import MODEL_RESOLVED
+from .status_contract import build_status_file_contract, current_node_status_path
 
 # NOTE: `.workers` is imported LAZILY inside `AmplifierBackend.__init__`
 # (not here at module level). `workers/direct_worker.py` imports several
@@ -638,10 +639,34 @@ class AmplifierBackend:
         )
         user_instructions_override = node_user_instructions or ctx_user_instructions
 
+        # WAVE 4 (status_contract.py): teach the spawned child the exact
+        # absolute status.json path for THIS node, per spec Sec 4.5 /
+        # Appendix C's status-file contract -- the spec-native, taught
+        # channel for a spawned worker's explicit outcome (maintainer ruling
+        # 2026-08-29 retconning report_outcome; see EXTENSIONS.md Sec 35's
+        # dated RETCON note). Applies uniformly to every spawn-capable
+        # worker (loop-agent, loop-amplifier-agent) since both receive
+        # whatever instruction text is placed in spawn_kwargs below -- one
+        # injection point teaches both. `current_node_status_path` is set by
+        # `handlers/codergen.py` around this call and is always an absolute
+        # path; `None` here means there is no stage directory for this
+        # invocation (e.g. a unit test calling the backend directly without
+        # going through the handler) -- in that case nothing is injected,
+        # preserving prior behavior exactly. The transcript-carried
+        # `instruction` (used by `_append_to_transcript` below) is left
+        # UNCHANGED -- the per-node absolute path has no business being
+        # replayed into a later node's full-fidelity history.
+        _status_path = current_node_status_path.get()
+        spawn_instruction = (
+            instruction + build_status_file_contract(_status_path)
+            if _status_path is not None
+            else instruction
+        )
+
         # Build spawn kwargs matching the CLI spawn_capability signature
         spawn_kwargs: dict[str, Any] = {
             "agent_name": profile_name,
-            "instruction": instruction,
+            "instruction": spawn_instruction,
             "parent_session": parent_session,
             "agent_configs": agent_configs,
             # orchestrator_config: pass only non-None values so that loop-agent's

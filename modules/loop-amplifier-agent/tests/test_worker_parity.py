@@ -89,7 +89,7 @@ class LoopAmplifierAgentHarness:
         # history (support#497 -- captured by FakeSession.execute() reading
         # the hosted context's get_messages_for_request()) plus the final
         # prompt text the fake session actually saw (carries user_instructions
-        # + the report_outcome nudge, per _build_prompt).
+        # only, per _build_prompt -- WAVE 4 retired the report_outcome nudge).
         session = captured["session"]
         sent: list[dict[str, Any]] = list(session.messages_sent_to_provider or [])
         if session.prompt_seen is not None:

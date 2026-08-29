@@ -55,7 +55,6 @@ async def test_prepare_bundle_for_session_called_with_resolved_workspace(
     captured = _install_fake_deps(
         monkeypatch,
         reply_text="",
-        outcome_to_set={"status": "success"},
         resolved_workspace="fallback-slug",
     )
 
@@ -81,9 +80,7 @@ async def test_prepare_bundle_for_session_honors_explicit_workspace_and_host_con
     """orchestrator_config.workspace / .host_config (v2, optional/advanced)
     are forwarded verbatim -- the CLI's --workspace / --config analogues.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
     host_config = {"mcp": {"configPath": "/tmp/mcp.json"}}
 
     orchestrator = laa.AmplifierAgentOrchestrator(
@@ -116,7 +113,6 @@ async def test_session_spawn_registered_and_forwards_to_delegate(
     captured = _install_fake_deps(
         monkeypatch,
         reply_text="",
-        outcome_to_set={"status": "success"},
         agents_mount_plan={
             "explorer": {"name": "explorer", "source_path": "/fake/explorer.md"}
         },
@@ -158,9 +154,7 @@ async def test_session_spawn_lets_caller_override_agent_configs(
     """A caller-supplied ``agent_configs`` kwarg is NOT clobbered (mirrors
     ``kw.setdefault(...)`` in both this module and the vendored handler).
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
     await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
@@ -189,9 +183,7 @@ async def test_approval_defaults_to_accept(monkeypatch: pytest.MonkeyPatch):
     worker parity with loop-agent, which has no approval system at all (see
     README's "Approvals" section for the full rationale).
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -207,9 +199,7 @@ async def test_approval_policy_accept_forwards_accept(monkeypatch: pytest.Monkey
     WireApprovalProvider/ctx.approval.request seam (not a bypassed hardcoded
     stub).
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(
         coordinator=None, config={"approval_policy": "accept"}
@@ -226,9 +216,7 @@ async def test_approval_policy_deny_forwards_decline(monkeypatch: pytest.MonkeyP
     real decline through the REAL WireApprovalProvider/ctx.approval.request
     seam when a pipeline author explicitly opts in.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(
         coordinator=None, config={"approval_policy": "deny"}
@@ -250,7 +238,7 @@ async def test_approval_policy_accept_logs_at_info_once(
     -this choice, it is the expected one (worker parity with loop-agent,
     which has no approval system at all).
     """
-    _install_fake_deps(monkeypatch, reply_text="", outcome_to_set={"status": "success"})
+    _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -274,7 +262,7 @@ async def test_approval_policy_deny_logs_at_warning_once(
     WARNING, but still exactly one line per ``execute()``, not per-turn
     spam.
     """
-    _install_fake_deps(monkeypatch, reply_text="", outcome_to_set={"status": "success"})
+    _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(
         coordinator=None, config={"approval_policy": "deny"}
@@ -302,9 +290,7 @@ async def test_approval_policy_invalid_value_warns_and_uses_default(
     uses the default ("accept") -- the graph's own evidence gates and budget
     walls are the safety net for a bad work product, not a bricked worker.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(
         coordinator=None, config={"approval_policy": "sure-why-not"}
@@ -334,9 +320,7 @@ async def test_provider_preferences_honored_when_llm_provider_absent(
     ``_resolve_parent_provider_preference``'s docstring for why that's the
     real extraction seam) wins outright, provider AND model.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
     parent_coordinator = FakeSessionCoordinator()
     parent_coordinator.config = {
         "providers": [
@@ -365,9 +349,7 @@ async def test_explicit_llm_provider_wins_selection_and_honors_matching_model(
     """Explicit llm_provider selects the provider; the parent preference's
     model is honored because it names that SAME provider.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
     parent_coordinator = FakeSessionCoordinator()
     parent_coordinator.config = {
         "providers": [
@@ -401,9 +383,7 @@ async def test_mismatched_parent_preference_model_is_dropped(
     model id for it). Provider selection still wins; the model is simply
     dropped, matching v1's existing (correct) no-model-override behavior.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
     parent_coordinator = FakeSessionCoordinator()
     parent_coordinator.config = {
         "providers": [
@@ -435,9 +415,7 @@ async def test_no_parent_preference_and_no_llm_provider_falls_back_to_default(
     model override -- the pre-existing v1 default-provider behavior is
     unaffected by gap 4's new resolution path.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
     parent_coordinator = FakeSessionCoordinator()  # config stays {}
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
@@ -469,9 +447,7 @@ async def test_hooks_default_fields_stamped_with_session_and_turn_id(
     longer dropped by the context-intelligence LoggingHandler's
     empty-session-id check.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -502,9 +478,7 @@ async def test_parent_history_replayed_into_hosted_session_context(
     mounted context via ``coordinator.get("context").set_messages(history)``
     BEFORE the turn executes.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="ok")
 
     history = [
         {"role": "user", "content": "The secret code is ZEBRA-42."},
@@ -541,9 +515,7 @@ async def test_no_parent_context_replays_nothing(
     fidelity case) must not call ``set_messages`` at all: nothing to replay,
     and the hosted session starts clean.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="ok")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -562,9 +534,7 @@ async def test_empty_parent_context_replays_nothing(
     ``get_messages()`` returns ``[]``, which must NOT trigger a
     ``set_messages`` replay onto the hosted session.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="ok")
 
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
@@ -609,9 +579,7 @@ async def test_context_get_messages_failure_still_emits_incomplete(
     protects every other exit path, and never fabricates a verdict on the way
     out.
     """
-    _install_fake_deps(
-        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
-    )
+    _install_fake_deps(monkeypatch, reply_text="ok")
     orchestrator = laa.AmplifierAgentOrchestrator(coordinator=None, config={})
     hooks = CapturingHooks()
 
@@ -635,9 +603,7 @@ async def test_hosted_context_without_set_messages_warns_and_continues(
     library's own is_resumed guard, and this file's convention of a caplog test
     for every warn-and-continue branch.
     """
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="ok")
     # Hosted session's mounted context has no set_messages (set before execute).
     captured["session"].coordinator.context_module = _ContextNoSetMessages()
 
@@ -705,9 +671,7 @@ async def test_history_flows_through_the_real_run_orchestrator_boundary(
     """
     from amplifier_core._session_exec import run_orchestrator
 
-    captured = _install_fake_deps(
-        monkeypatch, reply_text="ok", outcome_to_set={"status": "success"}
-    )
+    captured = _install_fake_deps(monkeypatch, reply_text="ok")
 
     history = [
         {"role": "user", "content": "First instruction"},

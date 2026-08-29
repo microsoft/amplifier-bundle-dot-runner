@@ -15,13 +15,17 @@ amplifier-agent Engine, its real ``context-simple`` mount, and a real,
 credentialed provider turn.
 
 NON-DETERMINISM NOTE: live-model output varies. The assertion matches the
-secret case-insensitively across BOTH the reply text AND the report_outcome
-payload, and the prompt asks the model to restate the code verbatim in both
-places, to minimize false reds. A rare miss (the model recalls the fact but
-paraphrases -- "the code you gave me" -- without restating the literal token)
-is a prompting artifact, NOT a mechanism regression: re-run before treating it
-as one. The hermetic Gap-6 tests are the deterministic guarantee; this test is
-the live corroboration that the seam actually reaches the model.
+secret case-insensitively in the reply text, and the prompt asks the model to
+restate the code verbatim as its entire reply, to minimize false reds. A rare
+miss (the model recalls the fact but paraphrases -- "the code you gave me" --
+without restating the literal token) is a prompting artifact, NOT a mechanism
+regression: re-run before treating it as one. The hermetic Gap-6 tests are the
+deterministic guarantee; this test is the live corroboration that the seam
+actually reaches the model.
+
+WAVE 4 (ruling 5): this test no longer asks the model to call
+``report_outcome`` -- this module doesn't mount that reach-in tool anymore,
+so there would be nothing to call. The assertion reads the reply text alone.
 
 Gated exactly like ``test_spawn_report_outcome_transport.py``:
   * ``importorskip("amplifier_agent_lib")`` -- skips when the peer lib is absent.
@@ -34,7 +38,6 @@ import os
 from unittest.mock import MagicMock
 
 import pytest
-
 from amplifier_module_loop_amplifier_agent import AmplifierAgentOrchestrator
 
 from ._fakes import CapturingHooks, FakeContextManager
@@ -81,8 +84,7 @@ async def test_seeded_history_is_recalled_by_the_real_hosted_model():
     orch = AmplifierAgentOrchestrator(coordinator=MagicMock(), config={})
     reply = await orch.execute(
         "Earlier in this conversation I gave you a secret code. Restate that "
-        "exact code VERBATIM now as your entire reply, then call report_outcome "
-        "with status='success' and the exact code in the notes field.",
+        "exact code VERBATIM now as your entire reply, and nothing else.",
         context,
         {},
         {},
@@ -90,10 +92,12 @@ async def test_seeded_history_is_recalled_by_the_real_hosted_model():
         coordinator=None,
     )
 
-    outcome = hooks.completion.get("metadata", {}).get("report_outcome", {})
-    haystack = f"{reply} {outcome}".upper()
-    assert _SECRET.upper() in haystack, (
+    # WAVE 4 (ruling 5): metadata never carries a fabricated report_outcome --
+    # this module no longer mounts that reach-in tool.
+    assert hooks.completion.get("metadata", {}) == {}
+
+    assert _SECRET.upper() in reply.upper(), (
         f"the hosted model did not recall the seeded secret {_SECRET!r} -- "
         f"support#497: parent-turn history did not reach the model. "
-        f"reply={reply!r} outcome={outcome!r}"
+        f"reply={reply!r}"
     )

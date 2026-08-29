@@ -48,8 +48,11 @@ Search file contents using regex patterns. Supports output modes: `content` (mat
 ### glob
 Find files by name pattern. Results are sorted by modification time (newest first).
 
-### report_outcome
-When you have completed the task (or determined you cannot), report the outcome with a status and notes.
+### Status File Contract
+When you have finished the task, the authoritative way to report your outcome is the status-file contract (spec Sec 4.5 / Appendix C): if your task instructions gave you an absolute status.json path, write a JSON object there -- using your normal file-write tool, not a special tool call -- shaped like `{"outcome": "success|fail|partial_success|retry", "preferred_label": "...", "suggested_next_ids": [...], "context_updates": {...}, "notes": "..."}`. Only `outcome` is required. Write it once, when you are truly finished, and let it reflect your real verdict.
+
+### report_outcome (legacy, still honored)
+A `report_outcome` tool may also be available. If so, it still works, but the status-file contract above is the current, taught channel -- prefer it when your instructions gave you a status.json path.
 
 ## Best Practices
 

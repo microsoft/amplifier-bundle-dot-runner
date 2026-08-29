@@ -15,12 +15,12 @@ docs) lives in the repos that consume this one.
 | Path | What it is |
 |---|---|
 | `bundle.md` | Root bundle (`dot-runner`) — includes the `dot-runner-core` behavior. |
-| `behaviors/dot-runner.yaml` | Engine partial (`dot-runner-core`) — mounts the `report_outcome` tool. |
+| `behaviors/dot-runner.yaml` | Engine partial (`dot-runner-core`) — mounts the `report_outcome` tool (compat channel; the taught, spec-native verdict channel is now `status.json` — see `specs/EXTENSIONS.md` Sec 35's WAVE 4 RETCON note). |
 | `modules/loop-pipeline` | **The engine.** DOT parser, validator, graph execution engine, handler dispatch. |
 | `modules/pipeline-runner` | The `dot-runner` CLI (`run` / `resume` / `doctor` / `trace` / `lint`) plus the `drive_engine` / `run_pipeline` library surface. The `attractor` command has been removed entirely -- see "Getting started" below. |
 | `modules/unified-llm-client` | Provider-agnostic LLM client — a faithful implementation of the Attractor Unified LLM Client spec. |
 | `modules/remote-source` | Content-addressed `git+https://` fetcher (Layer A), used by `loop-pipeline[remote]` to materialize remote `.dot` graphs. |
-| `modules/tool-report-outcome` | The `report_outcome` tool module — lets a child agent set a structured pipeline verdict. |
+| `modules/tool-report-outcome` | The `report_outcome` tool module — lets a child agent set a structured pipeline verdict. Compat channel (WAVE 4): `status.json` (spec Sec 4.5 / Appendix C) is now the taught way; this module is unchanged, functional through a deprecation window. |
 | `modules/loop-agent` | The `coding-agent-loop` nlspec implementation — a general worker (registerable in the worker registry), not attractor-specific. |
 | `modules/hooks-pipeline-observability` | State aggregator, status bar, and event persistence hooks for pipeline runs. |
 | `modules/hooks-pipeline-progress` | Progress display hook. |

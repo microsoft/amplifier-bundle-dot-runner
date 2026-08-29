@@ -21,6 +21,7 @@ from ..context import PipelineContext
 from ..feedback import ensure_feedback_placeholder
 from ..graph import Graph, Node, resolve_bool_attr
 from ..outcome import Outcome, StageStatus
+from ..status_contract import current_node_status_path
 from ..status_file import read_status_override
 from ..transforms import expand_goal_variable, expand_params
 from ..worker_observability import current_worker_sessions_dir
@@ -144,12 +145,24 @@ class CodergenHandler:
             sessions_token = current_worker_sessions_dir.set(
                 os.path.join(stage_dir, "sessions")
             )
+            # WAVE 4 (status_contract.py): tell a SPAWNED worker the exact
+            # absolute status.json path for this node -- spec Sec 4.5 /
+            # Appendix C's "external tools or agents can write status.json"
+            # channel, but a spawned child has no way to discover the path
+            # on its own. Always absolute (os.path.abspath), regardless of
+            # whether `logs_root` itself was configured as a relative path
+            # -- a spawned child's cwd is not guaranteed to match the
+            # engine's, so a relative guess would be silently wrong.
+            status_path_token = current_node_status_path.set(
+                os.path.abspath(os.path.join(stage_dir, "status.json"))
+            )
             try:
                 result = await self._backend.run(
                     node, prompt, context, incoming_edge=None, graph=graph
                 )
             finally:
                 current_worker_sessions_dir.reset(sessions_token)
+                current_node_status_path.reset(status_path_token)
             if isinstance(result, Outcome):
                 # EXTENSIONS.md §26: write response.md from the full text carried
                 # on the Outcome (set by _parse_outcome before any truncation).

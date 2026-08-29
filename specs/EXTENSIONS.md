@@ -2273,6 +2273,55 @@ This is additive at the spawn boundary:
   side would have honored one. It is the test that goes red if the transport is removed.
 
 ---
+### RETCON (2026-08-29, maintainer ruling, WAVE 4) -- superseded by the spec-native `status.json` channel
+
+**Ruling:** the spec's own channels -- the returned `Outcome`/`str`, the `status.json` audit-trail
+file (Sec 4.5 / Appendix C, Sec 41 below), process exit codes, and plain files -- are RETCONNED as
+THE taught and implemented way for a worker (including a SPAWNED child) to deliver an explicit
+outcome. `report_outcome` (this section) is not deleted, but it is no longer the primary, taught
+mechanism; it is a compatibility channel functional through a deprecation window.
+
+**What changed (WAVE 4, `feat/status-json-worker-transport`):**
+
+- `amplifier_module_loop_pipeline.status_contract` (new) injects the ABSOLUTE path to a node's
+  stage-directory `status.json` -- plus the Appendix C envelope -- directly into the instruction
+  handed to every SPAWN-capable worker (`backend.py::_run_with_spawn`), via a `ContextVar` mirroring
+  `worker_observability.py`'s existing seam so the `CodergenBackend` protocol itself is untouched.
+  This is the missing piece that makes Sec 41's status-file contract reachable by a spawned child in
+  the first place: a spawned process has no way to discover the path unless told.
+- `modules/loop-amplifier-agent` (ruling 5): its `ReportOutcomeTool` `coordinator.mount("tools", ...)`
+  reach-in onto the HOSTED amplifier-agent's per-turn coordinator is DELETED, along with the
+  `report_outcome`-nudge appended to every prompt. Reaching into a different agent runtime's
+  internals to mount a tool it never declared is exactly the internals-reach-in ruling 5 forbids --
+  even though the mechanism worked. The hosted amplifier-agent now writes `status.json` with its OWN
+  file-editing tools, per the injected instruction; this adapter's own seam shrinks to spawning,
+  handing over the (contract-carrying) prompt, and returning the reply -- files and `status.json` are
+  the channel, not a tool call this module polices. `metadata.report_outcome` from this adapter is now
+  always empty (never fabricated) -- see `tests/test_orchestrator.py::
+  test_envelope_shape_never_fabricates_report_outcome`.
+- `loop-agent`'s OWN `report_outcome` mechanism (this section, above) is UNCHANGED and keeps working
+  -- it is the real, bundled `tool-report-outcome` tool, not a reach-in, and this ruling does not
+  retire it during the deprecation window. Its taught system prompts
+  (`modules/loop-agent/amplifier_module_loop_agent/prompts/system-{anthropic,gemini,openai}.md`) now
+  lead with the status-file contract; `report_outcome` is documented immediately after as
+  "legacy, still honored."
+- The `direct` worker (in-process tool loop) already satisfied the spec's FIRST channel before WAVE 4
+  (it returns an `Outcome` in-process); it is functionally unchanged here. Its own bridged
+  `tool-report-outcome` mount is left in place mechanically (nothing else in this change depends on
+  removing it) -- ledgered for a follow-up, not touched now.
+
+**Precedence, restated for the spawn path specifically (Sec 41 already governs this generically, now
+pinned for spawn too):** `status.json` (filesystem, spec-native, outermost, last-mile) wins over a
+`metadata.report_outcome` verdict folded in earlier, in the same turn -- see
+`modules/loop-pipeline/tests/test_status_file_contract.py::test_sf011_spawn_both_channels_present_status_json_wins`.
+A spawned child using ONLY the old `metadata.report_outcome` channel (no `status.json` at all) is
+still honored unchanged -- see
+`test_sf010_spawn_metadata_report_outcome_alone_still_works` in the same file.
+
+**Removal:** tracked as a follow-up, not done here. `modules/tool-report-outcome` and `loop-agent`'s
+own mounting of it are NOT deleted by this RETCON -- only `loop-amplifier-agent`'s reach-in copy is.
+
+---
 
 ## 36. Startup Provider Preflight and No-Fallback Profile Resolution (Fail-Loud)
 
@@ -2914,6 +2963,17 @@ writers) were fixed to match existing decided policy, not worked around.
   the read side, passes with it), goal_gate interaction (SF-006/SF-007), and unit-level
   `read_status_override()` coverage
 - `specs/conformance/attractor-matrix.yaml` — row `ATX-M-041`
+
+### WAVE 4 cross-reference (2026-08-29)
+
+The read side described in this section was, before WAVE 4, reachable only by a node/tool that
+already knew its own stage directory (a `tool_command`'s own `$PWD`-relative write, or the
+CodergenHandler's own audit-trail write). WAVE 4 adds the missing WRITE-side reachability for a
+SPAWNED child: `amplifier_module_loop_pipeline.status_contract` tells the child the exact absolute
+path, so this section's `read_status_override` now has a spawned-agent producer to read back from,
+not just a tool/direct-worker one. See Sec 35's dated RETCON note above for the full account and
+`modules/loop-pipeline/tests/test_status_file_contract.py`'s `test_sf009_spawn_node_status_json_override_wins`
+(and the `SF-010`/`SF-011` compat/precedence pins) for the spawn-path proof.
 
 ---
 

@@ -246,6 +246,28 @@ are the current state; these are the reasoning behind it.
 
 **Disposition: ALIGN** (this is conformance restoration, not a new divergence). Ledgered as cross-cutting row ATX-15 below; full narrative in `specs/EXTENSIONS.md` Sec 41; conformance-matrix row `ATX-M-041` in `specs/conformance/attractor-matrix.yaml`. RED-proof + goal_gate-interaction tests: `modules/loop-pipeline/tests/test_status_file_contract.py` (13 tests). Full `loop-pipeline` suite: 2206 passed, 223 skipped, 0 failed (unchanged from before this change other than the 13 new tests).
 
+### 2026-08-29 -- WAVE 4: spawned-worker status.json transport; report_outcome RETCONNED to a compat channel
+
+**Maintainer ruling:** the spec's own channels (returned `Outcome`, `status.json`, exit codes,
+files) are the taught AND implemented way for a worker -- including a SPAWNED child -- to deliver
+an explicit outcome. `amplifier_module_loop_pipeline.status_contract` injects the exact absolute
+`status.json` path (plus the Appendix C envelope) into every spawn-capable worker's instruction
+(`backend.py::_run_with_spawn`), closing the reachability gap ATX-15/Sec 41 left for a spawned
+child specifically (it had no way to discover its own stage directory). `modules/loop-amplifier-agent`'s
+`ReportOutcomeTool` `coordinator.mount` reach-in onto the hosted amplifier-agent's coordinator is
+DELETED (separate maintainer ruling: internals-reach-in across agent runtimes is not sanctioned,
+even where it worked) -- the hosted agent now writes `status.json` with its own file tools instead.
+
+**Disposition: ALIGN** (conformance restoration/extension, not a new divergence -- same disposition
+as ATX-15 above). `report_outcome` (Sec 35) is NOT deleted -- it is a compatibility channel,
+functional through a deprecation window; both channels are read, `status.json` wins when they
+diverge (Sec 41's pre-existing precedence, now pinned for the spawn path specifically). Full
+narrative + dated RETCON note: `specs/EXTENSIONS.md` Sec 35 and Sec 41's WAVE 4 cross-reference.
+Tests: `modules/loop-pipeline/tests/test_status_file_contract.py` (`SF-009` spawn RED-proof,
+`SF-010`/`SF-011` compat-window + precedence pins), `modules/loop-amplifier-agent/tests/test_orchestrator.py`
+(`test_envelope_shape_never_fabricates_report_outcome`), `modules/loop-amplifier-agent/tests/test_spawn_report_outcome_transport.py`
+(live, real-network proof the hosted agent writes the file via its own tools).
+
 ### 2026-08-26 — CAL-10 DONE: tool:post hook modifications (truncation) reach the LLM again (amplifier-support#485)
 
 - **CAL-10 NEW → DONE — ALIGN.** §5.1's MUST ("tool output exceeds the configured limit, it MUST be

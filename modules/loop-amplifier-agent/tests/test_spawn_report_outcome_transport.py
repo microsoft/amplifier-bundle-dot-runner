@@ -1,20 +1,28 @@
-"""The child->parent `report_outcome` verdict transport, amplifier-agent-backed.
+"""The child->parent verdict transport, amplifier-agent-backed (WAVE 4).
 
 Mirrors ``modules/pipeline-runner/tests/test_spawn_report_outcome_transport.py``
 (issue #285's transport test) with one substitution: the PRODUCER is this
 module's ``AmplifierAgentOrchestrator`` (hosting a REAL amplifier-agent
 Engine) instead of ``amplifier_module_loop_agent.AgentOrchestrator``.
 
-All three parties are the REAL implementations:
+WAVE 4 (maintainer ruling 2026-08-29, ruling 5): this module no longer
+mounts a ``report_outcome`` reach-in tool onto the hosted agent's
+coordinator. The channel this test now proves end-to-end, with all REAL
+parties, is the spec's own status-file contract (canonical Sec 4.5 /
+Appendix C):
 
-  * PRODUCER  -- ``amplifier_module_loop_amplifier_agent.AmplifierAgentOrchestrator``,
+  * PRODUCER -- ``amplifier_module_loop_amplifier_agent.AmplifierAgentOrchestrator``,
     running a REAL ``amplifier_agent_lib.engine.Engine`` turn;
-  * VERDICT TOOL -- ``amplifier_module_tool_report_outcome.ReportOutcomeTool``,
-    mounted onto the live per-turn coordinator (the mechanism this whole
-    module exists to prove -- see the package docstring);
-  * CONSUMER  -- ``amplifier_module_loop_pipeline.backend.AmplifierBackend``,
-    whose ``_outcome_from_spawn_result`` is the only place a spawn-path
-    ``is_explicit=True`` outcome can come from.
+  * CONTRACT -- ``amplifier_module_loop_pipeline.status_contract.
+    build_status_file_contract`` renders the exact same contract block
+    ``backend.py`` injects into a real spawn's instruction;
+  * VERDICT CHANNEL -- the hosted amplifier-agent's OWN file-editing tools
+    (no mounting required -- writing a file is not a foreign capability);
+  * CONSUMER -- plain ``os.path`` + ``json`` reads of the real file the
+    turn actually wrote, standing in for
+    ``handlers/codergen.py``'s ``read_status_override`` (which runs in the
+    PARENT process, outside this adapter, and is proven separately by
+    pipeline-runner's spawn e2e fixture).
 
 Unlike loop-agent (whose ``AgentSession`` accepts an injected ``provider``
 object -- a clean seam for a scripted, no-network double), amplifier-agent's
@@ -29,26 +37,26 @@ offline one:
   * skip-if-no-provider-key -- skips (not fails) in CI, which carries no
     secrets, so this test never blocks the pipeline.
 
-The hermetic equivalent of this same transport claim (real orchestrator,
-real tool, real backend reader, DOUBLED amplifier-agent Engine/bundle
-machinery) lives in ``tests/test_orchestrator.py::
-test_envelope_shape_matches_backend_reader`` and runs unconditionally, in
-CI, on every push.
+The hermetic equivalent of this same "never fabricate a verdict" claim
+(real orchestrator, DOUBLED amplifier-agent Engine/bundle machinery) lives
+in ``tests/test_orchestrator.py::
+test_envelope_shape_never_fabricates_report_outcome`` and runs
+unconditionally, in CI, on every push.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
-from typing import Any, ClassVar
+import tempfile
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from amplifier_module_loop_pipeline.backend import AmplifierBackend
-from amplifier_module_loop_pipeline.context import PipelineContext
-from amplifier_module_loop_pipeline.graph import Node
-from amplifier_module_loop_pipeline.outcome import StageStatus
-
 from amplifier_module_loop_amplifier_agent import AmplifierAgentOrchestrator
+from amplifier_module_loop_pipeline.status_contract import build_status_file_contract
 
 from ._fakes import FakeContextManager
 
@@ -113,61 +121,34 @@ async def _run_child(prompt: str) -> dict[str, Any]:
     }
 
 
-class _Session:
-    config: ClassVar[dict[str, Any]] = {}
-
-
-class _Coordinator:
-    """Minimal coordinator exposing the `session.spawn` capability."""
-
-    def __init__(self, spawn_result: dict[str, Any]) -> None:
-        self._spawn_result = spawn_result
-        self.session = _Session()
-        self.config: dict[str, Any] = {
-            "agents": {
-                "attractor-anthropic": {
-                    "session": {"orchestrator": {"module": "loop-amplifier-agent"}}
-                }
-            }
-        }
-
-    def get_capability(self, name: str):
-        return self._spawn_fn if name == "session.spawn" else None
-
-    async def _spawn_fn(self, **kwargs: Any) -> dict[str, Any]:
-        return self._spawn_result
-
-
-async def _parent_outcome(spawn_result: dict[str, Any], **node_attrs: Any):
-    backend = AmplifierBackend(
-        coordinator=_Coordinator(spawn_result),
-        profiles={"anthropic": "attractor-anthropic"},
-    )
-    node = Node(
-        id="intake",
-        prompt="Do the work",
-        attrs={"llm_provider": "anthropic", **node_attrs},
-    )
-    return await backend.run(node, "Do the work", PipelineContext())
-
-
 @pytest.mark.asyncio
-async def test_real_amplifier_agent_verdict_survives_the_spawn_boundary():
-    """A real amplifier-agent turn's report_outcome call reaches the parent
-    as an EXPLICIT outcome -- the amplifier-agent-backed analogue of
-    pipeline-runner's #285 regression test.
+async def test_real_amplifier_agent_writes_status_file_via_its_own_tools():
+    """WAVE 4 (ruling 5): the hosted amplifier-agent's explicit verdict now
+    travels via the status-file contract (canonical Sec 4.5 / Appendix C),
+    written with the agent's OWN file-editing tools -- NOT a mounted
+    report_outcome reach-in (retired). This is the amplifier-agent-backed,
+    real-network analogue of pipeline-runner's #285 regression test, ported
+    to the new channel: a real turn, given the exact contract block
+    ``backend.py`` injects for every spawn worker, actually writes the file.
     """
-    result = await _run_child(
-        "Call the report_outcome tool right now with status='success' and "
-        "notes='amplifier-agent transport probe ok'. Call exactly one tool "
-        "and nothing else -- no other tool calls, no exploration, no file "
-        "reads, no shell commands."
-    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        status_path = os.path.join(tmpdir, "status.json")
+        prompt = (
+            "Do a trivial task: just confirm you are ready.\n"
+            + build_status_file_contract(status_path)
+        )
 
-    assert result["metadata"]["report_outcome"]["status"] == "success"
+        result = await _run_child(prompt)
 
-    outcome = await _parent_outcome(result)
+        # WAVE 4: metadata never carries a fabricated report_outcome -- this
+        # module no longer mounts that reach-in tool (ruling 5).
+        assert result["metadata"] == {}
 
-    assert outcome.is_explicit is True
-    assert outcome.status is StageStatus.SUCCESS
-    assert outcome.notes == "amplifier-agent transport probe ok"
+        assert os.path.exists(status_path), (
+            "the hosted amplifier-agent never wrote the status.json path "
+            "it was given in its own instructions -- the status-file "
+            "contract channel did not reach the model, or it has no "
+            "usable file-write tool"
+        )
+        data = json.loads(await asyncio.to_thread(Path(status_path).read_text))
+        assert data["outcome"] in {"success", "partial_success", "retry", "fail"}
