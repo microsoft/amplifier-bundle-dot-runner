@@ -21,6 +21,13 @@ docs) lives in the repos that consume this one.
 | `modules/unified-llm-client` | Provider-agnostic LLM client — a faithful implementation of the Attractor Unified LLM Client spec. |
 | `modules/remote-source` | Content-addressed `git+https://` fetcher (Layer A), used by `loop-pipeline[remote]` to materialize remote `.dot` graphs. |
 | `modules/tool-report-outcome` | The `report_outcome` tool module — lets a child agent set a structured pipeline verdict. |
+| `modules/loop-agent` | The `coding-agent-loop` nlspec implementation — a general worker (registerable in the worker registry), not attractor-specific. |
+| `modules/hooks-pipeline-observability` | State aggregator, status bar, and event persistence hooks for pipeline runs. |
+| `modules/hooks-pipeline-progress` | Progress display hook. |
+| `modules/hooks-tool-truncation` | Tool-output truncation hook for context management. |
+| `modules/tool-apply-patch` | v4a unified-diff patch-apply tool module. |
+| `modules/tool-dashboard-query` | Dashboard HTTP query tool module. |
+| `modules/tool-pipeline-status` | Pipeline execution state query tool module. |
 | `specs/canonical/` | Byte-pinned vendored copies of the upstream `strongdm/attractor`, `coding-agent-loop`, and `unified-llm` nlspecs. |
 | `specs/EXTENSIONS.md` | Append-only ledger of every place this implementation extends or deviates from the canonical specs. |
 | `specs/conformance/attractor-matrix.yaml` | The conformance matrix: one row per normative statement cluster, each runner-verified against canonical spec bytes. |
@@ -115,6 +122,13 @@ cd modules/pipeline-runner && uv sync && uv run pytest -q
 cd modules/unified-llm-client && uv sync && uv run pytest -q
 cd modules/remote-source && uv sync && uv run pytest -q
 cd modules/tool-report-outcome && uv sync && uv run pytest -q
+cd modules/loop-agent && uv sync && uv run pytest -q
+cd modules/hooks-pipeline-observability && uv sync && uv run pytest -q
+cd modules/hooks-pipeline-progress && uv sync && uv run pytest -q
+cd modules/hooks-tool-truncation && uv sync && uv run pytest -q
+cd modules/tool-apply-patch && uv sync && uv run pytest -q
+cd modules/tool-dashboard-query && uv sync && uv run pytest -q
+cd modules/tool-pipeline-status && uv sync && uv run pytest -q
 ```
 
 ## Contributing
