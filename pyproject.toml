@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "amplifier-dot-runner"
+version = "0.1.0"
+description = "dot-runner: the engine that runs .dot pipelines. Root install package -- `uv tool install git+https://github.com/microsoft/amplifier-bundle-dot-runner` (no #subdirectory) lands exactly one console script, dot-runner. Thin re-export of modules/pipeline-runner; see amplifier_dot_runner's module docstring."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
+dependencies = [
+    "amplifier-module-pipeline-runner",
+]
+
+[project.urls]
+Homepage = "https://github.com/microsoft/amplifier-bundle-dot-runner"
+Repository = "https://github.com/microsoft/amplifier-bundle-dot-runner"
+
+[project.scripts]
+dot-runner = "amplifier_dot_runner:main"
+
+[tool.uv.sources]
+# Relative-path dependency onto modules/pipeline-runner's own package --
+# NOT a copy, NOT a fork. modules/pipeline-runner keeps its own name,
+# pyproject.toml, and `dot-runner` console script fully intact, so the
+# existing `#subdirectory=modules/pipeline-runner` install form is
+# unaffected by this root package's existence.
+amplifier-module-pipeline-runner = { path = "modules/pipeline-runner" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["amplifier_dot_runner"]

@@ -17,7 +17,7 @@ docs) lives in the repos that consume this one.
 | `bundle.md` | Root bundle (`dot-runner`) — includes the `dot-runner-core` behavior. |
 | `behaviors/dot-runner.yaml` | Engine partial (`dot-runner-core`) — mounts the `report_outcome` tool. |
 | `modules/loop-pipeline` | **The engine.** DOT parser, validator, graph execution engine, handler dispatch. |
-| `modules/pipeline-runner` | Two console scripts sharing one implementation (`run` / `resume` / `doctor` / `trace` / `lint`): the engine-native `dot-runner` and the legacy, opinionated `attractor`. Plus the `drive_engine` / `run_pipeline` library surface. |
+| `modules/pipeline-runner` | The `dot-runner` CLI (`run` / `resume` / `doctor` / `trace` / `lint`) plus the `drive_engine` / `run_pipeline` library surface. The `attractor` command has been removed entirely -- see "Getting started" below. |
 | `modules/unified-llm-client` | Provider-agnostic LLM client — a faithful implementation of the Attractor Unified LLM Client spec. |
 | `modules/remote-source` | Content-addressed `git+https://` fetcher (Layer A), used by `loop-pipeline[remote]` to materialize remote `.dot` graphs. |
 | `modules/tool-report-outcome` | The `report_outcome` tool module — lets a child agent set a structured pipeline verdict. |
@@ -35,8 +35,9 @@ docs) lives in the repos that consume this one.
 
 Python distribution and import names are unchanged from their original
 home (`amplifier-module-loop-pipeline`, `import amplifier_module_loop_pipeline`,
-the `attractor` console script, etc.) — only the git URL that serves them
-moved.
+etc.) — only the git URL that serves them moved. The one exception: the
+legacy `attractor` console script has been removed entirely (no alias, no
+shim) -- `dot-runner` is the only CLI this repo ships.
 
 ## This is a proper bundle
 
@@ -94,39 +95,67 @@ corresponding commit here.
 
 ## Getting started
 
-### Pattern (a) — pip-install a module directly (git + subdirectory)
+**The `attractor` command is gone.** If you landed here from old docs or a
+bookmark expecting `attractor run ...`: that console script has been removed
+entirely (band-aid rip, no alias, no shim, no deprecation window). This
+repo now ships exactly one CLI, `dot-runner` -- see below for how to get the
+same opinionated (attractor-pattern) experience back, by explicit
+declaration via `--bundle`.
+
+### Pattern (a) — root one-liner (recommended)
 
 ```bash
-uv tool install "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/pipeline-runner"
+uv tool install git+https://github.com/microsoft/amplifier-bundle-dot-runner
 dot-runner --help
 dot-runner lint path/to/pipeline.dot
 ```
 
-### Two CLIs, one implementation
+This installs from the repo root (distribution `amplifier-dot-runner`) and
+lands exactly one executable: `dot-runner`.
 
-`modules/pipeline-runner` installs **two** console scripts from the same
-code (DESIGN-worker-registry-core-split.md P3 — "one binary, two names"):
-
-| Command | Personality | Default worker | Base bundle |
-|---|---|---|---|
-| `dot-runner` | **Engine-native.** The plain engine, nothing else. | `direct` (registry, in-repo — unified-llm-client + a provider key) | A bare bundle. Zero runtime reach into any pattern repo: no attractor bundle, no provider→agent profiles, no `session.spawn`. |
-| `attractor` | **Legacy, opinionated** — unchanged through a deprecation window (no fixed date). Prints one notice to stderr per invocation. | today's capability-fallback chain (effectively `loop-agent`, via the attractor bundle's own agent configs) | Auto-loads `amplifier-bundle-attractor`'s pattern bundle (local sibling checkout, else `git+…@main`) — same as before P3. |
-
-Both accept `run` / `resume` / `doctor` / `trace` / `lint`, and both accept
-`--worker <name>` on `run`/`resume` (EXTENSIONS.md §40 — feeds the worker
-registry's run-level `default_worker`; a node's own `worker=` attribute
-still wins). An unknown `--worker` name is refused with a clean error naming
-every registered worker — never a stack trace.
+### Pattern (b) — pip-install a module directly (git + subdirectory, pinned)
 
 ```bash
-# engine-native: runs every box node through the `direct` worker
-dot-runner run path/to/pipeline.dot
-
-# same pipeline, opinionated attractor experience (unchanged)
-attractor run path/to/pipeline.dot
+uv tool install "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/pipeline-runner"
+dot-runner --help
 ```
 
-### Pattern (b) — mount as an Amplifier bundle
+Equivalent to pattern (a) -- useful when you want to pin to the
+`pipeline-runner` module specifically (e.g. an existing subdirectory-pinned
+install). Both forms install the SAME single console script, `dot-runner`.
+
+### One CLI, bare by default, opinionated by declaration
+
+`dot-runner` accepts `run` / `resume` / `doctor` / `trace` / `lint`. By
+default it is engine-native and bare: default worker `direct` (registry,
+in-repo — unified-llm-client + a provider key), zero runtime reach into any
+pattern repo (no bundle fetch, no provider→agent profiles, no
+`session.spawn` capability).
+
+`run`/`resume` also accept `--worker <name>` (EXTENSIONS.md §40 — feeds the
+worker registry's run-level `default_worker`; a node's own `worker=`
+attribute still wins) and `--bundle <ref>` (or the `DOT_RUNNER_BUNDLE` env
+var) — an explicit bundle reference to compose as this run's base bundle.
+This is the preserved mechanism for an opinionated experience declared
+rather than assumed: the engine has zero built-in knowledge of what the
+reference contains, it simply composes it, registers `session.spawn`, and
+honors that bundle's own declared `worker`/`profiles` as this run's
+effective default (still overridable by an explicit `--worker`).
+
+```bash
+# bare: runs every box node through the `direct` worker
+dot-runner run path/to/pipeline.dot
+
+# same pipeline, the attractor pattern's opinionated experience -- by
+# declaration, not by a second command
+dot-runner run path/to/pipeline.dot \
+  --bundle "git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=bundles/attractor-pipeline.yaml"
+```
+
+An unknown `--worker` name is refused with a clean error naming every
+registered worker — never a stack trace.
+
+### Pattern (c) — mount as an Amplifier bundle
 
 ```bash
 amplifier bundle add git+https://github.com/microsoft/amplifier-bundle-dot-runner@main
