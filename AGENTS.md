@@ -26,6 +26,12 @@ strongdm/attractor nlspec has to say about this first?"**
    a ledgered `specs/EXTENSIONS.md` entry are required — this is not the
    wild-west. "The spec didn't anticipate this shape" is a reason to file an
    entry, not to skip one.
+5. **Evidence bar.** Cite the section(s) *and* state what the surrounding
+   context says — proof the nlspec was read holistically, not a cherry-picked
+   line wielded as leverage for an agenda. Spec silence is not support for a
+   change: it doesn't clear step 1, it routes to steps 3/4 above (rule 5 /
+   `specs/EXTENSIONS.md`), and the preferred first answer to "the spec
+   doesn't do X" is a different pipeline design, not a new feature.
 
 See `SPEC_CONFORMANCE.md` for the full doctrine and the deviation ledger, and
 `specs/EXTENSIONS.md` for every documented extension/divergence.
