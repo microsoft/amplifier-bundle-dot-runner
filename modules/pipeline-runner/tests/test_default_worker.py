@@ -1,22 +1,28 @@
 """Tests for ``amplifier_module_pipeline_runner.default_worker`` -- named
-worker resolution (maintainer policy, WAVE 5 repair 2026-08-30: worker
-NAMES -- ``direct`` | ``loop-agent`` | ``amplifier-agent`` -- are the whole
-user-facing concept; ``--bundle``/``DOT_RUNNER_BUNDLE`` are removed from the
-CLI surface entirely. Any bundle machinery a named worker needs is
+worker resolution (maintainer policy, WAVE 6 2026-08-30, feat/agent-always-
+installed: amplifier-agent is now an UNCONDITIONAL dependency of the root
+install -- see root ``pyproject.toml`` -- and the default ladder, when no
+explicit choice is made, is exactly ``direct`` | ``loop-agent`` |
+``amplifier-agent``, PERIOD. ``--bundle``/``DOT_RUNNER_BUNDLE`` are removed
+from the CLI surface entirely. Any bundle machinery a named worker needs is
 synthesized internally by this module and never surfaced to the user).
 
 Covers:
   1. ``_worker_available()`` / its back-compat ``amplifier_agent_available()``
-     alias -- the cheap, no-import ``find_spec`` probe (adapter present/
-     absent x its probe module present/absent), for BOTH registered names.
+     alias -- the cheap, no-import ``find_spec`` RUNTIME IMPORT GUARD
+     (adapter present/absent x its probe module present/absent), for BOTH
+     registered names.
   2. ``resolve()`` -- explicit ``worker="direct"`` always wins with zero
      probing; an explicit named worker (``loop-agent``/``amplifier-agent``)
      synthesizes + wires its own minimal bundle when available, fails loud
      (``SystemExit(1)``) when not; an unrecognized name is returned
      unchanged so the registry's own "Unknown worker" error fires
-     downstream; no explicit choice (``worker=None``) attempts the
-     amplifier-agent default bet, falling back to ``direct`` with exactly
-     one stderr notice when unavailable.
+     downstream; no explicit choice (``worker=None``) attempts the sole
+     remaining rung (amplifier-agent), falling back to ``direct`` with
+     exactly one stderr notice -- now a BROKEN-INSTALL diagnostic
+     (:data:`default_worker.BROKEN_INSTALL_HINT`), not an "install this
+     optional extra" upgrade pitch, since amplifier-agent is no longer
+     optional -- when the runtime import guard trips.
   3. ``_synthesize_agent_bundle_yaml()`` -- real
      ``amplifier_foundation.load_bundle()`` proof that the synthesized YAML
      parses and its declared worker/profiles/agent-orchestrator-module read
@@ -28,11 +34,11 @@ Covers:
      ``[project.entry-points."amplifier.modules"]`` table).
   4. CLI wiring (``cmd_run``/``cmd_resume``): no explicit choice + available
      -> ``runner.run_pipeline``/``resume_pipeline`` receive
-     ``worker=None, bundle=<synth path>``; no explicit choice + absent ->
-     both stay ``None`` and exactly one stderr line; explicit
-     ``--worker direct`` respected even when amplifier-agent is available
-     (the probe is never even consulted). Resume mirrors run exactly
-     (consistency requirement).
+     ``worker=None, bundle=<synth path>``; no explicit choice + broken-env
+     (guard trips) -> both stay ``None`` and exactly one stderr line;
+     explicit ``--worker direct`` respected even when amplifier-agent is
+     available (the guard is never even consulted). Resume mirrors run
+     exactly (consistency requirement).
 """
 
 from __future__ import annotations
@@ -42,8 +48,7 @@ import json
 from pathlib import Path
 
 import pytest
-from amplifier_module_pipeline_runner import cli
-from amplifier_module_pipeline_runner import default_worker
+from amplifier_module_pipeline_runner import cli, default_worker
 from amplifier_module_pipeline_runner import runner as runner_mod
 from amplifier_module_pipeline_runner.runner import PipelineResult
 
@@ -130,7 +135,7 @@ def test_probe_short_circuits_before_checking_agent_lib(monkeypatch):
     def fake_find_spec(name):
         calls.append(name)
         if name == "amplifier_module_loop_amplifier_agent":
-            return None
+            return
         raise AssertionError("amplifier_agent_lib should never be probed here")
 
     monkeypatch.setattr(default_worker.importlib.util, "find_spec", fake_find_spec)
@@ -211,21 +216,24 @@ def test_resolve_explicit_named_worker_unavailable_fails_loud(monkeypatch, capsy
     assert "amplifier-agent" in err
 
 
-def test_resolve_explicit_amplifier_agent_unavailable_does_not_suggest_itself(
+def test_resolve_explicit_amplifier_agent_unavailable_is_a_broken_install(
     monkeypatch, capsys
 ):
-    """The failing worker itself is of course NAMED in the "was requested"
-    complaint -- but the suggested-alternatives tail must not loop back and
-    recommend retrying the exact worker that just failed."""
+    """WAVE 6: amplifier-agent is an unconditional dependency of the root
+    install now -- an explicit ``--worker amplifier-agent`` failing the
+    runtime import guard is a BROKEN INSTALL, not a missing optional extra.
+    Unlike loop-agent's "was requested but is not installed" message (which
+    suggests alternatives), this message names the broken-install diagnostic
+    and reinstall command -- no alternative-worker suggestion is needed
+    because there is nothing to "choose instead" of a broken environment."""
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as exc_info:
         default_worker.resolve(worker="amplifier-agent", prog="dot-runner")
+    assert exc_info.value.code == 1
     err = capsys.readouterr().err
-    assert "--worker direct" in err
-    suggestion_tail = err.split("--worker direct", 1)[1]
-    assert "amplifier-agent" not in suggestion_tail, (
-        f"must not suggest retrying the worker that just failed, got tail={suggestion_tail!r}"
-    )
+    assert "amplifier-agent" in err
+    assert default_worker.BROKEN_INSTALL_HINT in err
+    assert "reinstall" in err.lower()
 
 
 def test_resolve_unknown_name_returned_unchanged_no_probe_consulted(monkeypatch):
@@ -255,9 +263,14 @@ def test_resolve_no_choice_available_synthesizes_amplifier_agent_bundle(monkeypa
     assert "loop-amplifier-agent" in text  # the ADAPTER's real module name
 
 
-def test_resolve_no_choice_absent_prints_exactly_one_notice_and_falls_back(
+def test_resolve_no_choice_broken_env_prints_exactly_one_notice_and_falls_back(
     monkeypatch, capsys
 ):
+    """WAVE 6: the runtime import guard tripping with NO explicit --worker is
+    now a broken-environment diagnostic (amplifier-agent is unconditionally
+    installed; this state means the install itself is broken), not an
+    "install the optional extra" upgrade pitch -- but the fallback behavior
+    (degrade to worker=direct, exactly one stderr line) is unchanged."""
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: False)
     worker, bundle = default_worker.resolve(worker=None, prog="dot-runner")
 
@@ -265,23 +278,23 @@ def test_resolve_no_choice_absent_prints_exactly_one_notice_and_falls_back(
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if line.strip()]
     assert len(lines) == 1
-    assert default_worker.UPGRADE_HINT in lines[0]
+    assert default_worker.BROKEN_INSTALL_HINT in lines[0]
     assert "dot-runner" in lines[0]
 
 
-def test_upgrade_hint_does_not_teach_the_broken_single_command_install():
-    """Review finding, fixed: a single `uv tool install
-    "amplifier-dot-runner[agent]"` can hit a real, disclosed `uv`
-    dependency-resolution collision (README's "The [agent] extra" section,
-    "conflicting URLs for package amplifier-foundation"). Teaching that
-    exact command as THE fix would hand a reader a command known to fail.
-    The notice must instead point at a path proven to work today -- the
-    README's two-step install -- not repeat the broken one-liner as the
-    recommended fix."""
-    hint = default_worker.UPGRADE_HINT
-    assert "README" in hint
-    assert "two-step" in hint
-    assert not hint.strip().startswith("uv tool install")
+def test_broken_install_hint_names_reinstall_not_an_upgrade_pitch():
+    """WAVE 6: amplifier-agent is an unconditional dependency of the root
+    install now (`uv tool install git+<this repo>` always pulls it in --
+    the historical "conflicting URLs for package amplifier-foundation"
+    collision this used to hit is resolved: see root pyproject.toml's
+    [tool.uv] override-dependencies and modules/pipeline-runner/
+    pyproject.toml's matching [tool.uv.sources] shape). There is nothing
+    left to "upgrade" into, so the hint must name a REINSTALL command (a
+    broken-environment diagnostic), never an install-this-extra pitch."""
+    hint = default_worker.BROKEN_INSTALL_HINT
+    assert "reinstall" in hint.lower()
+    assert "uv tool install --reinstall" in hint
+    assert "broken" in hint.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +384,7 @@ def test_cmd_run_wires_synthesized_bundle_when_available(monkeypatch, tmp_path):
     assert default_worker.DEFAULT_AGENT_NAME in Path(captured["bundle"]).read_text()
 
 
-def test_cmd_run_falls_back_to_direct_with_one_notice_when_unavailable(
+def test_cmd_run_falls_back_to_direct_with_one_notice_when_broken_env(
     monkeypatch, tmp_path, capsys
 ):
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: False)
@@ -398,7 +411,7 @@ def test_cmd_run_falls_back_to_direct_with_one_notice_when_unavailable(
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if line.strip()]
     assert len(lines) == 1
-    assert default_worker.UPGRADE_HINT in lines[0]
+    assert default_worker.BROKEN_INSTALL_HINT in lines[0]
 
 
 def test_cmd_run_explicit_worker_direct_respected_even_when_available(
@@ -527,7 +540,7 @@ def test_cmd_resume_wires_synthesized_bundle_when_available(monkeypatch, tmp_pat
     assert default_worker.DEFAULT_AGENT_NAME in Path(captured["bundle"]).read_text()
 
 
-def test_cmd_resume_falls_back_to_direct_with_one_notice_when_unavailable(
+def test_cmd_resume_falls_back_to_direct_with_one_notice_when_broken_env(
     monkeypatch, tmp_path, capsys
 ):
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: False)
@@ -554,7 +567,7 @@ def test_cmd_resume_falls_back_to_direct_with_one_notice_when_unavailable(
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if line.strip()]
     assert len(lines) == 1
-    assert default_worker.UPGRADE_HINT in lines[0]
+    assert default_worker.BROKEN_INSTALL_HINT in lines[0]
 
 
 def test_cmd_resume_explicit_worker_direct_respected_even_when_available(

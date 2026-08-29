@@ -10,27 +10,23 @@ entirely (no flag, no env var, no help text, no README mention) -- see
 under the hood stays exactly that: internal, private, never bundle
 vocabulary in a signature, an error message, or a doc.
 
-amplifier-agent is the team's bet for new dot-runner surfaces: when a run
-makes NO explicit worker choice (no ``--worker``, no node ``worker=``),
-:func:`resolve` decides what the CLI does about it:
+WAVE 6 (feat/agent-always-installed) ruling: amplifier-agent is no longer an
+optional, probed-for peer -- the root ``amplifier-dot-runner`` package now
+declares ``amplifier-module-loop-amplifier-agent`` (and, transitively,
+amplifier-agent's own ``amplifier_agent_lib``) as a REAL, unconditional
+dependency (see root ``pyproject.toml``). The default ladder, when a run
+makes NO explicit worker choice (no ``--worker``, no node ``worker=``), is
+now exactly this, PERIOD:
 
-1. Probe availability of the in-repo adapter
-   (``amplifier_module_loop_amplifier_agent`` -- ``modules/loop-amplifier-
-   agent``, which hosts amplifier-agent's ``Engine`` per node via
-   ``session.spawn``) AND its heavy peer dependency (``amplifier_agent_lib``,
-   the thing that actually runs a turn). The probe
-   (:func:`amplifier_agent_available`) is a cheap ``importlib.util.find_spec``
-   check -- it locates a module without importing it, so it never pays
-   amplifier-agent's heavy transitive import cost (its own web-framework/
-   ASGI-server stack, MCP client libs, etc. -- see amplifier_agent_lib's own
-   pyproject.toml for the full list) and never touches the network.
+    explicit --worker / node worker= > amplifier-agent
 
-2. If BOTH resolve: synthesize a MINIMAL bundle
-   (:func:`_synthesize_agent_bundle_yaml`) declaring one agent entry
-   backed by ``loop-amplifier-agent`` (the same synthesis this module uses
-   for an EXPLICIT ``--worker loop-agent``/``--worker amplifier-agent``
-   choice too -- see :func:`resolve` -- just parametrized by which adapter
-   module to wire), with a top-level
+There is no third rung. :func:`resolve` still does the wiring:
+
+1. Synthesize a MINIMAL bundle (:func:`_synthesize_agent_bundle_yaml`)
+   declaring one agent entry backed by ``loop-amplifier-agent`` (the same
+   synthesis this module uses for an EXPLICIT ``--worker loop-agent``/
+   ``--worker amplifier-agent`` choice too -- see :func:`resolve` -- just
+   parametrized by which adapter module to wire), with a top-level
    ``session.orchestrator.config`` declaring ``worker: spawn`` (the
    registry's reserved sentinel -- see ``amplifier_module_loop_pipeline.
    backend._SPAWN_WORKER_SENTINEL``) and a ``profiles`` map routing every
@@ -47,11 +43,21 @@ makes NO explicit worker choice (no ``--worker``, no node ``worker=``),
    their own existing ``_declared_worker_and_profiles`` -- both pre-existing,
    already-tested code paths, completely unchanged by this module.
 
-3. If either is missing: print ONE loud stderr line naming the upgrade path
-   (``UPGRADE_HINT``) and return the inputs unchanged. The pre-existing
-   bare-engine fallback then resolves to ``direct`` exactly as it did before
-   this module existed (``runner.run_pipeline``'s own
-   ``elif bundle: ... else: resolved_worker = "direct"`` branch).
+2. :func:`_worker_available` (cheap ``importlib.util.find_spec`` check --
+   locates a module without importing it, so it never pays amplifier-agent's
+   heavy transitive import cost, and never touches the network) is now a
+   RUNTIME IMPORT GUARD ONLY, not an availability probe with an "install
+   this to unlock the feature" upgrade story. In a healthy always-installed
+   environment it is always ``True`` and this guard never fires. If it is
+   ever ``False`` here, that means amplifier-agent genuinely failed to
+   import despite being an unconditional dependency of this install -- an
+   ABNORMAL, broken-environment state (a stale/partial venv, a corrupted
+   cache, a hand-edited site-packages), not a legitimate "not installed by
+   choice" state anymore. :func:`resolve` degrades to ``direct`` in that
+   case, but prints a LOUD stderr line diagnosing the broken install and
+   naming the reinstall command (:data:`BROKEN_INSTALL_HINT`) -- reworded
+   from the old upgrade pitch, which no longer applies now that there is
+   nothing left to "upgrade" into.
 
 Explicit choices always win: :func:`resolve` is a no-op the moment the
 caller already made ANY choice -- an explicit ``--worker``, or a bundle
@@ -118,22 +124,22 @@ _ADAPTER_REGISTRY: dict[str, tuple[str, str, str, str]] = {
 #: Name of the single synthesized agent entry every known provider routes to.
 DEFAULT_AGENT_NAME = "dot-runner-default-agent"
 
-#: Upgrade hint printed on the ONE stderr fallback line when amplifier-agent
-#: is not installed.
-#:
-#: Deliberately does NOT tell the reader to run
-#: ``uv tool install "amplifier-dot-runner[agent]"`` as a single command:
-#: that single-solve install can fail today with `uv` reporting "conflicting
-#: URLs for package amplifier-foundation" (a real, disclosed upstream/
-#: cross-repo dependency-declaration mismatch -- see README's "The [agent]
-#: extra" section for the full explanation). Teaching a command known to
-#: fail is worse than teaching nothing, so this notice points at the
-#: two-step install the README proves works today instead.
-UPGRADE_HINT = (
-    'see this repo\'s README, "The [agent] extra" section, for the '
-    "two-step install that enables it today (a single "
-    '`uv tool install "amplifier-dot-runner[agent]"` can hit a known uv '
-    "dependency-resolution collision)"
+#: Broken-install hint printed on the ONE stderr fallback line when the
+#: runtime import guard trips (WAVE 6: amplifier-agent is now an
+#: unconditional dependency of the root install -- see root pyproject.toml
+#: -- so this is no longer an "install this optional extra" upgrade pitch.
+#: There is nothing left to opt into: if this fires, the environment's
+#: install of an ALWAYS-declared dependency is broken, and the fix is a
+#: reinstall, not a new install command). Mirrors compat.py's
+#: ``IncompatibleEngineError`` reinstall instruction for the same reason:
+#: both are "this environment is stale/broken" diagnostics, not feature
+#: discovery.
+BROKEN_INSTALL_HINT = (
+    "amplifier-agent ships as an unconditional dependency of this install "
+    "and could not be imported -- this environment is broken (stale cache, "
+    "partial install, or a hand-edited venv); reinstall: `uv tool install "
+    "--reinstall git+https://github.com/microsoft/amplifier-bundle-dot-runner` "
+    "(or, from the repo tree, `cd modules/pipeline-runner && uv sync --reinstall`)"
 )
 
 #: The SAME generic session.context module runner._bare_base_bundle() mounts
@@ -289,24 +295,29 @@ def resolve(
     1. ``worker == "direct"`` -> returned as-is; the registry resolves it
        directly, no bundle involved.
     2. ``worker`` is a known named adapter (currently ``"loop-agent"`` or
-       ``"amplifier-agent"``) -> probe its availability
-       (:func:`_worker_available`). Available: synthesize + wire its minimal
-       bundle (:func:`_synthesize_agent_bundle_yaml`) and return
-       ``(None, bundle_path)`` (``worker`` stays ``None`` so
+       ``"amplifier-agent"``) -> the runtime import guard
+       (:func:`_worker_available`) checks it resolves. Available: synthesize
+       + wire its minimal bundle (:func:`_synthesize_agent_bundle_yaml`) and
+       return ``(None, bundle_path)`` (``worker`` stays ``None`` so
        ``run_pipeline``'s own ``elif bundle: resolved_worker =
        declared_worker`` branch reads ``"spawn"`` back from the synthesized
        bundle's own declared config). Unavailable: an EXPLICIT choice for a
-       named-but-uninstalled worker fails loud rather than silently
-       degrading to ``direct`` -- the caller asked for something specific.
+       named worker fails loud rather than silently degrading to ``direct``
+       -- the caller asked for something specific. For ``loop-agent`` (a
+       genuinely optional worker, never embedded at the root) this means
+       "install its dependencies"; for ``amplifier-agent`` (WAVE 6: an
+       unconditional dependency of the root install) this means the
+       environment's install is broken -- see :data:`BROKEN_INSTALL_HINT`.
     3. ``worker`` is anything else (unknown name, or ``None``/absent) -> if
-       ``None``: no explicit choice was made, so attempt amplifier-agent as
-       the default bet (available -> synthesize + wire, same as case 2;
-       unavailable -> print ONE loud stderr line naming the upgrade path and
-       return unchanged, letting the pre-existing bare-engine fallback chain
-       resolve to ``direct`` exactly as it did before). If ``worker`` is a
-       non-empty, unrecognized name: returned unchanged, letting the
-       registry's own loud "Unknown worker" error fire downstream (existing
-       behavior, now covering the two new names too).
+       ``None``: no explicit choice was made, so the ONLY rung left is
+       amplifier-agent, PERIOD (available -> synthesize + wire, same as
+       case 2; unavailable -> print ONE loud stderr line diagnosing the
+       broken install and return unchanged, letting the pre-existing
+       bare-engine fallback chain resolve to ``direct`` exactly as it did
+       before). If ``worker`` is a non-empty, unrecognized name: returned
+       unchanged, letting the registry's own loud "Unknown worker" error
+       fire downstream (existing behavior, now covering the two new names
+       too).
     """
     if worker == "direct":
         return worker, None
@@ -315,17 +326,21 @@ def resolve(
         if _worker_available(worker):
             return None, str(write_agent_bundle(worker))
         adapter_module, probe_module, _source, _orch_module = _ADAPTER_REGISTRY[worker]
+        if worker == AMPLIFIER_AGENT_NAME:
+            # WAVE 6: amplifier-agent is an unconditional dependency of the
+            # root install -- an explicit ask for it failing the runtime
+            # import guard is a broken environment, not a missing optional
+            # extra. Same diagnostic as the no-explicit-choice branch below.
+            print(
+                f"{prog}: --worker {worker!r} was requested, but {BROKEN_INSTALL_HINT}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         print(
             f"{prog}: --worker {worker!r} was requested but is not "
             f"installed (missing {adapter_module!r} and/or "
             f"{probe_module!r}). Install its dependencies, or choose "
-            f"--worker direct"
-            + (
-                f" / --worker {AMPLIFIER_AGENT_NAME!r}"
-                if worker == LOOP_AGENT_NAME
-                else ""
-            )
-            + ".",
+            f"--worker direct / --worker {AMPLIFIER_AGENT_NAME!r}.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -335,14 +350,18 @@ def resolve(
         # "Unknown worker" error fires downstream (existing behavior).
         return worker, None
 
-    # No explicit choice at all: attempt the amplifier-agent default bet.
+    # No explicit choice at all: the ladder has exactly one rung left --
+    # amplifier-agent, PERIOD (WAVE 6: no longer a "bet", the unconditional
+    # default). The runtime import guard is normally a no-op (always True in
+    # a healthy always-installed environment); if it trips here, that is an
+    # abnormal, broken-install state, not a legitimate "not installed by
+    # choice" state.
     if _worker_available(AMPLIFIER_AGENT_NAME):
         return worker, str(write_agent_bundle(AMPLIFIER_AGENT_NAME))
 
     print(
-        f"{prog}: no --worker given and amplifier-agent is not "
-        f"installed -- falling back to worker=direct. Install the agent "
-        f"extra for the default amplifier-agent worker: {UPGRADE_HINT}",
+        f"{prog}: no --worker given -- falling back to worker=direct. "
+        f"{BROKEN_INSTALL_HINT}",
         file=sys.stderr,
     )
     return worker, None

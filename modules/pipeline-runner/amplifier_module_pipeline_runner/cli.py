@@ -42,12 +42,14 @@ from . import default_worker, runner
 from .compat import IncompatibleEngineError, check_engine_compatibility
 from .params import parse_params
 
+
 def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
     """Build the argument parser for the ``dot-runner`` CLI."""
     description = (
         "Run an arbitrary DOT pipeline directly via the engine's worker "
-        "registry -- engine-native defaults (default worker: `direct`, or "
-        "`amplifier-agent` when installed; see --worker)."
+        "registry -- engine-native defaults (default worker: "
+        "`amplifier-agent`, unconditionally; `direct` only if that install "
+        "is broken; see --worker)."
     )
     parser = argparse.ArgumentParser(prog=prog, description=description)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -86,8 +88,10 @@ def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
             "One of `direct`, `loop-agent`, `amplifier-agent` (a node's own "
             "`worker=` attribute still wins over this flag). Unknown names "
             "fail loud, listing the registered names. Omitted (the "
-            "default): `amplifier-agent` when installed (one-line stderr "
-            "notice if not), else `direct`."
+            "default): `amplifier-agent`, unconditionally (it ships as a "
+            "real dependency of this install) -- `direct` only as a "
+            "broken-environment fallback, with a one-line stderr diagnostic "
+            "naming the reinstall command."
         ),
     )
     run.add_argument(
