@@ -2,17 +2,19 @@
 
 The engine-native CLI (DESIGN-worker-registry-core-split.md P3 renamed this
 module's sole personality after removing the legacy ``attractor`` entry
-point entirely -- no alias, no shim, no deprecation window). Default worker
-``direct``; zero runtime reach into any pattern repo (no bundle fetch, no
-profile auto-load, no ``session.spawn`` capability) *unless* the caller
-explicitly opts in via ``--bundle <ref>`` (or the ``DOT_RUNNER_BUNDLE`` env
-var) -- see ``runner.run_pipeline``'s ``bundle`` parameter. That flag is the
-preserved mechanism for an opinionated experience (e.g. the attractor
-pattern's provider->agent routing and full coding-agent spawning): the
-engine has zero built-in knowledge of what any referenced bundle contains,
-it simply composes whatever is declared at the ref and honors that bundle's
-own ``session.orchestrator.config`` (``worker``/``profiles``) as the
-effective default unless overridden. Mechanism, not policy.
+point entirely -- no alias, no shim, no deprecation window).
+
+WAVE 5 repair (2026-08-30, maintainer ruling): worker NAMES are the whole
+user-facing concept -- ``--worker direct|loop-agent|amplifier-agent`` (or a
+node's own ``worker=`` attribute, EXTENSIONS.md Sec40) is the complete
+story. ``--bundle``/``DOT_RUNNER_BUNDLE`` are REMOVED from this CLI's
+surface entirely -- no flag, no env var, help text never mentions either.
+Bundles are under the hood: a named worker other than ``direct`` may use
+bundle machinery internally to wire its adapter, but that is private
+implementation detail (``default_worker.py``), never something this CLI
+exposes, names in an error, or documents. Default worker ``direct``; zero
+runtime reach into any pattern repo unless a named worker's own internal
+wiring needs it.
 
 Fails loud: a missing provider API key, missing DOT source, unknown worker
 name, or a pipeline error all print a clear message and exit non-zero. No
@@ -40,20 +42,12 @@ from . import default_worker, runner
 from .compat import IncompatibleEngineError, check_engine_compatibility
 from .params import parse_params
 
-# Env var read by both `run` and `resume` as the fallback source of the
-# explicit bundle reference when `--bundle` is not passed on the command
-# line. This is the ONLY place dot-runner reads it -- a bare mechanism, no
-# policy about what the referenced bundle should contain.
-_BUNDLE_ENV_VAR = "DOT_RUNNER_BUNDLE"
-
-
 def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
     """Build the argument parser for the ``dot-runner`` CLI."""
     description = (
         "Run an arbitrary DOT pipeline directly via the engine's worker "
-        "registry -- engine-native defaults (default worker: `direct`; no "
-        "bundle or profile auto-load; zero runtime reach into any pattern "
-        "repo unless --bundle is given)."
+        "registry -- engine-native defaults (default worker: `direct`, or "
+        "`amplifier-agent` when installed; see --worker)."
     )
     parser = argparse.ArgumentParser(prog=prog, description=description)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -89,27 +83,11 @@ def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
         help=(
             "run-level worker-selection default (EXTENSIONS.md Sec40 / "
             "DESIGN-worker-registry-core-split.md P1 item 3, P3 item 2). "
-            "Feeds the worker registry's `default_worker`; a node's own "
-            "`worker=` attribute still wins over this flag. Omitted (the "
-            "default): resolves to `direct` unless --bundle is given and "
-            "the referenced bundle declares its own worker default."
-        ),
-    )
-    run.add_argument(
-        "--bundle",
-        default=None,
-        metavar="REF",
-        help=(
-            "explicit bundle reference to compose as this run's base bundle "
-            "(e.g. a git+https://... bundle YAML) -- the mechanism for an "
-            "opinionated experience (provider->agent profiles, session.spawn "
-            "capability, a full coding-agent worker) declared explicitly "
-            "rather than assumed. The engine has no built-in knowledge of "
-            "what the reference contains: it composes it and honors its own "
-            "session.orchestrator.config (worker/profiles) as this run's "
-            "effective default, unless --worker overrides it. Omitted (the "
-            "default): falls back to the DOT_RUNNER_BUNDLE environment "
-            "variable, else no bundle is loaded and the engine runs bare."
+            "One of `direct`, `loop-agent`, `amplifier-agent` (a node's own "
+            "`worker=` attribute still wins over this flag). Unknown names "
+            "fail loud, listing the registered names. Omitted (the "
+            "default): `amplifier-agent` when installed (one-line stderr "
+            "notice if not), else `direct`."
         ),
     )
     run.add_argument(
@@ -196,12 +174,6 @@ def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
         help="run-level worker-selection default, same as on 'run'.",
     )
     resume.add_argument(
-        "--bundle",
-        default=None,
-        metavar="REF",
-        help="explicit bundle reference, same as on 'run'.",
-    )
-    resume.add_argument(
         "--cwd",
         default=None,
         help=(
@@ -267,17 +239,6 @@ def _stdin_is_usable() -> bool:
         return bool(readable())
     except ValueError:
         return False
-
-
-def _resolve_bundle_ref(args: argparse.Namespace) -> str | None:
-    """Resolve the explicit ``--bundle`` reference: flag wins, else env var.
-
-    Both are the SAME mechanism (an explicit bundle reference to compose as
-    this run's base bundle) -- the flag is just the higher-precedence source
-    when both are present. Neither implies anything about what the
-    referenced bundle contains.
-    """
-    return getattr(args, "bundle", None) or os.environ.get(_BUNDLE_ENV_VAR)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -386,14 +347,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
         interviewer = ConsoleInterviewer()
 
-    bundle = _resolve_bundle_ref(args)
-    # Default-worker resolution (maintainer policy: amplifier-agent is the
+    # Named-worker resolution (maintainer policy: amplifier-agent is the
     # bet for new dot-runner surfaces). A no-op the moment the caller made
-    # ANY explicit choice (--worker, or a bundle ref from --bundle/
-    # DOT_RUNNER_BUNDLE, already merged above) -- see default_worker.resolve.
-    worker, bundle = default_worker.resolve(
-        worker=args.worker, bundle=bundle, prog=prog
-    )
+    # an explicit --worker choice. Bundle machinery (if any) is synthesized
+    # internally by default_worker.resolve -- never surfaced here.
+    worker, bundle = default_worker.resolve(worker=args.worker, prog=prog)
 
     print(f"{prog}: running pipeline cwd={cwd} logs={logs_root}")
 
@@ -518,12 +476,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
             return 1
         interviewer = ConsoleInterviewer()
 
-    bundle = _resolve_bundle_ref(args)
-    # Same default-worker resolution as 'run' -- consistent on resume (a
-    # no-op the moment the caller made any explicit choice).
-    worker, bundle = default_worker.resolve(
-        worker=args.worker, bundle=bundle, prog=prog
-    )
+    # Same named-worker resolution as 'run' -- consistent on resume (a
+    # no-op the moment the caller made an explicit --worker choice).
+    worker, bundle = default_worker.resolve(worker=args.worker, prog=prog)
 
     print(f"{prog}: resuming run cwd={cwd} logs={run_dir}")
 
