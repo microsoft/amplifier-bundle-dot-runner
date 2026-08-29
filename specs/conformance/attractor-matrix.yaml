@@ -981,3 +981,39 @@ rows:
       kind: indexed
       indexed:
         - modules/loop-pipeline/tests/test_validation.py::test_validate_or_raise_raises_on_errors
+
+  - id: ATX-M-041
+    title: status.json is a two-way contract -- external tools/agents can write it back to the engine
+    spec:
+      section: "4.5"
+      heading: "Codergen Handler (LLM Task)"
+      quote: |
+        **Status file:** The handler writes `status.json` in the stage directory with the Outcome fields serialized as JSON. This file serves as an audit trail and enables the status-file contract: external tools or agents can write `status.json` to communicate outcomes back to the engine.
+      line: 709
+      also:
+        - section: "Appendix C"
+          quote: |
+            Each non-terminal node writes a `status.json` file in its stage directory. This file drives routing decisions and provides an audit trail.
+          line: 2055
+    disposition: CONFORM
+    ledger:
+      conformance: ATX-15
+      extensions: 41
+    assertion:
+      kind: indexed
+      indexed:
+        - modules/loop-pipeline/tests/test_status_file_contract.py::test_sf001_tool_node_status_json_override_wins
+        - modules/loop-pipeline/tests/test_status_file_contract.py::test_sf002_codergen_node_status_json_override_wins
+        - modules/loop-pipeline/tests/test_status_file_contract.py::test_sf003_tool_node_malformed_status_json_loud_fail
+        - modules/loop-pipeline/tests/test_status_file_contract.py::test_sf006_goal_gate_satisfied_via_status_json_override
+    notes: >
+      Read-side conformance restoration (EXTENSIONS.md Sec 41): before this row could be
+      asserted CONFORM, the engine only ever WROTE status.json (the audit-trail half); a
+      node-written status.json communicating a verdict back was silently ignored -- for a
+      codergen node, the handler's own unconditional Sec 4.5 step-5 write actively clobbered
+      an external write moments later. read_status_override() (status_file.py) closes this,
+      gated on divergence from the handler's own returned Outcome so it is a no-op for the
+      overwhelming common case (CodergenHandler's own routine audit-trail write matches
+      itself). A malformed override fails loudly, never silently (see EXTENSIONS.md Sec 41 for
+      the full precedence discussion against Sec 25's fail-closed ladder and Sec 35's
+      report_outcome transport).

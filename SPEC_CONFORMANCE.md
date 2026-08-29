@@ -169,6 +169,7 @@ conformance-matrix row `ATX-M-016` (`specs/conformance/attractor-matrix.yaml`),
 | DEAD-1 | Dead `SessionConfig` fields implying coverage that isn't wired (`tool_output_limits`, `tool_line_limits`, `default_command_timeout_ms`, `max_command_timeout_ms`, `get_max_tool_rounds`) | **DONE** | DIVERGE (all deleted + documented) |
 | ATX-8 | DOT `response_schema` node attribute → per-provider structured output (NOT in canonical spec; §4.5 keeps output format at backend) | **DONE — LIVE-PROVEN** (all 3 providers via DOT pipeline) | IMPROVE (extension §23) |
 | ATX-9 | DOT backends didn't recover Anthropic structured output from the `__structured_output__` tool call (only read `result.text`, which is empty on the tool-extraction path); live symptom `outcome.notes=''`; fixed in `loop-pipeline/__init__.py`, `backend.py` | **DONE** (live-found + fixed) | ALIGN |
+| ATX-15 | `status.json` read-side pickup missing (spec Sec 4.5 / Appendix C status-file contract) — engine only ever wrote status.json, never read a node-written one back | **DONE** (`specs/EXTENSIONS.md` Sec 41) | ALIGN |
 
 ---
 
@@ -236,6 +237,14 @@ are the current state; these are the reasoning behind it.
 ---
 
 ## Changelog
+
+### 2026-08-29 — ATX-15 DONE: status.json read-side pickup restored (spec Sec 4.5 / Appendix C status-file contract)
+
+**Gap:** canonical spec Sec 4.5 (`attractor-spec-canonical.md:709`) and Appendix C (`:2053-2078`) both describe a two-way `status.json` contract: the engine writes it as an audit trail, AND *"external tools or agents can write `status.json` to communicate outcomes back to the engine"*. Only the write half existed (`engine.py: _write_node_status`, `handlers/codergen.py: _write_status`); nothing ever read a node-written `status.json` back. Proven empirically with a fixture: a tool node (exit 0) and a codergen node (backend returning a plain string) each wrote a contradicting `status.json` into their own stage directory; the engine silently ignored both (for codergen, the handler's own unconditional final write — spec Sec 4.5 step 5 — actively clobbered the external write moments later).
+
+**Fix:** `amplifier_module_loop_pipeline/status_file.py` (`read_status_override`), wired into `retry.py: execute_with_retry()` (every handler type) and `handlers/codergen.py: CodergenHandler.execute()` (before its own audit-trail write, so an external write during `backend.run()` is not clobbered). Applies only when the file DIVERGES from what the handler already returned (so `CodergenHandler`'s own routine self-write, matching its own returned Outcome, is a no-op — `is_explicit` is never retroactively flipped for an ordinary plain-prose response). A malformed file is a loud FAIL, never silent. Added to EXTENSIONS.md Sec 25's producer-classification table as an explicit-verdict mechanism (as unambiguous as a tool exit code or `report_outcome`); ordering against Sec 35's `report_outcome` transport documented (status.json is the outermost, filesystem-level channel; `report_outcome` sits inside it — unchanged, not retired).
+
+**Disposition: ALIGN** (this is conformance restoration, not a new divergence). Ledgered as cross-cutting row ATX-15 below; full narrative in `specs/EXTENSIONS.md` Sec 41; conformance-matrix row `ATX-M-041` in `specs/conformance/attractor-matrix.yaml`. RED-proof + goal_gate-interaction tests: `modules/loop-pipeline/tests/test_status_file_contract.py` (13 tests). Full `loop-pipeline` suite: 2206 passed, 223 skipped, 0 failed (unchanged from before this change other than the 13 new tests).
 
 ### 2026-08-26 — CAL-10 DONE: tool:post hook modifications (truncation) reach the LLM again (amplifier-support#485)
 

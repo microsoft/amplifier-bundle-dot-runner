@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -20,6 +21,7 @@ from ..context import PipelineContext
 from ..feedback import ensure_feedback_placeholder
 from ..graph import Graph, Node, resolve_bool_attr
 from ..outcome import Outcome, StageStatus
+from ..status_file import read_status_override
 from ..transforms import expand_goal_variable, expand_params
 from ..worker_observability import current_worker_sessions_dir
 
@@ -73,6 +75,12 @@ class CodergenHandler:
         4. Write response and status to logs
         5. Return outcome
         """
+        # Spec Sec 4.5 / Appendix C status-file contract (EXTENSIONS.md
+        # Sec 41): freshness floor for read_status_override() below --
+        # anything an external tool/agent writes to <stage_dir>/status.json
+        # DURING backend.run() postdates this, so it is distinguishable
+        # from a stale file left over from an earlier attempt/iteration.
+        _node_start_wall = time.time()
         # 1. Build prompt
         prompt = (
             node.prompt
@@ -153,8 +161,18 @@ class CodergenHandler:
                     _write_file(
                         os.path.join(stage_dir, "response.md"), result.response_text
                     )
-                _write_status(stage_dir, result)
-                return result
+                # EXTENSIONS.md Sec 41: an external tool/agent invoked from
+                # within backend.run() may already have written
+                # <stage_dir>/status.json directly (spec Sec 4.5 / Appendix
+                # C). If it diverges from the Outcome the backend returned
+                # through the Python interface, the file wins -- checked
+                # here, BEFORE the write below would otherwise clobber it.
+                _override = read_status_override(
+                    node, logs_root, _node_start_wall, result
+                )
+                _final = _override if _override is not None else result
+                _write_status(stage_dir, _final)
+                return _final
             response_text = str(result)
         except Exception as e:
             outcome = Outcome(
@@ -221,6 +239,15 @@ class CodergenHandler:
                     "last_response": response_text[:200],
                 },
             )
+        # EXTENSIONS.md Sec 41: same external-write pickup as the
+        # Outcome-return path above, for backends that return a raw
+        # string. An external tool/agent with filesystem access to
+        # <stage_dir> can write status.json directly during backend.run()
+        # as its verdict channel (spec Sec 4.5 / Appendix C); the default-
+        # outcome write below must not silently clobber a divergent one.
+        _override = read_status_override(node, logs_root, _node_start_wall, outcome)
+        if _override is not None:
+            outcome = _override
         _write_status(stage_dir, outcome)
         return outcome
 
@@ -313,7 +340,14 @@ def _write_status(stage_dir: str, outcome: Outcome) -> None:
     data = {
         "outcome": outcome.status.value,
         "status": outcome.status.value,  # backward compat
-        "preferred_next_label": outcome.preferred_label,
+        "preferred_next_label": outcome.preferred_label,  # backward compat
+        # EXTENSIONS.md Sec 41 / Appendix C: the canonical field name is
+        # "preferred_label" (attractor-spec-canonical.md:2060). Added
+        # alongside the legacy "preferred_next_label" alias above --
+        # additive, does not remove it -- so read_status_override() (and
+        # any other Appendix-C-literal external reader) recognizes this
+        # handler\047s own audit-trail write on re-read.
+        "preferred_label": outcome.preferred_label,
         "suggested_next_ids": outcome.suggested_next_ids,
         "context_updates": outcome.context_updates,
         "notes": outcome.notes,

@@ -21,6 +21,7 @@ from .context import PipelineContext
 from .graph import Graph, Node, resolve_bool_attr
 from .must_write import check_must_write
 from .outcome import Outcome, StageStatus
+from .status_file import read_status_override
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +289,23 @@ async def execute_with_retry(
                 failure_reason=str(e),
                 attempt_count=attempt,
             )
+
+        # Spec §4.5 / Appendix C status-file contract read-side pickup.
+        # EXTENSIONS.md §41: a node's own stage-dir status.json (written by
+        # an external tool/agent, or by CodergenHandler's own Sec 4.5
+        # audit-trail step) is re-read here and, if its content DIVERGES
+        # from what the handler just returned, overrides it as an explicit
+        # verdict. A malformed file is a loud FAIL regardless of divergence.
+        # Runs BEFORE the must_write= check so a status.json override can
+        # itself be must_write-checked like any other completed outcome, and
+        # BEFORE the status-branch below so it can change which branch fires
+        # (e.g. a handler RETRY overridden to an explicit SUCCESS, or vice
+        # versa).
+        _status_override = read_status_override(
+            node, logs_root, node_start_wall, outcome
+        )
+        if _status_override is not None:
+            outcome = _status_override
 
         # SUCCESS or PARTIAL_SUCCESS — check the must_write= artifact contract
         # (EXTENSIONS.md §27) before accepting the completion.  A violation
