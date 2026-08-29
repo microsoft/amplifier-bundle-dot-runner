@@ -1906,7 +1906,11 @@ class PipelineEngine:
             "iteration": self.iteration_count,
             "outcome": outcome.status.value,
             "status": outcome.status.value,  # backward compat (M-19)
-            "preferred_next_label": outcome.preferred_label,
+            "preferred_next_label": outcome.preferred_label,  # backward compat
+            # EXTENSIONS.md Sec 41 / Appendix C canonical field name
+            # (attractor-spec-canonical.md:2060) -- additive alongside the
+            # legacy alias above.
+            "preferred_label": outcome.preferred_label,
             "suggested_next_ids": outcome.suggested_next_ids,
             "context_updates": outcome.context_updates,
             "duration_ms": duration_ms,

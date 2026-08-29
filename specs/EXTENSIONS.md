@@ -2795,3 +2795,122 @@ exercises unless its author opts in.
   selection-precedence, and merge-asymmetry contract tests
 - `modules/loop-pipeline/tests/test_worker_parity.py` — this repo's own worker-parity-kit
   admission for the `direct` worker (see `modules/worker-parity-kit/README.md`)
+
+---
+
+## 41. Status-File Contract Read Side: `status.json` as a Spec-Native Verdict Channel (Conformance Restoration)
+
+> **depends-on:** §25 (fail-closed goal-gate outcomes), §35 (report_outcome spawn transport)
+>
+> **upstream action:** not applicable — this closes a READ-side gap in our own implementation of
+> a mechanism the canonical spec already specifies; there is nothing to propose upstream.
+
+### Conformance gap found
+
+Canonical spec §4.5 (line 709): *"Status file: The handler writes `status.json` in the stage
+directory with the Outcome fields serialized as JSON. This file serves as an audit trail and
+enables the status-file contract: external tools or agents can write `status.json` to
+communicate outcomes back to the engine."* Appendix C (lines 2053–2078): *"Each non-terminal node
+writes a `status.json` file in its stage directory. This file drives routing decisions and
+provides an audit trail,"* followed by the envelope (`outcome`, `preferred_label`,
+`suggested_next_ids`, `context_updates`, `notes`).
+
+Both citations describe a two-way contract: the engine writes `status.json` as its own audit
+record, AND an external tool or agent can write one to communicate a verdict back. Before this
+entry, only the WRITE half existed (`engine.py: _write_node_status`,
+`handlers/codergen.py: _write_status`) — nothing ever read a node-written `status.json` back.
+A fixture proved this empirically: a tool node (`parallelogram`, exit code 0) and a codergen node
+(backend returning a plain string) each wrote a contradicting `status.json` directly into their
+own stage directory; the engine recorded the handler-derived outcome in both cases and the
+file was silently ignored (for the codergen path, the handler's own unconditional final
+`write_status(stage_dir, outcome)` — spec §4.5 step 5 — actively clobbered the external write
+moments later). This is the READ direction of the contract the spec's own words require; it was
+a gap in our implementation, not a documented divergence, so this entry is a **conformance
+restoration**, not a new behavior.
+
+### What this extension does
+
+`amplifier_module_loop_pipeline/status_file.py` (`read_status_override`) re-reads a node's stage
+directory `status.json` after handler execution and, when it diverges from the Outcome the
+handler already returned, treats it as the winning verdict:
+
+- **Divergence-gated, not unconditional.** The override applies only when the file's parsed
+  envelope differs from what the handler already returned (`status`, `preferred_label`,
+  `suggested_next_ids`, `context_updates`, or `notes`). `CodergenHandler` already writes its OWN
+  `status.json` mirroring its own returned Outcome as its §4.5 audit-trail step; re-reading an
+  identical file is a no-op. Divergence is the actual signal that something OTHER than the
+  handler's own routine write touched the file — the "external tool or agent" scenario §4.5
+  names. This is also why `is_explicit` is never retroactively flipped for an ordinary
+  plain-prose, non-goal_gate codergen response (see the §25 interaction below).
+- **Wired at two points.** `retry.py: execute_with_retry()` checks after every attempt (covers
+  `ToolHandler` and any handler with no internal status.json write of its own — the file, if
+  present, is unambiguously external). `handlers/codergen.py: CodergenHandler.execute()` ALSO
+  checks, immediately before its own default-outcome write (both the Outcome-return and the
+  string-return paths) — otherwise the handler's own spec-§4.5-mandated final write would
+  clobber an external write that landed during `backend.run()` before the handler ever sees it.
+- **Freshness floor.** Mirrors `must_write.py`'s convention: the file's mtime must postdate the
+  node's execution-start wall clock, so a stale file from an earlier attempt/iteration is never
+  picked up as if just written.
+- **Malformed ⇒ loud FAIL, never silent.** Invalid JSON, non-object JSON, a missing/invalid
+  `outcome` field, or a wrong-typed `preferred_label` / `context_updates` / `notes` fails the node
+  (`is_explicit=True` FAIL) regardless of what the handler returned — a broken contract is a
+  definitive signal, mirroring §27's `must_write=` fail-closed treatment. `suggested_next_ids` is
+  validated only as "a list" (not "a list of strings"): §34 already gives `edge_selection.py`'s
+  `_coerce_suggested_id` a documented int/float coercion policy, and re-validating item types
+  here would duplicate — and could conflict with — that decided policy. The `outcome` field
+  accepts every `StageStatus` value including `"skipped"`, even though Appendix C's illustrative
+  comment only lists four: the engine's own writers already serialize `"skipped"` as a normal
+  value, and rejecting it here would treat a handler's own routine audit-trail write (e.g. an
+  upstream-skip-propagated node) as malformed.
+
+### Precedence — §25's fail-closed ladder, and ordering vs §35's `report_outcome`
+
+A node-written `status.json` is added to §25's producer-classification table as an **explicit**
+verdict mechanism: a node/external process directly writing its own structured status file is
+exactly as unambiguous as a tool's exit code or a `report_outcome` call (both already `True` in
+that table). A divergent, well-formed override therefore carries `is_explicit=True` and CAN
+satisfy a `goal_gate=true` node's gate (`engine.py: _check_goal_gates()` requires
+`is_success AND is_explicit`) even when the same node's LLM response is bare, non-verdict prose
+that §25 would otherwise fail-close to RETRY. This is intentional: Appendix C's own words say a
+status.json "drives routing decisions," unqualified by whether the node also emitted a verdict
+through the LLM response channel.
+
+Ordering against §35 (`report_outcome` spawn transport): a `report_outcome` verdict is folded
+into the handler's returned Outcome BEFORE `handler.execute()` returns — by the time
+`read_status_override` runs, any `report_outcome` verdict is already reflected in
+`handler_outcome`. A node-written `status.json` that still diverges at that point is a STRICTLY
+LATER, out-of-band correction, and wins. Positioned end-to-end: `status.json` (filesystem,
+spec-native, Appendix C) is the OUTERMOST, last-mile channel; `report_outcome` (in-process tool
+call, §35) sits inside it. This does not retire or reorder §35 itself — `report_outcome` remains
+the primary, richer channel for a spawned child (it is available mid-conversation, before the
+child's final turn); `status.json` is the coarser, filesystem-level fallback the canonical spec
+itself sanctions for tools and agents with no access to the Python `Outcome` return value or the
+`report_outcome` tool call at all (e.g. a bare shell `tool_command`). A full retcon of §35 (e.g.
+routing `report_outcome` itself through this same file-based channel) is a separate, larger item
+and is explicitly NOT done here — `report_outcome` is unchanged.
+
+### Compatibility
+
+Additive and non-interfering (`SPEC_CONFORMANCE.md` compat-doctrine rule 3): a conformant graph
+whose nodes never write `status.json` themselves observes IDENTICAL behavior (the override is
+divergence-gated and a no-op with no file present). The full `loop-pipeline` suite (2206 tests)
+passes unchanged; three RED-only regressions surfaced during development (int-coerced
+`suggested_next_ids` already governed by §34, and `"skipped"` already used by the engine's own
+writers) were fixed to match existing decided policy, not worked around.
+
+### Implementation locations
+
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/status_file.py` — `read_status_override()`
+  (new module)
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/retry.py` — `execute_with_retry()`, checked
+  every attempt, before the `must_write=` check
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/handlers/codergen.py` —
+  `CodergenHandler.execute()`, checked immediately before each of its two default-outcome
+  `_write_status()` calls; `_write_status()` additionally now writes the canonical `preferred_label`
+  key (Appendix C) alongside the pre-existing `preferred_next_label` alias
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/engine.py` — `_write_node_status()`, same
+  additive `preferred_label` key
+- `modules/loop-pipeline/tests/test_status_file_contract.py` — RED-proof (fixture fails without
+  the read side, passes with it), goal_gate interaction (SF-006/SF-007), and unit-level
+  `read_status_override()` coverage
+- `specs/conformance/attractor-matrix.yaml` — row `ATX-M-041`
