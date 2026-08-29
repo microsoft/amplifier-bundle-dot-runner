@@ -82,9 +82,6 @@ _NODE_PROMOTED_ATTRS: frozenset[str] = frozenset(
         "reasoning_effort",
         "auto_status",
         "allow_partial",
-        # Extension: structured output (EXTENSIONS.md §23).
-        # Raw string from DOT; resolved to a dict by apply_transforms().
-        "response_schema",
     }
 )
 
@@ -223,11 +220,6 @@ class Node:
     fallback_retry_target, fidelity, thread_id, timeout, llm_model,
     llm_provider, reasoning_effort, auto_status, allow_partial.
     These are also accessible via ``attrs`` dict for backward compatibility.
-
-    Extension field (EXTENSIONS.md §23): response_schema.
-    Stores the raw DOT attribute string initially (either inline JSON or a
-    file path); resolved to a ``dict`` by ``apply_transforms()`` before
-    validation and execution.
     """
 
     id: str
@@ -251,13 +243,6 @@ class Node:
     reasoning_effort: str | None = None
     auto_status: bool | None = None
     allow_partial: bool | None = None
-
-    # Extension: structured-output schema (EXTENSIONS.md §23).
-    # Initially a raw string from the DOT attribute; resolve_response_schemas()
-    # in transforms.py replaces it with the parsed dict before execution.
-    # Type annotation is dict for post-transform consumers; pre-transform the
-    # field may hold a string — Python does not enforce annotations at runtime.
-    response_schema: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.label:

@@ -8,17 +8,19 @@ Spec coverage: PAR-001–013, CONC-001–004, Section 4.8.
 
 Node attributes:
     max_parallel   – Maximum concurrent branches (default 4).
-    join_policy    – wait_all | first_success | k_of_n | quorum (default wait_all).
+    join_policy    – wait_all | first_success (default wait_all).
     error_policy   – fail_fast | continue | ignore (default continue).
-    min_success    – Required successes for k_of_n (default 1).
-    quorum_fraction – Required fraction for quorum (default 0.5).
+
+EXTENSIONS.md §18 status: REMOVED (2026-08-31) — `k_of_n` and `quorum` join
+policies (and their `min_success`/`quorum_fraction` attributes) were deleted;
+`error_policy` is unaffected (it is load-bearing, 5 shipped-graph uses). See
+the ledger entry for the usage census and the full removal note.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -220,9 +222,6 @@ class ParallelHandler:
             results = await _run_fail_fast(branches, run_branch, semaphore)
         elif join_policy == "first_success":
             results = await _run_first_success(branches, run_branch)
-        elif join_policy == "k_of_n":
-            k = int(node.attrs.get("min_success", 1))
-            results = await _run_k_of_n(branches, run_branch, k)
         else:
             # Default (continue) and ignore both run all branches
             tasks = [run_branch(edge.to_node) for edge in branches]
@@ -350,68 +349,6 @@ async def _run_first_success(
     return results
 
 
-async def _run_k_of_n(
-    branches: list,
-    run_branch: Callable,
-    k: int,
-) -> list[dict[str, Any]]:
-    """Execute branches with k_of_n: cancel remaining when k successes reached.
-
-    Tracks completed branches incrementally. Returns early when k branches
-    have succeeded. Also returns early when the threshold becomes impossible
-    (too many failures for remaining branches to reach k).
-    """
-    results: list[dict[str, Any]] = []
-    tasks = [asyncio.create_task(run_branch(edge.to_node)) for edge in branches]
-    pending: set[asyncio.Task] = set(tasks)
-    success_count = 0
-
-    while pending:
-        newly_done, pending = await asyncio.wait(
-            pending, return_when=asyncio.FIRST_COMPLETED
-        )
-
-        for task in newly_done:
-            result = task.result()
-            results.append(result)
-            if result["status"] in ("success", "partial_success"):
-                success_count += 1
-
-        # Check if threshold is met
-        if success_count >= k:
-            for p in pending:
-                p.cancel()
-            if pending:
-                cancelled_done, _ = await asyncio.wait(pending)
-                for ct in cancelled_done:
-                    try:
-                        cr = ct.result()
-                        if cr is not None:
-                            results.append(cr)
-                    except asyncio.CancelledError:
-                        pass
-            return results
-
-        # Check if threshold is impossible: too many failures already
-        remaining = len(pending)
-        if success_count + remaining < k:
-            # Even if all remaining succeed, can't reach k
-            for p in pending:
-                p.cancel()
-            if pending:
-                cancelled_done, _ = await asyncio.wait(pending)
-                for ct in cancelled_done:
-                    try:
-                        cr = ct.result()
-                        if cr is not None:
-                            results.append(cr)
-                    except asyncio.CancelledError:
-                        pass
-            return results
-
-    return results
-
-
 def _apply_join_policy(
     results: list[dict[str, Any]],
     policy: str,
@@ -419,8 +356,11 @@ def _apply_join_policy(
 ) -> Outcome:
     """Evaluate a join policy against branch results.
 
-    Supports: wait_all, first_success, k_of_n, quorum.
-    Unknown policies fall back to wait_all behaviour.
+    Supports: wait_all, first_success.
+    Unknown policies (including the removed k_of_n/quorum, EXTENSIONS.md
+    §18 status: REMOVED) fall back to wait_all behaviour -- this is the
+    SAME fallback any other unrecognized join_policy value already got,
+    not a new special case introduced by the removal.
     """
     # EXTENSIONS.md §25: every join-policy outcome below is is_explicit=True.
     # The join policy is a deterministic counting rule over branch statuses —
@@ -431,8 +371,6 @@ def _apply_join_policy(
         return Outcome(
             status=StageStatus.SUCCESS, notes="No branches", is_explicit=True
         )
-
-    attrs = node_attrs or {}
 
     success_count = sum(
         1 for r in results if r["status"] in ("success", "partial_success")
@@ -468,47 +406,8 @@ def _apply_join_policy(
             is_explicit=True,
         )
 
-    # -- k_of_n ----------------------------------------------------------
-    if policy == "k_of_n":
-        k = int(attrs.get("min_success", 1))
-        if success_count >= k:
-            return Outcome(
-                status=StageStatus.SUCCESS,
-                notes=f"{success_count}/{total} branches succeeded (needed {k})",
-                is_explicit=True,
-            )
-        return Outcome(
-            status=StageStatus.FAIL,
-            failure_reason=(
-                f"Only {success_count}/{k} required branches succeeded "
-                f"(out of {total} total)"
-            ),
-            is_explicit=True,
-        )
-
-    # -- quorum ----------------------------------------------------------
-    if policy == "quorum":
-        fraction = float(attrs.get("quorum_fraction", 0.5))
-        needed = math.ceil(total * fraction)
-        if success_count >= needed:
-            return Outcome(
-                status=StageStatus.SUCCESS,
-                notes=(
-                    f"{success_count}/{total} branches succeeded "
-                    f"(needed {needed}, fraction={fraction})"
-                ),
-                is_explicit=True,
-            )
-        return Outcome(
-            status=StageStatus.FAIL,
-            failure_reason=(
-                f"Only {success_count}/{needed} required branches succeeded "
-                f"(fraction={fraction}, total={total})"
-            ),
-            is_explicit=True,
-        )
-
-    # -- Unknown policy: fall back to wait_all ---------------------------
+    # -- Unknown policy (including removed k_of_n/quorum): fall back to
+    # wait_all -------------------------------------------------------------
     if fail_count == 0:
         return Outcome(
             status=StageStatus.SUCCESS,

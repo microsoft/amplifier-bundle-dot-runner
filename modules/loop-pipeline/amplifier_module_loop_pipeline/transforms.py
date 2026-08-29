@@ -8,7 +8,6 @@ Spec coverage: XFORM-001-006, Section 9.2
 
 Built-in transforms:
     expand_variables        — Replace $goal in node prompts with the graph goal.
-    resolve_response_schemas — Resolve response_schema attrs to dicts (EXT §23).
     apply_transforms        — Run all built-in transforms in order.
 
 M-20: Formal Transform protocol for custom transforms.
@@ -17,43 +16,12 @@ L-17: Shared expand_goal_variable utility (single source of truth).
 
 from __future__ import annotations
 
-import json
-import os
 import re
-import warnings
 from typing import Any, Protocol, runtime_checkable
 
 from .context import PipelineContext
 from .graph import Graph
 from .stylesheet import apply_stylesheet, parse_stylesheet
-
-# ---------------------------------------------------------------------------
-# EXTENSIONS.md Sec23 -- BACK-OUT (maintainer ruling, 2026-08-29, Lane F
-# extensions-undo audit).
-#
-# Usage census found zero shipped .dot graphs declaring response_schema=
-# across amplifier-bundle-dot-runner, amplifier-bundle-attractor
-# (examples/**, .github/capsule-pipeline/**), amplifier-resolver-dot-graph,
-# and amplifier-resolve -- only this engine's own test fixtures exercise it.
-# The mechanism duplicates two spec-native verdict channels that already
-# carry structured output: the Sec25 fail-closed pure-JSON goal_gate
-# verdict, and the Sec41 status.json channel. Behavior is NOT removed here
-# -- only a loud, non-suppressible deprecation warning is added, per the
-# deprecation-window precedent this module already uses for
-# DirectProviderBackend (amplifier_module_loop_pipeline/__init__.py).
-# Removal is tracked as a follow-up issue (see this change's PR body).
-# ---------------------------------------------------------------------------
-_RESPONSE_SCHEMA_DEPRECATION_MSG = (
-    "Node '{node_id}': response_schema= is deprecated (EXTENSIONS.md Sec23; "
-    "maintainer ruling 2026-08-29 -- BACK-OUT, deprecation window open). "
-    "No shipped .dot graph across amplifier-bundle-dot-runner, "
-    "amplifier-bundle-attractor, amplifier-resolver-dot-graph, or "
-    "amplifier-resolve declares response_schema=. It duplicates two "
-    "spec-native verdict channels: the Sec25 fail-closed pure-JSON "
-    "goal_gate verdict, and the Sec41 status.json channel. Migrate to one "
-    "of those instead. This attribute keeps working, unchanged, through "
-    "the deprecation window; removal is tracked as a follow-up issue."
-)
 
 # ---------------------------------------------------------------------------
 # L-17: Shared variable expansion utility
@@ -177,123 +145,6 @@ def expand_variables(graph: Graph, context: PipelineContext) -> Graph:
     return graph
 
 
-def _resolve_response_schema_value(
-    raw: str,
-    source_dir: str,
-    node_id: str,
-) -> dict[str, Any]:
-    """Resolve a ``response_schema`` DOT attribute value to a Python dict.
-
-    Accepts two forms (EXTENSIONS.md §23):
-
-    * **Inline JSON** — trimmed value starts with ``{``.  Parsed with
-      ``json.loads``; must be a JSON object (not a list or scalar).
-    * **File path** — any other value.  Resolved relative to *source_dir*
-      (i.e., the directory of the ``.dot`` file) when not absolute; falls
-      back to the current working directory when *source_dir* is empty.
-      The file must contain a valid JSON object.
-
-    Raises:
-        ValueError: If the value is neither valid inline JSON nor a
-            readable file containing a valid JSON object.  Always raised
-            with a clear, actionable message — never silently skipped.
-
-    Args:
-        raw: The raw string value from the DOT attribute.
-        source_dir: Directory of the ``.dot`` source file (may be empty).
-        node_id: Node ID for use in error messages.
-
-    Returns:
-        The parsed JSON object as a Python dict.
-    """
-    trimmed = raw.strip()
-
-    # --- Inline JSON ---
-    if trimmed.startswith("{"):
-        try:
-            result = json.loads(trimmed)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Node '{node_id}': response_schema is not valid inline JSON: {exc}. "
-                f"Value: {raw!r}"
-            ) from exc
-        if not isinstance(result, dict):
-            raise ValueError(
-                f"Node '{node_id}': response_schema inline JSON must be a JSON object "
-                f"(dict), got {type(result).__name__}"
-            )
-        return result
-
-    # --- File path ---
-    base = source_dir if source_dir else os.getcwd()
-    path = trimmed if os.path.isabs(trimmed) else os.path.join(base, trimmed)
-    try:
-        with open(path, encoding="utf-8") as fh:
-            content = fh.read()
-    except OSError as exc:
-        raise ValueError(
-            f"Node '{node_id}': response_schema file '{path}' could not be read: {exc}. "
-            f"Ensure the path is relative to the .dot file directory or is absolute."
-        ) from exc
-    try:
-        result = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"Node '{node_id}': response_schema file '{path}' "
-            f"does not contain valid JSON: {exc}"
-        ) from exc
-    if not isinstance(result, dict):
-        raise ValueError(
-            f"Node '{node_id}': response_schema file '{path}' "
-            f"JSON must be a JSON object (dict), got {type(result).__name__}"
-        )
-    return result
-
-
-def resolve_response_schemas(graph: Graph) -> Graph:
-    """Resolve raw ``response_schema`` string values on nodes to parsed dicts.
-
-    EXTENSIONS.md §23 — Structured Output extension.
-
-    Called from ``apply_transforms()`` before validation and execution.
-    Modifies each node in-place: the ``response_schema`` field transitions
-    from its raw DOT string to the parsed JSON object.
-
-    If *source_dir* is empty on the graph (e.g., DOT was loaded from an
-    inline string), file-path schemas are resolved relative to ``os.getcwd()``.
-
-    Args:
-        graph: The pipeline graph to transform (modified in place).
-
-    Returns:
-        The same graph.
-
-    Raises:
-        ValueError: If any node's ``response_schema`` value is neither
-            valid inline JSON nor a readable file containing a valid JSON
-            object.  Always loud — never silently skipped.
-    """
-    source_dir = graph.source_dir or ""
-    for node in graph.nodes.values():
-        raw = node.response_schema
-        if raw is None:
-            continue
-        # BACK-OUT deprecation warning (EXTENSIONS.md Sec23) -- see module
-        # banner above. Fires once per node declaring response_schema=,
-        # every time this transform runs; behavior is unchanged.
-        warnings.warn(
-            _RESPONSE_SCHEMA_DEPRECATION_MSG.format(node_id=node.id),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        if isinstance(raw, dict):
-            continue  # already a dict (e.g., programmatically constructed node)
-        node.response_schema = _resolve_response_schema_value(
-            str(raw), source_dir, node.id
-        )
-    return graph
-
-
 def apply_transforms(
     graph: Graph,
     context: PipelineContext,
@@ -304,10 +155,8 @@ def apply_transforms(
 
     Order:
     1. Variable expansion (``$goal`` → goal value).
-    2. Response-schema resolution (EXT §23): resolve ``response_schema``
-       DOT attr strings to parsed dicts, fail-loud on any parse error.
-    3. Stylesheet application (CSS-like model config rules).
-    4. Custom transforms (in order provided).
+    2. Stylesheet application (CSS-like model config rules).
+    3. Custom transforms (in order provided).
 
     Args:
         graph: The pipeline graph to transform (modified in place).
@@ -321,15 +170,12 @@ def apply_transforms(
     # 1. Variable expansion
     expand_variables(graph, context)
 
-    # 2. Resolve response_schema attrs (EXTENSIONS.md §23)
-    resolve_response_schemas(graph)
-
-    # 3. Stylesheet application
+    # 2. Stylesheet application
     if graph.model_stylesheet:
         rules = parse_stylesheet(graph.model_stylesheet)
         apply_stylesheet(graph, rules)
 
-    # 4. Custom transforms (M-20)
+    # 3. Custom transforms (M-20)
     if extra_transforms:
         for transform in extra_transforms:
             graph = transform.apply(graph)

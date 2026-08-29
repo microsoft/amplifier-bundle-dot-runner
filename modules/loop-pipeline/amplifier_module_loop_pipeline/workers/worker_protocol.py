@@ -20,8 +20,8 @@ exclusion list is specific -- "workers never receive `graph` or
 implementations (``AmplifierBackend._run_with_tool_loop`` and
 ``DirectProviderBackend.run``) read ordinary per-node attributes directly
 off ``node`` (``llm_provider``, ``llm_model``, ``reasoning_effort``,
-``max_agent_turns``, ``response_schema``, ``goal_gate``) -- none of that is
-the fidelity/thread-key plumbing the two named exclusions target. Dropping
+``max_agent_turns``, ``goal_gate``) -- none of that is the fidelity/
+thread-key plumbing the two named exclusions target. Dropping
 `node` too would force the adapter to pre-flatten every one of those
 attributes into ad hoc keyword arguments for no seam-purity gain.
 """
@@ -57,7 +57,7 @@ class Worker(Protocol):
         Args:
             node: The pipeline node being executed. Used only for ordinary
                 per-node attributes (provider/model/reasoning_effort/
-                max_agent_turns/response_schema/goal_gate) -- never for
+                max_agent_turns/goal_gate) -- never for
                 `graph`/`incoming_edge`-shaped fidelity plumbing, which is
                 the adapter's job one layer up.
             prompt: The already-expanded instruction text (preamble and any

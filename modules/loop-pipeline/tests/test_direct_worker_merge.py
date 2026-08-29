@@ -4,7 +4,9 @@
 Covers the two asymmetries the design doc names explicitly that are not
 already exercised by the migrated ex-``DirectProviderBackend``/
 ``_run_with_tool_loop`` test files (``test_unified_llm_wiring.py``,
-``test_provider_hooks.py``, ``test_response_schema.py``, etc.):
+``test_provider_hooks.py``, etc. -- ``test_response_schema.py`` was one of
+these too, until EXTENSIONS.md §23's REMOVED note deleted it with the
+mechanism it tested):
 
 - row 6 (``clone()``): the former standalone ``DirectProviderBackend`` had
   NO ``clone()`` method at all. ``handlers/__init__.py``'s branch-clone code

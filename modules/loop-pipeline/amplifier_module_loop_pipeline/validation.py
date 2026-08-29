@@ -127,7 +127,6 @@ def validate(
     _check_shape_resolvable(graph, diags)
     _check_fidelity_valid(graph, diags)
     _check_retry_target_exists(graph, diags)
-    _check_response_schema(graph, diags)
     _check_tool_command_handler(graph, diags)
     _check_retry_budgets(graph, diags)
 
@@ -772,42 +771,6 @@ def _check_retry_target_exists(graph: Graph, diags: list[Diagnostic]) -> None:
                         f"references nonexistent node '{target}'"
                     ),
                     fix=f"Set graph {attr_name} to a valid node ID or remove it",
-                )
-            )
-
-
-def _check_response_schema(graph: Graph, diags: list[Diagnostic]) -> None:
-    """EXT-23: response_schema values must be dicts after apply_transforms resolves them.
-
-    This is a defensive post-transform lint: ``apply_transforms()`` calls
-    ``resolve_response_schemas()`` which raises loudly on bad values, so
-    under normal execution flow this rule fires only if the graph was
-    constructed programmatically with an unresolved string value or if
-    transforms were intentionally skipped.
-
-    EXTENSIONS.md §23 — response_schema Node Attribute (Structured Output).
-    """
-    for node in graph.nodes.values():
-        rs = node.response_schema
-        if rs is None:
-            continue
-        if not isinstance(rs, dict):
-            diags.append(
-                Diagnostic(
-                    rule="response_schema_valid",
-                    severity="ERROR",
-                    message=(
-                        f"Node '{node.id}': response_schema must be a JSON object "
-                        f"(dict) after apply_transforms() resolution, "
-                        f"got {type(rs).__name__!r}. "
-                        f"Ensure apply_transforms() ran before validate(), or "
-                        f"provide a dict directly when constructing nodes programmatically."
-                    ),
-                    node_id=node.id,
-                    fix=(
-                        "Provide inline JSON starting with '{' or a valid path to "
-                        "a JSON schema file as the response_schema attribute value"
-                    ),
                 )
             )
 
