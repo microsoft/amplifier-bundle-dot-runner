@@ -42,8 +42,6 @@ jobs:
             extra_args: ""
           - name: remote-source
             extra_args: ""
-          - name: tool-report-outcome
-            extra_args: ""
           - name: unified-llm-client
             extra_args: ""
           - name: loop-amplifier-agent
