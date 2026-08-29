@@ -531,6 +531,50 @@ Cleanup/notification nodes can still run via `runs_on=always|failure`. This is t
 relied on canonical "continue past FAIL on the best unconditional edge" must add
 `runs_on=always` (or `continue_on_fail`) to the intended successor.
 
+**Spec-intended alternative (teach this first for new pipelines):** canonical §3.7 Failure
+Routing already gives a graph-native way to route around a FAIL without `runs_on=` /
+`continue_on_fail=`: add an explicit edge with `condition="outcome=fail"` from the node that may
+fail to the desired successor (canonical §3.7 rule 1, "Fail edge" — checked before this
+engine's fail-fast gate ever applies). Worked example, no `runs_on=` attribute anywhere:
+
+```dot
+build   [shape=box, prompt="..."]
+cleanup [shape=box, prompt="Clean up partial build artifacts."]
+deploy  [shape=box, prompt="Deploy the build."]
+
+build -> cleanup [condition="outcome=fail", label="fail-fast: explicit route"]
+build -> deploy  [label="success: continue"]
+```
+
+If `build` fails, the `condition="outcome=fail"` edge is what `select_edge()` matches; if
+`build` has no such edge and no `retry_target`/`fallback_retry_target`, the pipeline terminates
+on the failure (canonical §3.7 rule 4) — the same fail-fast guarantee `runs_on=`/
+`continue_on_fail=` exists to provide, expressed with zero DOT-runner-specific vocabulary.
+`runs_on=`/`continue_on_fail=` remains the right tool when a node must run regardless of
+*which* upstream node failed (one cleanup/notification node fed by several possible
+predecessors) — the explicit-edge pattern above needs one edge per predecessor;
+`runs_on=always` needs none.
+
+> **Disposition note (dated 2026-08-29, maintainer ruling, Lane F extensions-undo audit —
+> DEMOTE):** Usage census (four repos, `.dot` files only): **amplifier-bundle-dot-runner** —
+> 1 test fixture (`modules/loop-pipeline/tests/fixtures/parent_with_child.dot`), 12 test files
+> incl. dedicated `test_runs_on_axis.py` / `test_p8_continue_on_fail.py`, zero shipped/example
+> graphs. **amplifier-bundle-attractor** — zero occurrences in any shipped graph under
+> `examples/**` or `.github/capsule-pipeline/**`; its "recover wall" fail-class routing is built
+> on explicit `condition="outcome=..."`/`context.tool.last_line=...` edges, not this attribute.
+> **amplifier-resolver-dot-graph** — real, heavy production usage: 48 occurrences across 8
+> shipped pipelines (`pipelines/implement.dot`, `pipelines/expert_builder.dot`,
+> `pipelines/experiments/reality_report.dot`, `pipelines/resolve_validated.dot`,
+> `pipelines/subgraphs/goal_convergence_core.dot`, `pipelines/pr_feedback.dot`,
+> `pipelines/wip/reality_check_explore.dot`, `pipelines/goal.dot`), plus engine-level reads in
+> `handlers/reality_check_invoke.py` and `handlers/harvest.py`. **amplifier-resolve** — zero.
+> Real downstream production reliance means the spec alternative does not *fully* serve — an
+> evidence-based full BACK-OUT is not supported here. Disposition: **DEMOTE, not BACK-OUT.** No
+> code change; conformance-matrix row `ATX-M-016` (`DIVERGE-DECIDED`) is unaffected. This
+> entry's teaching order flips so the canonical §3.7 explicit-edge pattern is what a new
+> pipeline author reaches for first; `runs_on=`/`continue_on_fail=` is retained, documented
+> second, as the shared-target escape hatch resolver-dot-graph's shipped pipelines depend on.
+
 ## 17. Node I/O Contracts: `requires=` / `outputs=` with Skip Propagation
 
 **What:** Nodes may declare `requires=<keys>` and `outputs=<keys>`. A node whose required
@@ -542,6 +586,50 @@ inputs are absent (e.g. produced by a skipped/failed upstream node) is itself sk
 loud, observable event rather than a silent downstream failure.
 
 **Compatibility:** Additive — nodes that declare neither attribute are unaffected.
+
+**Spec-intended alternative (teach this first for new pipelines):** the same two effects —
+skip a node whose inputs never materialized, and surface a node that produced nothing useful —
+are reachable with vocabulary the canonical spec already defines: `condition=` clauses over
+`context.<key>` (§10.4/10.5) for the "did the upstream data show up" half, and a `shape=tool`
+node running a file-existence check for the "did this node's artifact actually land" half.
+Worked example, no `requires=`/`outputs=` anywhere:
+
+```dot
+extract [shape=box, prompt="Extract the customer record to context key extracted_record."]
+
+check_extracted [shape=tool, tool_command="test -f .ai/extracted_record.json && echo present || echo absent"]
+
+extract -> check_extracted
+check_extracted -> summarize [condition="context.tool.last_line=present", label="input landed"]
+check_extracted -> skip_note [condition="context.tool.last_line=absent", label="input missing -- explicit skip"]
+```
+
+`context.<key>` conditions cover the "requires=" half directly (route only when the expected
+context key is actually set); the tool-node file-existence probe above covers the "outputs="
+half for a node whose contract is a file artifact rather than a context key. Both compose with
+ordinary `condition=` routing, so the skip is visible in the graph itself rather than inferred
+from an internal `PIPELINE_NODE_SKIPPED` event.
+
+> **Disposition note (dated 2026-08-29, maintainer ruling, Lane F extensions-undo audit —
+> DEMOTE):** Usage census (four repos, `.dot` files only): **amplifier-bundle-dot-runner** —
+> zero shipped/example graphs; engine-internal coverage only (`test_outputs_attribute.py`,
+> `test_engine_bug_h_requires_attribute.py`, `test_contract_violation_event.py`,
+> `test_parallel_ignore_does_not_populate_failed_outputs.py`). **amplifier-bundle-attractor** —
+> zero occurrences in any shipped graph under `examples/**` or `.github/capsule-pipeline/**`.
+> **amplifier-resolver-dot-graph** — real, heavy production usage: 27 occurrences across 12
+> shipped pipelines (`pipelines/implement.dot`, `pipelines/expert_builder.dot`,
+> `pipelines/dtu_validate_wrap.dot`, `pipelines/dotpowers.dot`, `pipelines/resolve_validated.dot`,
+> `pipelines/subgraphs/deliver_human_decides.dot`, `pipelines/subgraphs/security_review.dot`,
+> `pipelines/subgraphs/goal_convergence_core.dot`, `pipelines/subgraphs/dtu_validate.dot`,
+> `pipelines/develop.dot`, `pipelines/dev_machine.dot`, `pipelines/goal.dot`).
+> **amplifier-resolve** — zero. This is NOT the clean zero-usage BACK-OUT candidate the initial
+> ruling expected — the evidence contradicts that expectation, and the ruling's own method
+> ("follow the evidence") governs. Disposition: **DEMOTE, not BACK-OUT.** No code change. This
+> entry's teaching order flips so the canonical-vocabulary `condition=context.<key>` /
+> file-existence-probe pattern is what a new pipeline author reaches for first;
+> `requires=`/`outputs=` is retained, documented second, for pipelines already declaring it
+> (12 shipped resolver-dot-graph pipelines, including its own `goal.dot` and `dev_machine.dot`
+> entry points).
 
 ## 18. Parallel Join Policies Beyond Canonical: `k_of_n` / `quorum` / `error_policy`
 
@@ -668,6 +756,27 @@ reference via `${node_id}` substitution or direct context lookup.
 unaffected. Existing `.dot` files work without modification. Canonical spec-conformant backends
 that do not read `response_schema` will silently treat it as an unknown attribute (per the
 existing unknown-attr passthrough behaviour of `dot_parser.py::_apply_node`).
+
+> **Disposition note (dated 2026-08-29, maintainer ruling, Lane F extensions-undo audit —
+> BACK-OUT, deprecation window open):** Usage census (four repos, `.dot` files only): **zero
+> shipped `.dot` graph anywhere declares `response_schema=`** — not in amplifier-bundle-
+> dot-runner (this repo ships none outside its own test suite:
+> `tests/test_response_schema.py`, `tests/test_fail_closed_outcomes.py`,
+> `tests/test_direct_worker_merge.py`, `tests/test_tool_extraction_regression.py`), not in
+> amplifier-bundle-attractor (`examples/**`, `.github/capsule-pipeline/**`), not in
+> amplifier-resolver-dot-graph (its ~35 shipped pipelines under `pipelines/**`,
+> `pipelines/subgraphs/**`, `evals/**`), not in amplifier-resolve. This is the clean
+> zero-usage case the ruling's method calls for: `response_schema=` duplicates two channels
+> that are both spec-native and already shipped — §25's fail-closed pure-JSON goal_gate
+> verdict, and §41's `status.json` channel — and no pipeline anywhere relies on the
+> provider-native structured-output path this attribute adds. Disposition: **BACK-OUT.**
+> Mechanism removed behind a deprecation window: a loud, non-suppressible
+> `DeprecationWarning` now fires from `transforms.py::resolve_response_schemas()` for every
+> node that still declares `response_schema=` (RED-proofed by
+> `tests/test_response_schema_deprecation_warning.py`); the attribute's behavior is otherwise
+> completely unchanged through the window. Removal of the mechanism itself (the `response_schema`
+> field on `Node`, `resolve_response_schemas()`, the `ResponseFormat` provider-threading path)
+> is **not** done in this change and is filed as a follow-up (see this change's PR body).
 
 ---
 
@@ -1584,6 +1693,46 @@ statically checkable warning that a loop may be re-flipping rather than descendi
   Never written by the engine; retained so tests can assert it is never written (regression
   guard for per-target scoping)
 - `_CHANNEL_KEY = "feedback.channel"` — the unscoped channel name; same never-written guard
+
+**Spec-intended alternative (teach this first for new pipelines):** the pattern this extension's
+own "Why" section describes as the pre-existing fallback — the generator's prompt reads the
+critic's prior output back from a durable artifact — is directly authorable with canonical
+vocabulary alone (a `shape=box` prompt plus ordinary loop_restart edges), no engine-enforced
+channel required. Worked example:
+
+```dot
+critique  [shape=box, prompt="Review the draft at .ai/draft.md. Write your critique to .ai/feedback/critique.md, overwriting any prior content."]
+generate  [shape=box, prompt="Read .ai/feedback/critique.md if it exists and address it. Write the revised draft to .ai/draft.md."]
+
+critique -> generate [label="loop_restart", condition="outcome=fail"]
+```
+
+This composes with `fidelity=full` continuity (§12) for free — the generator's own prior-turn
+messages already carry the critique in-thread — and needs nothing beyond what canonical already
+defines. What it does NOT get for free is exactly what motivated §29: guaranteed delivery (a
+prompt edit can silently sever the loop), curation (unbounded file growth vs. the 5-entry/
+500-char bound), and per-target isolation when multiple generators share one critic.
+
+> **Disposition note (dated 2026-08-29, maintainer ruling, Lane F extensions-undo audit —
+> DEMOTE):** Usage census (four repos, `.dot` files only): **amplifier-bundle-dot-runner** —
+> zero shipped/example graphs (this repo ships none outside `feedback.py`/`codergen.py`/
+> `checkpoint.py`/`engine.py` and `tests/test_feedback_mechanism.py`).
+> **amplifier-bundle-attractor** — real, heavy production usage: 16 occurrences across 4
+> files, two of them CI-gating capsule pipelines (`.github/capsule-pipeline/capsule.dot`,
+> `.github/capsule-pipeline/feature-capsule.dot`) plus the canonical exemplar
+> (`examples/patterns/convergence-factory.dot`) and a live-proof fixture
+> (`examples/pipelines/practical/evidence/feedback-convergence-2026-08-04/feedback-live.dot`).
+> **amplifier-resolver-dot-graph** — 3 occurrences in 1 shipped subgraph
+> (`pipelines/subgraphs/goal_convergence_core.dot`). **amplifier-resolve** — zero. This
+> matches the ruling's own expectation: the mechanism is genuinely load-bearing — it gates
+> every PR in the attractor repo via `capsule.dot`/`feature-capsule.dot`. Disposition:
+> **DEMOTE, not BACK-OUT.** No code change; the engine-enforced channel remains fully available
+> and is the right choice for any pipeline that needs guaranteed delivery, curation, or
+> per-target isolation. This entry's teaching order flips so the plain-prompt/artifact-read
+> pattern above is what a new pipeline author sees first; `feedback_from=` is retained,
+> documented second, as the hardening step a loop graduates to once the informal convention
+> proves load-bearing (exactly attractor's own capsule pipelines' history, per this entry's
+> original "Why").
 
 ---
 
