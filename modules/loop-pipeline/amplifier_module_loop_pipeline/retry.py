@@ -224,6 +224,22 @@ async def execute_with_retry(
     node_start_wall = time.time()
 
     for attempt in range(1, policy.max_attempts + 1):
+        # Adversarial-review fix (pre-merge, feat/status-json-channel): a
+        # per-ATTEMPT wall-clock floor for the status.json override read
+        # below. `node_start_wall` (ladder entry, fixed for the whole retry
+        # loop) is intentionally reused for the must_write= check further
+        # down -- an artifact written by an earlier attempt legitimately
+        # satisfies a later one there. But reusing that SAME fixed floor for
+        # read_status_override() let a status.json written during attempt 1
+        # (e.g. an external tool's one-shot RETRY signal) remain "fresh"
+        # forever and get silently RE-APPLIED to every later attempt even
+        # when that attempt's own handler run never touched the file again
+        # -- reproduced empirically: attempt 1 writes status.json=retry,
+        # attempts 2-4 each return a genuine handler SUCCESS but are forced
+        # back to RETRY by the same stale file until max_attempts exhausts
+        # into a spurious FAIL. Reset the floor here, at the top of each
+        # attempt, so only a file written DURING *this* attempt counts.
+        attempt_start_wall = time.time()
         # Execute the handler
         try:
             outcome = await handler.execute(
@@ -302,7 +318,7 @@ async def execute_with_retry(
         # (e.g. a handler RETRY overridden to an explicit SUCCESS, or vice
         # versa).
         _status_override = read_status_override(
-            node, logs_root, node_start_wall, outcome
+            node, logs_root, attempt_start_wall, outcome
         )
         if _status_override is not None:
             outcome = _status_override
