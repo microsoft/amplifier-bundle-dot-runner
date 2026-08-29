@@ -64,9 +64,27 @@ def _innocent_high_entropy_token() -> str:
     correlation token -- ordinary observability, and (see
     ``test_the_innocent_value_is_one_an_entropy_scan_would_have_eaten``)
     exactly what the canonical layer-4 entropy heuristic WOULD destroy.
+
+    MIXED, DETERMINISTICALLY -- not just probably.  A pure ``secrets.choice``
+    draw over letters+digits lands all-letters with probability
+    ``(52/62)**43 ~= 5.2e-4`` (about 1 in 1926), and an all-letter draw is
+    ``str.isalpha() == True`` -- which trips the canonical heuristic's own
+    early-return-False guard for alphabetic-only strings, so the test below
+    would (rarely, but for real) observe the heuristic call the token *not*
+    suspicious and fail an assertion that has nothing to do with what the
+    test is actually probing.  The token's whole premise is "a high-entropy
+    MIXED value the scan must not eat", so a draw that happens to be
+    all-letters violates that premise, not the scan.  Post-check-and-inject
+    a digit so the premise holds on every single call rather than merely
+    "almost always": still a uniformly random draw over the same alphabet,
+    just with the all-letters branch closed off after the fact.
     """
     alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(43))
+    token = "".join(secrets.choice(alphabet) for _ in range(43))
+    if token.isalpha():
+        pos = secrets.randbelow(len(token))
+        token = token[:pos] + secrets.choice(string.digits) + token[pos + 1 :]
+    return token
 
 
 def _env_dump(fake_key: str, innocent: str) -> str:

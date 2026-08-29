@@ -7,16 +7,29 @@ import httpx
 import pytest
 import respx
 
+# amplifier_module_remote_source is only wired in via this package's optional
+# `remote` extra (see pyproject.toml's [project.optional-dependencies]). A
+# plain `uv sync` (no `--extra remote`) leaves it uninstalled, and an
+# unguarded import below would fail at COLLECTION time -- not as a single
+# test failure, but as a collection ERROR that silently shrinks the whole
+# suite's reported count. Self-guard the same way the other optional-dep
+# seams in this file's sibling tests do (e.g. test_backend.py's
+# `unified_llm = pytest.importorskip("unified_llm")`): skip this module,
+# loudly and by name, instead of failing collection.
+remote_source = pytest.importorskip(
+    "amplifier_module_remote_source",
+    reason="remote_dot tests need the optional `remote` extra: uv sync --extra remote",
+)
+
 from amplifier_module_loop_pipeline.remote_dot import (
     load_remote_or_local_graph,
     materialize_remote_dot,
 )
-from amplifier_module_remote_source import (
-    BlobCache,
-    FetchLimits,
-    RemoteFetchPathError,
-    parse_uri,
-)
+
+BlobCache = remote_source.BlobCache
+FetchLimits = remote_source.FetchLimits
+RemoteFetchPathError = remote_source.RemoteFetchPathError
+parse_uri = remote_source.parse_uri
 
 API = "https://api.github.com/repos"
 
