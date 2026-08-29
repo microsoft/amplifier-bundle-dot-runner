@@ -654,6 +654,42 @@ without hand-rolling them in conditions.
 > `k_of_n` and `quorum` are a **subtraction candidate — no shipped graph uses them**; `error_policy`
 > is genuinely in use and is not. No code was removed here; this note records the finding only.
 
+### status: REMOVED (`k_of_n`/`quorum` only) (2026-08-31, maintainer ruling, Lane 1b -- `feat/extensions-walkback-2`)
+
+**Ruling:** the 2026-08-14 usage-check note above already identified `k_of_n`/`quorum` as a clean
+subtraction candidate and recorded the finding without acting on it. Continuing this repair
+effort's posture (same principle as Sec 23's and Sec 35's REMOVED notes): once a mechanism is a
+confirmed zero-usage subtraction candidate, act on the finding instead of re-recording it.
+`error_policy` (`fail_fast`/`continue`/`ignore`) is untouched -- it is load-bearing (2026-08-14
+found 5 shipped-graph uses; this pass's fresh census below re-confirms real, non-zero usage in
+consumer repos too).
+
+**Re-confirmed zero usage (four repos, `.dot` files):** fresh shallow clones of
+amplifier-bundle-attractor, amplifier-resolver-dot-graph, and amplifier-resolve, plus this
+repo's own tree -- **`k_of_n` = 0, `quorum` = 0** everywhere, unchanged from the 2026-08-14
+finding. `error_policy` remains genuinely in use (non-zero hits in amplifier-bundle-attractor's
+shipped graphs, consistent with the original 5-use finding in this repo).
+
+**What actually changed:** `handlers/parallel.py`: the `_run_k_of_n()` early-exit runner, the
+`join_policy == "k_of_n"` dispatch branch in `ParallelHandler.execute()`, and the `k_of_n`/
+`quorum` branches of `_apply_join_policy()` (including the now-unused `math` import) are
+deleted. A node declaring `join_policy=k_of_n` or `join_policy=quorum` now falls through to
+`_apply_join_policy()`'s existing "unknown policy" branch -- the SAME `wait_all`-equivalent
+fallback any other unrecognized `join_policy` value already received; this is not a new
+behavior, just the pre-existing fallback claiming two more (unused) input values. `min_success`/
+`quorum_fraction` are no longer read anywhere and are ordinary unrecognized node attributes now.
+Tests deleted with the behavior: `TestKOfNJoinPolicy`, `TestQuorumJoinPolicy`, and the four
+k_of_n/quorum cases in `TestPolicyEdgeCases` (`tests/test_parallel_policies.py`);
+`TestKOfNEarlyExit` in full (`tests/test_parallel_early_exit.py`). `error_policy`'s own tests
+(`TestFailFastErrorPolicy`, `TestIgnoreErrorPolicy`) and the surviving `wait_all`/`first_success`/
+unknown-policy edge case are untouched.
+
+**Conformance matrix:** `specs/conformance/attractor-matrix.yaml` carries no row keyed to this
+extension's join policies (Sec 18 is an EXTENSION-disposition mechanism outside the
+canonical-spec row schema the matrix indexes; its one `k_of_n`/`quorum` mention is a historical
+`notes:` field on row `ATX-M-000` describing the 2026-08-14 upstream-removal discovery, not an
+assertion against this repo's code) -- there is no assertion to flip.
+
 ## 19. `wait.human` `freeform` Mode and Attachments
 
 **What:** The human-gate node supports a `freeform` response mode (open text, not only
@@ -777,6 +813,71 @@ existing unknown-attr passthrough behaviour of `dot_parser.py::_apply_node`).
 > completely unchanged through the window. Removal of the mechanism itself (the `response_schema`
 > field on `Node`, `resolve_response_schemas()`, the `ResponseFormat` provider-threading path)
 > is **not** done in this change and is filed as a follow-up (see this change's PR body).
+
+### status: REMOVED (2026-08-31, maintainer ruling, Lane 1b -- `feat/extensions-walkback-2`)
+
+**Ruling:** continuing the repair posture Sec 35's own REMOVED note set (same principle, same
+repair effort): an extension whose job is already done by a spec-native alternative gets
+REMOVED, not carried on a compatibility glide path. The BACK-OUT note above (dated 2026-08-29)
+said mechanism removal was "not done in this change and is filed as a follow-up"; this note is
+that follow-up. This entry's BODY (the attribute's two value forms, provider threading, the
+spawn-path limitation, the fail-loud file/JSON parsing rules) stays put -- the ledger is
+append-only and describes what shipped historically -- but none of it is live code any more as
+of this note.
+
+**Re-confirmed zero usage (four repos, same method as the 2026-08-29 census):** fresh shallow
+clones of amplifier-bundle-attractor, amplifier-resolver-dot-graph, and amplifier-resolve, plus
+this repo's own tree, still show **zero shipped `.dot` graphs** declaring `response_schema=`
+anywhere. The only first-party Python hits outside this repo's own (now-deleted) test suite are:
+(a) amplifier-bundle-attractor's `modules/loop-pipeline/**`, a vendored copy of THIS module, not
+an independent consumer; and (b) one test in amplifier-resolve
+(`tests/test_mcp_contract.py::test_validate_pipeline_response_schema_is_valid`) that exercises
+this engine's own `validate()` path against a raw (pre-transform) `response_schema=` string --
+it asserts the ABSENCE of a `response_schema_valid` diagnostic, an assertion that stays
+trivially true once the rule no longer exists at all. Neither is a real production dependency;
+both are unaffected by this removal.
+
+**What actually changed:**
+
+- `graph.py`: the `Node.response_schema` dataclass field and its entry in
+  `_NODE_PROMOTED_ATTRS` are deleted. A `response_schema=` DOT attribute is now an ordinary
+  unrecognized node attribute -- silently passed through per `dot_parser.py::_apply_node`'s
+  existing unknown-attribute behavior, the same fate every other unlisted DOT attribute already
+  gets. This is a deliberate **silent-ignore**, not a new loud-unknown special case: making one
+  specific formerly-known attribute name loud while every other unknown attribute stays silent
+  would itself be a new, undocumented divergence the engine does not otherwise draw.
+- `transforms.py`: `resolve_response_schemas()`, `_resolve_response_schema_value()`, the
+  `_RESPONSE_SCHEMA_DEPRECATION_MSG` constant, and the deprecation-warning call site are
+  deleted; `apply_transforms()` no longer resolves or warns on this attribute.
+- `validation.py`: `_check_response_schema()` (the `response_schema_valid` diagnostic rule) and
+  its call site are deleted.
+- `backend.py`: the `_run_with_spawn` guard that failed a `response_schema` node routed through
+  the spawn path is deleted (a spawned node has no `response_schema` field left to check), and
+  `_outcome_from_structured_output()` (the format-vs-verdict `Outcome` builder for schema nodes)
+  is deleted outright.
+- `workers/direct_worker.py`: the `ResponseFormat`/`response_format` construction, the
+  `node.response_schema is not None` dispatch branch, and `_structured_output_result()` are
+  deleted. `_structured_output_result()` also carried the Anthropic `__structured_output__`
+  tool-call JSON-recovery fix (ATX-9) -- that recovery only ever fired on this schema path, so
+  it has no other caller left to serve. Every node now runs the plain `_tool_loop_result()`
+  path unconditionally.
+- Tests deleted WITH the behavior, never weakened-kept: `tests/test_response_schema.py`,
+  `tests/test_response_schema_deprecation_warning.py`, and
+  `tests/test_tool_extraction_regression.py` in full -- the last one's entire premise
+  (recovering JSON from a synthetic `__structured_output__` tool call) cannot occur once nothing
+  ever requests `response_format` any more. `tests/test_fail_closed_outcomes.py` and
+  `tests/test_direct_worker_merge.py` only referenced the deleted files in comments; those
+  comments are updated, no test bodies changed.
+- `SPEC_CONFORMANCE.md` rows ATX-8/ATX-9 are marked REMOVED with a dated addendum pointing here.
+  `specs/conformance/attractor-matrix.yaml` carries no row keyed to this extension (Sec 23 is an
+  EXTENSION-disposition mechanism outside the canonical-spec row schema the matrix indexes), so
+  there is no assertion there to flip.
+
+**Precedence, restated:** the two spec-native channels this attribute always duplicated are now
+the whole of the structured-output story for a schema-shaped node: Sec 25's fail-closed
+pure-JSON `goal_gate` verdict ladder (`_parse_outcome` against `result.text`), and Sec 41's
+`status.json` audit-trail channel. Neither ever depended on `response_schema`, and both remain
+unconditionally reachable exactly as before this removal.
 
 ---
 

@@ -187,8 +187,8 @@ conformance-matrix row `ATX-M-016` (`specs/conformance/attractor-matrix.yaml`),
 |----|------|--------|-------------|
 | SYNC-1 | Re-sync vendored `specs/canonical/` to upstream byte-for-byte | **DONE** (canonical @ `fb57a55`) | ALIGN |
 | DEAD-1 | Dead `SessionConfig` fields implying coverage that isn't wired (`tool_output_limits`, `tool_line_limits`, `default_command_timeout_ms`, `max_command_timeout_ms`, `get_max_tool_rounds`) | **DONE** | DIVERGE (all deleted + documented) |
-| ATX-8 | DOT `response_schema` node attribute → per-provider structured output (NOT in canonical spec; §4.5 keeps output format at backend) | **DONE — LIVE-PROVEN** (all 3 providers via DOT pipeline) | IMPROVE (extension §23) |
-| ATX-9 | DOT backends didn't recover Anthropic structured output from the `__structured_output__` tool call (only read `result.text`, which is empty on the tool-extraction path); live symptom `outcome.notes=''`; fixed in `loop-pipeline/__init__.py`, `backend.py` | **DONE** (live-found + fixed) | ALIGN |
+| ATX-8 | DOT `response_schema` node attribute → per-provider structured output (NOT in canonical spec; §4.5 keeps output format at backend) | **REMOVED** (2026-08-31, see Changelog -- mechanism deleted, was formerly DONE—LIVE-PROVEN) | IMPROVE (extension §23, status: REMOVED) |
+| ATX-9 | DOT backends didn't recover Anthropic structured output from the `__structured_output__` tool call (only read `result.text`, which is empty on the tool-extraction path); live symptom `outcome.notes=''`; fixed in `loop-pipeline/__init__.py`, `backend.py` | **REMOVED** (2026-08-31 -- the fix's own caller, ATX-8's response_schema path, is deleted; no other caller ever produced a `__structured_output__` tool call) | ALIGN (historical; no longer reachable) |
 | ATX-15 | `status.json` read-side pickup missing (spec Sec 4.5 / Appendix C status-file contract) — engine only ever wrote status.json, never read a node-written one back | **DONE** (`specs/EXTENSIONS.md` Sec 41) | ALIGN |
 
 ---
@@ -257,6 +257,32 @@ are the current state; these are the reasoning behind it.
 ---
 
 ## Changelog
+
+### 2026-08-31 — ATX-8/ATX-9 REMOVED: response_schema mechanism deleted (Lane 1b, `feat/extensions-walkback-2`)
+
+**What:** continuing the WAVE 5 spec-repair posture (same ruling that removed `report_outcome`),
+the `response_schema` DOT node attribute (ATX-8) is deleted in full -- not deprecated further, not
+kept behind the WAVE-5-era `DeprecationWarning`. Re-confirmed zero usage across this repo and
+fresh shallow clones of amplifier-bundle-attractor, amplifier-resolver-dot-graph, and
+amplifier-resolve: zero shipped `.dot` graphs anywhere declare `response_schema=`, and the only
+first-party Python hits outside this repo's own (now-deleted) test suite are a vendored copy of
+this same module inside amplifier-bundle-attractor and one amplifier-resolve test whose assertion
+(absence of a `response_schema_valid` diagnostic) stays trivially true once the rule is gone.
+
+**Removed:** `Node.response_schema` (`graph.py`), `resolve_response_schemas()` +
+`_resolve_response_schema_value()` (`transforms.py`), `_check_response_schema()`
+(`validation.py`), the spawn-path guard + `_outcome_from_structured_output()` (`backend.py`), and
+the `ResponseFormat` construction + `_structured_output_result()` (`workers/direct_worker.py`).
+ATX-9's fix (`__structured_output__` tool-call JSON recovery) has no remaining caller now that
+nothing requests `response_format` -- it goes REMOVED alongside ATX-8, not ALIGN-forever, since a
+fix for an unreachable code path is not a live conformance fact.
+
+**Tests deleted with the behavior:** `tests/test_response_schema.py`,
+`tests/test_response_schema_deprecation_warning.py`, `tests/test_tool_extraction_regression.py`
+(in full -- its whole premise was the now-unreachable `__structured_output__` recovery).
+
+**Full narrative:** `specs/EXTENSIONS.md` Sec 23's `status: REMOVED` note. Full `loop-pipeline`
+suite after removal: see that note / this change's commit message for the exact pass count.
 
 ### 2026-08-29 — ATX-15 DONE: status.json read-side pickup restored (spec Sec 4.5 / Appendix C status-file contract)
 

@@ -24,8 +24,9 @@ Coverage:
   FC-014  is_explicit serialized into status.json (flat + iteration) and trace.jsonl
   FC-015  is_explicit serialized by the codergen early-writer (_write_status)
 
-Structured-output (response_schema) verdict policy tests live in
-test_response_schema.py (they need the unified_llm mock harness).
+Structured-output (response_schema, EXTENSIONS.md §23) verdict policy no
+longer exists as of the §23 REMOVED note -- there is no longer a separate
+schema-mock-harness test file to point to here.
 """
 
 from __future__ import annotations

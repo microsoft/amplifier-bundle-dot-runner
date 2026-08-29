@@ -64,10 +64,10 @@ from .status_contract import build_status_file_contract, current_node_status_pat
 
 # NOTE: `.workers` is imported LAZILY inside `AmplifierBackend.__init__`
 # (not here at module level). `workers/direct_worker.py` imports several
-# helpers back FROM this module (`_outcome_from_structured_output`,
-# `_MAX_TOOL_LOOP_ROUNDS`, etc.) -- a top-level `from .workers import ...`
-# here would run during THIS module's own top-level execution, before those
-# names are defined below, producing a circular partial-init ImportError.
+# helpers back FROM this module (`_MAX_TOOL_LOOP_ROUNDS`, `_parse_outcome`,
+# etc.) -- a top-level `from .workers import ...` here would run during
+# THIS module's own top-level execution, before those names are defined
+# below, producing a circular partial-init ImportError.
 # This mirrors the existing lazy-import idiom already used elsewhere in this
 # module/package to break the same class of cycle (e.g. `_build_backend`'s
 # `from .backend import AmplifierBackend` in `__init__.py`).
@@ -570,20 +570,6 @@ class AmplifierBackend:
     ) -> Outcome:
         """Spawn a full child session via the CLI's session.spawn capability."""
         assert self._spawn_fn is not None  # guaranteed by caller
-
-        # EXT-23: response_schema requires direct LLM generation; structured
-        # output cannot be threaded through the spawned-agent protocol yet.
-        if node.response_schema is not None:
-            return Outcome(
-                status=StageStatus.FAIL,
-                failure_reason=(
-                    "response_schema is only supported on direct-LLM nodes "
-                    "(not spawned-agent nodes) yet. "
-                    "Either use a backend without session.spawn (e.g., "
-                    "DirectProviderBackend) or remove response_schema from "
-                    f"node '{node.id}'."
-                ),
-            )
 
         # Obtain parent_session from coordinator
         parent_session = getattr(self._coordinator, "session", None)
@@ -1265,73 +1251,6 @@ def _build_unified_tools(pipeline_tools: dict[str, Any]) -> list[Any]:
             )
         )
     return tools
-
-
-def _outcome_from_structured_output(
-    raw_json: str,
-    parsed_obj: Any,
-    ctx_updates: dict[str, Any],
-    result: Any,
-) -> Outcome:
-    """Build the Outcome for a response_schema (EXT-23) structured-output node.
-
-    EXTENSIONS.md §25 policy: **format ≠ verdict.** Parseable schema output
-    proves the model followed the requested FORMAT; it does not prove the
-    node asserted a VERDICT. Schema-parsed output is therefore explicit ONLY
-    when it carries a recognized verdict via a ``status`` field whose value
-    is a recognized ``StageStatus`` (the same rule ``_parse_outcome`` applies
-    to JSON responses).
-
-    WAVE 5 repair (2026-08-30): the former ``report_outcome`` tool-call check
-    that used to run before the ``status`` field check is gone -- the tool
-    (and ``_find_report_outcome_call``) are removed repo-wide, no compat
-    window (specs/EXTENSIONS.md §35 RETCON, dated status: REMOVED). The
-    remaining ``status``-field ladder is the whole of §25's explicit-verdict
-    path for structured output now; ``result`` is accepted for call-site
-    signature stability but is no longer consulted.
-
-    Generic structured output — ``{"name": "Alice"}``,
-    ``{"assessment": "NOT CONVERGED"}`` — stays DERIVED
-    (``is_explicit=False``): the node still returns SUCCESS (EXT-23
-    behavior for ordinary schema nodes is unchanged), but a
-    ``goal_gate=true`` schema node cannot satisfy its gate with it
-    (fail-closed at the gate layer).
-
-    ``ctx_updates`` (the ``last_stage``/``last_response``/``node.id`` data
-    stash) is preserved on every branch so downstream nodes keep access to
-    the structured payload regardless of verdict classification.
-    """
-    del result  # unused -- kept for call-site signature stability, see above
-    verdict: StageStatus | None = None
-    if isinstance(parsed_obj, dict):
-        status_val = parsed_obj.get("status")
-        if isinstance(status_val, str):
-            verdict = _STATUS_MAP.get(status_val)
-    if verdict is not None:
-        assert isinstance(parsed_obj, dict)  # narrowed above
-        extra = parsed_obj.get("context_updates")
-        return Outcome(
-            status=verdict,
-            notes=parsed_obj.get("notes") or raw_json,
-            failure_reason=parsed_obj.get("failure_reason"),
-            preferred_label=parsed_obj.get("preferred_label"),
-            suggested_next_ids=parsed_obj.get("suggested_next_ids"),
-            context_updates={
-                **ctx_updates,
-                **(extra if isinstance(extra, dict) else {}),
-            },
-            is_explicit=True,
-        )
-
-    # Non-verdict structured output (including empty/unparseable): node
-    # DATA, not a verdict. SUCCESS per EXT-23 (non-gate schema nodes are
-    # unchanged) but DERIVED — a goal_gate on this node fails closed.
-    return Outcome(
-        status=StageStatus.SUCCESS,
-        notes=raw_json,
-        context_updates=ctx_updates,
-        is_explicit=False,
-    )
 
 
 # Spawn-result status strings that count as a real, non-failing completion.

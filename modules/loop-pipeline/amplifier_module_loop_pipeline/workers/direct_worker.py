@@ -12,10 +12,10 @@ Cites (nlspec-first gate, AGENTS.md -- spec text is never restated here):
     delegation -- "what that backend does internally is entirely up to the
     implementor").
   - specs/EXTENSIONS.md Sec12/Sec13 (fidelity=full continuity realization,
-    branch-local thread isolation), Sec23 (response_schema), Sec25
-    (fail-closed goal-gate / is_explicit), Sec35 (report_outcome
-    precedence), Sec40 (this program's own new ledger entry -- worker
-    selection + registry semantics).
+    branch-local thread isolation), Sec25 (fail-closed goal-gate /
+    is_explicit), Sec35 (report_outcome precedence -- REMOVED), Sec40
+    (this program's own new ledger entry -- worker selection + registry
+    semantics).
   - DESIGN-worker-registry-core-split.md Sec2.1 (seam contract), Sec4 P1
     (the merge), gap-table rows 2/6-12.
 
@@ -25,9 +25,9 @@ RED-proofs):
   - row 6 (``clone()``): both predecessors' tool-cloning logic unified here;
     ``DirectProviderBackend`` had none (silent ``hasattr`` guard skipped it).
   - row 7 (``close()``): same story for the cached ``unified_llm`` client.
-  - row 8 (``response_schema``): preserved (EXT-23) -- unaffected by the
-    merge; still refused on the spawn path (``backend.py``'s
-    ``_run_with_spawn``, untouched).
+  - row 8 (``response_schema``): REMOVED repo-wide (EXTENSIONS.md Sec23,
+    status: REMOVED) -- this merge note is kept for history only; neither
+    predecessor's structured-output branch exists here any more.
   - row 9 (``user_instructions``): NOT claimed here -- both predecessors
     left this spawn-path-only (``backend.py``'s ``_run_with_spawn``); the
     direct worker still does not honor it. Declared absent to the
@@ -48,14 +48,12 @@ RED-proofs):
 from __future__ import annotations
 
 import copy
-import json
 from typing import Any
 
 from ..backend import (
     _MAX_TOOL_LOOP_ROUNDS,
     _build_unified_tools,
     _default_model_stable_only,
-    _outcome_from_structured_output,
     _parse_outcome,
     _resolve_concrete_model,
     _resolve_model,
@@ -193,15 +191,6 @@ class DirectWorker:
         tools = _build_unified_tools(self._tools)
         client = self._get_or_create_unified_client()
 
-        # EXT-23: response_schema -> structured output (row 8, preserved).
-        response_format: Any = None
-        if node.response_schema is not None:
-            response_format = unified_llm.ResponseFormat(
-                type="json_schema",
-                json_schema=node.response_schema,
-                strict=True,
-            )
-
         generate_kwargs: dict[str, Any] = {
             "model": model,
             "tools": tools or None,
@@ -211,7 +200,6 @@ class DirectWorker:
             "reasoning_effort": reasoning_effort,
             "provider": provider_name,
             "client": client,
-            "response_format": response_format,
         }
 
         if replayed_history:
@@ -290,9 +278,6 @@ class DirectWorker:
             },
         )
 
-        if node.response_schema is not None:
-            return _structured_output_result(node, result)
-
         return _tool_loop_result(node, result)
 
 
@@ -307,43 +292,6 @@ def _message_from_dict(m: dict[str, Any]):
     if role == "assistant":
         return unified_llm.Message.assistant(content)
     return unified_llm.Message.user(content)
-
-
-def _structured_output_result(node: Node, result: Any) -> tuple[str, Outcome]:
-    """EXT-23 structured-output branch -- identical logic to both
-    predecessors (backend.py's ``_run_with_tool_loop`` /
-    ``__init__.py``'s ``DirectProviderBackend.run``)."""
-    raw_json = result.text or ""
-    if not raw_json.strip() and result.tool_calls:
-        _STRUCT_TOOL = "__structured_output__"
-        for _tc in result.tool_calls:
-            if _tc.name == _STRUCT_TOOL:
-                _args = _tc.arguments
-                raw_json = (
-                    json.dumps(_args)
-                    if isinstance(_args, dict)
-                    else (str(_args) if _args else "")
-                )
-                break
-    parsed_obj: Any = None
-    if raw_json.strip():
-        try:
-            parsed_obj = json.loads(raw_json)
-        except json.JSONDecodeError:
-            pass
-    ctx_updates: dict[str, Any] = {
-        "last_stage": node.id,
-        "last_response": raw_json[:200],
-    }
-    if parsed_obj is not None:
-        ctx_updates[node.id] = parsed_obj
-    outcome = _outcome_from_structured_output(
-        raw_json=raw_json,
-        parsed_obj=parsed_obj,
-        ctx_updates=ctx_updates,
-        result=result,
-    )
-    return raw_json, outcome
 
 
 def _tool_loop_result(node: Node, result: Any) -> tuple[str, Outcome]:
