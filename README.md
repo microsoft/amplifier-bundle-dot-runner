@@ -4,6 +4,21 @@ The engine that runs `.dot` pipelines: a DOT-graph-driven multi-stage AI
 workflow orchestrator, plus the CLI and provider client it depends on —
 packaged as a proper, composable **Amplifier bundle**.
 
+## 0.2.0 -- repair release (breaking changes)
+
+This release repairs drift from the vendored spec that had crept into prior
+releases (maintainer ruling, 2026-08-29/30):
+
+- **`report_outcome` tool REMOVED.** No compat window, no deprecation
+  period. `modules/tool-report-outcome` is deleted; `status.json` (spec
+  Sec 4.5 / Appendix C -- see `specs/EXTENSIONS.md` Sec 35's dated
+  `status: REMOVED` note and Sec 41) is the taught, spec-native verdict
+  channel for every worker, spawned or direct.
+- **`--bundle`/`DOT_RUNNER_BUNDLE` REMOVED from the CLI.** Bundles are
+  under the hood now, never a user-facing concept. The whole user-facing
+  worker-selection story is `--worker direct|loop-agent|amplifier-agent`
+  (or a node's own `worker=` attribute, EXTENSIONS.md Sec40).
+
 This repo implements the vendored **strongdm/attractor** nlspec faithfully
 and is verified against it mechanically (see "Spec fidelity" below). It is
 **not** an opinionated pipeline layer, a pattern library, or an authoring
@@ -15,12 +30,10 @@ docs) lives in the repos that consume this one.
 | Path | What it is |
 |---|---|
 | `bundle.md` | Root bundle (`dot-runner`) — includes the `dot-runner-core` behavior. |
-| `behaviors/dot-runner.yaml` | Engine partial (`dot-runner-core`) — mounts the `report_outcome` tool (compat channel; the taught, spec-native verdict channel is now `status.json` — see `specs/EXTENSIONS.md` Sec 35's WAVE 4 RETCON note). |
 | `modules/loop-pipeline` | **The engine.** DOT parser, validator, graph execution engine, handler dispatch. |
 | `modules/pipeline-runner` | The `dot-runner` CLI (`run` / `resume` / `doctor` / `trace` / `lint`) plus the `drive_engine` / `run_pipeline` library surface. The `attractor` command has been removed entirely -- see "Getting started" below. |
 | `modules/unified-llm-client` | Provider-agnostic LLM client — a faithful implementation of the Attractor Unified LLM Client spec. |
 | `modules/remote-source` | Content-addressed `git+https://` fetcher (Layer A), used by `loop-pipeline[remote]` to materialize remote `.dot` graphs. |
-| `modules/tool-report-outcome` | The `report_outcome` tool module — lets a child agent set a structured pipeline verdict. Compat channel (WAVE 4): `status.json` (spec Sec 4.5 / Appendix C) is now the taught way; this module is unchanged, functional through a deprecation window. |
 | `modules/loop-agent` | The `coding-agent-loop` nlspec implementation — a general worker (registerable in the worker registry), not attractor-specific. |
 | `modules/loop-amplifier-agent` | OPT-IN adapter orchestrator: hosts [microsoft/amplifier-agent](https://github.com/microsoft/amplifier-agent)'s `Engine` as a pipeline node's worker via `session.spawn`. Heavy, optional peer dependency (`amplifier_agent_lib`, Python >=3.12) -- installed via the root package's `[agent]` extra. See "Default worker" below. |
 | `modules/hooks-pipeline-observability` | State aggregator, status bar, and event persistence hooks for pipeline runs. |
@@ -99,9 +112,9 @@ corresponding commit here.
 **The `attractor` command is gone.** If you landed here from old docs or a
 bookmark expecting `attractor run ...`: that console script has been removed
 entirely (band-aid rip, no alias, no shim, no deprecation window). This
-repo now ships exactly one CLI, `dot-runner` -- see below for how to get the
-same opinionated (attractor-pattern) experience back, by explicit
-declaration via `--bundle`.
+repo now ships exactly one CLI, `dot-runner`. Worker NAMES are the whole
+user-facing concept for an opinionated (agent-hosted) experience -- see
+`--worker` below; `--bundle` is not part of this CLI's surface.
 
 ### Pattern (a) — root one-liner (recommended)
 
@@ -134,10 +147,10 @@ policy: amplifier-agent is the team's bet for new dot-runner surfaces.
 
 `run`/`resume` also accept `--worker <name>` (EXTENSIONS.md §40 — feeds the
 worker registry's run-level `default_worker`; a node's own `worker=`
-attribute still wins) and `--bundle <ref>` (or the `DOT_RUNNER_BUNDLE` env
-var) — an explicit bundle reference to compose as this run's base bundle.
-**An explicit `--worker`/`--bundle` (or `DOT_RUNNER_BUNDLE`) always wins**
-over everything below.
+attribute still wins), one of `direct`, `loop-agent`, `amplifier-agent`.
+**An explicit `--worker` always wins** over everything below. There is no
+`--bundle` flag or `DOT_RUNNER_BUNDLE` env var on this CLI -- any bundle
+machinery a named worker needs is internal, private implementation detail.
 
 **The resolution ladder, when no explicit choice is made:**
 
@@ -148,19 +161,18 @@ over everything below.
    [microsoft/amplifier-agent](https://github.com/microsoft/amplifier-agent))
    are installed.
 2. **Available -> amplifier-agent.** The CLI synthesizes a minimal bundle
-   (one agent entry backed by `loop-amplifier-agent`, `worker: spawn`, a
-   `profiles` map routing every known LLM provider to that one agent) and
-   hands it to `run_pipeline`/`resume_pipeline` as an ordinary `bundle=`
-   argument -- the EXACT mechanism an explicit `--bundle <ref>` already
-   uses (a local file path is a legitimate bundle reference). No new
-   engine internals: the runner loads it via its own existing
-   `_load_named_bundle` and reads back its declared worker/profiles via
-   its own existing `_declared_worker_and_profiles`, unchanged.
+   internally (one agent entry backed by `loop-amplifier-agent`, `worker:
+   spawn`, a `profiles` map routing every known LLM provider to that one
+   agent) and wires it under the hood -- purely private implementation
+   detail (`amplifier_module_pipeline_runner.default_worker`), never a
+   user-facing `--bundle` concept. `--worker loop-agent`/`--worker
+   amplifier-agent` use this exact same internal mechanism when chosen
+   explicitly, parametrized by which adapter module to wire.
 3. **Unavailable -> `direct`, loudly.** One stderr line names the upgrade
    path:
 
    ```
-   dot-runner: no --worker/--bundle given and amplifier-agent is not installed --
+   dot-runner: no --worker given and amplifier-agent is not installed --
    falling back to worker=direct. Install the agent extra for the default
    amplifier-agent worker: see this repo's README, "The [agent] extra" section,
    for the two-step install that enables it today (a single `uv tool install
@@ -185,10 +197,10 @@ dot-runner run path/to/pipeline.dot
 # amplifier-agent NOT installed: falls back to `direct`, with the notice above
 dot-runner run path/to/pipeline.dot
 
-# explicit choice always wins, either direction
+# explicit choice always wins
 dot-runner run path/to/pipeline.dot --worker direct
-dot-runner run path/to/pipeline.dot \
-  --bundle "git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=bundles/attractor-pipeline.yaml"
+dot-runner run path/to/pipeline.dot --worker loop-agent
+dot-runner run path/to/pipeline.dot --worker amplifier-agent
 ```
 
 An unknown `--worker` name is refused with a clean error naming every
@@ -260,8 +272,8 @@ Without doing this, `dot-runner` still works standalone (falls back to
 changes what the DEFAULT worker resolves to, never whether the CLI runs at
 all. Once both packages are present in the environment (however they got
 there), the default-worker probe resolves `True` and every subsequent
-`dot-runner run`/`resume` with no explicit `--worker`/`--bundle` wires
-amplifier-agent automatically -- verified end-to-end.
+`dot-runner run`/`resume` with no explicit `--worker` wires amplifier-agent
+automatically -- verified end-to-end.
 
 ### Pattern (c) — mount as an Amplifier bundle
 
@@ -269,8 +281,7 @@ amplifier-agent automatically -- verified end-to-end.
 amplifier bundle add git+https://github.com/microsoft/amplifier-bundle-dot-runner@main
 ```
 
-This registers the `dot-runner` namespace (root `bundle.md`) and its
-`dot-runner-core` behavior (the `report_outcome` tool). Wire the
+This registers the `dot-runner` namespace (root `bundle.md`). Wire the
 `loop-pipeline` module as your session's `session.orchestrator` (with a
 DOT graph via `dot_file`/`dot_source`) and supply a provider — this bundle
 deliberately supplies neither.
@@ -282,7 +293,6 @@ cd modules/loop-pipeline && uv sync --extra remote && uv run pytest -q
 cd modules/pipeline-runner && uv sync && uv run pytest -q
 cd modules/unified-llm-client && uv sync && uv run pytest -q
 cd modules/remote-source && uv sync && uv run pytest -q
-cd modules/tool-report-outcome && uv sync && uv run pytest -q
 cd modules/loop-agent && uv sync && uv run pytest -q
 cd modules/hooks-pipeline-observability && uv sync && uv run pytest -q
 cd modules/hooks-pipeline-progress && uv sync && uv run pytest -q
