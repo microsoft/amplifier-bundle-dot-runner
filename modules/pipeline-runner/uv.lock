@@ -9,7 +9,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=4490bf5f3cf9e5a7829365e84c318a7fd9db7e3d" }]
+overrides = [{ name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?branch=main" }]
 
 [[package]]
 name = "amplifier-core"
@@ -34,7 +34,7 @@ wheels = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?rev=4490bf5f3cf9e5a7829365e84c318a7fd9db7e3d#4490bf5f3cf9e5a7829365e84c318a7fd9db7e3d" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?branch=main#9851cecd93417e75cb501f2164ea219efdc0da6a" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "pyyaml" },
@@ -89,7 +89,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "amplifier-core", specifier = ">=0.1.0" },
-    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=main" },
+    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?branch=main" },
     { name = "amplifier-module-loop-pipeline", extras = ["remote"], directory = "../loop-pipeline" },
 ]
 
