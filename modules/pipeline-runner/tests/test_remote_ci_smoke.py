@@ -85,6 +85,13 @@ async def test_remote_ci_smoke_real_public_repo_fetch(tmp_path: Path, monkeypatc
     the same bare-coordinator pattern).
     """
     monkeypatch.setenv("ATTRACTOR_CACHE_DIR", str(tmp_path / "remote-cache"))
+    # `drive_engine` unconditionally bootstraps a direct-worker LLM
+    # provider (post-band-aid-rip: no attractor personality/session.spawn
+    # to fall back on) unless the coordinator advertises `session.spawn`
+    # -- this bare `object()` coordinator does not. The fixture graph has
+    # no LLM/box node, so a dummy credential satisfies the bootstrap
+    # without a real provider ever being invoked.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-remote-ci-smoke")
 
     try:
         outcome = await drive_engine(
