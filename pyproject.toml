@@ -16,24 +16,23 @@ dependencies = [
     "amplifier-module-pipeline-runner",
 ]
 
-[project.optional-dependencies]
-# The default-worker bet (maintainer policy: amplifier-agent is the team's
-# bet for new dot-runner surfaces -- see amplifier_module_pipeline_runner.
-# default_worker). HEAVY and OPTIONAL: microsoft/amplifier-agent
-# (amplifier_agent_lib) pulls in fastapi/uvicorn/mcp/... and requires
-# Python >=3.12 -- it must never become a forced dependency of the thin
-# engine (`dependencies` above stays untouched). Installing this extra is
-# what makes `amplifier_module_pipeline_runner.default_worker`'s cheap
-# `importlib.util.find_spec` probe resolve True, so a bare `dot-runner run`
-# with no --worker/--bundle wires amplifier-agent instead of falling back
-# to `direct`. Refs mirror modules/loop-amplifier-agent/pyproject.toml's
-# own dependency declarations verbatim (the adapter's own peer-library ref)
-# -- see that file's comment for why each is an unpinned `@main` git ref.
-agent = [
-    "amplifier-module-loop-amplifier-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-amplifier-agent",
-    "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main",
-]
-
+# NOTE: microsoft/amplifier-agent (the `[agent]` extra's own peer library)
+# is deliberately NOT declared here as a formal `[project.optional-
+# dependencies]` group. Review finding: merely declaring it -- even behind
+# a `python_version >= "3.12"` marker -- still breaks `uv lock`/`uv sync`/
+# `uv run` for THIS WHOLE root project (not just an explicit `[agent]`
+# install), because uv's default universal-resolution model must still
+# prove the "marker is true" split resolvable, and that split hits the
+# same real, disclosed, cross-repo dependency-declaration collision
+# documented in README's "The [agent] extra" section ("conflicting URLs
+# for package amplifier-foundation"). A formal extra that breaks `uv lock`
+# for every consumer of this package -- including ones who never asked for
+# it, like this repo's own "Validate Bundle Repo" CI job -- is worse than
+# no formal extra at all. The feature itself is unaffected: `default_worker
+# .amplifier_agent_available()` only probes what is actually installed
+# (`importlib.util.find_spec`), regardless of how it got there, so the
+# README's two-step `uv pip install` workaround (which never goes through
+# this table) remains the fully-supported, proven-working install path.
 [project.urls]
 Homepage = "https://github.com/microsoft/amplifier-bundle-dot-runner"
 Repository = "https://github.com/microsoft/amplifier-bundle-dot-runner"
