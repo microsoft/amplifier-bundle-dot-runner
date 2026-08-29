@@ -1,28 +1,43 @@
-"""Tests that _resolve_model() requires explicit model specification.
+"""Tests that _resolve_model() requires explicit model specification --
+EXCEPT for the one case the LANE-D maintainer ruling carves out: a node
+that sets `llm_provider` alone (no `llm_model`) now resolves a documented,
+LIVE-resolved per-provider default family token instead of failing loud
+(spec Sec8.5 rung 4 / Appendix A "Handler/system default" -- see
+_PROVIDER_DEFAULT_MODEL_PATTERN and its citations in backend.py, and
+specs/EXTENSIONS.md entry 41).
 
-Pre-fix behavior:
+Original (pre-LANE-D) behavior, still true for the genuinely-bare case:
     _resolve_model(node)
-    → if node.llm_model is None, return _DEFAULT_MODELS.get(provider, "claude-sonnet-4-20250514")
-    → i.e., silently falls back to a hardcoded model (which may be deprecated)
+    → if node.llm_model is None AND node.llm_provider is also None,
+      raise ValueError -- forces every pipeline to declare model or
+      provider explicitly.  (test_resolve_model_raises_without_explicit_model,
+      below, still pins this.)
 
-Post-fix behavior:
+Historically-removed anti-pattern (pre-2026, NOT reinstated by LANE-D):
     _resolve_model(node)
-    → if node.llm_model is None, raise ValueError with a clear message
-    → forces every pipeline to explicitly declare which model to use
+    → if node.llm_model is None, return
+      _DEFAULT_MODELS.get(provider, "claude-sonnet-4-20250514")
+    → i.e., silently falling back to a LITERAL, hardcoded model id
+      (which rots -- exactly why _DEFAULT_MODELS was deleted).
 
-This is the direct-tool-loop (Path B) code path.  Path A (spawn) relies
-on the agent profile bundle's default_model config, which is addressed
-separately by removing the default_model field from all agent YAML files.
+LANE-D behavior (this file, updated): llm_provider EXPLICITLY set + no
+llm_model -> a per-provider default FAMILY TOKEN (e.g. "sonnet",
+"gpt-5.*[0-9]", "gemini-3*pro*"), resolved LIVE via the same
+unified_llm.resolve_latest_for machinery an author gets from writing
+`llm_model=sonnet` themselves.  This is never a literal, rotting model id
+-- the "cranky-old-sam: no silent defaults" principle is preserved in
+spirit (no hardcoded id is baked in); what changed is that llm_provider is
+now honored as the spec-level signal it is, so community .dot authors who
+write `llm_provider=openai` alone are never surprised by a crash.
 
-Cranky-old-sam principle: no silent defaults.  "claude-sonnet-4-20250514"
-appearing in a fallback dict is a deprecated model masquerading as a
-safe choice.  Surface the omission immediately.
+This is the direct-tool-loop (Path B) code path.  Path A (spawn) is
+unaffected by this file (see test_provider_preflight.py /
+test_direct_provider_backend_shim.py for that path's own coverage).
 """
 
 import pytest
 
 from amplifier_module_loop_pipeline.graph import Node
-
 
 # ---------------------------------------------------------------------------
 # Core: _resolve_model() must raise when no model is set
@@ -53,38 +68,78 @@ def test_resolve_model_raises_without_explicit_model():
     )
 
 
-def test_resolve_model_raises_for_anthropic_provider_without_model():
-    """_resolve_model() must not fall back to 'claude-sonnet-4-20250514' for anthropic."""
-    from amplifier_module_loop_pipeline.backend import _resolve_model
+def test_resolve_model_returns_default_token_for_anthropic_provider_without_model():
+    """LANE-D: llm_provider=anthropic alone must resolve to the documented
+    default FAMILY TOKEN ("sonnet"), not a literal/hardcoded model id, and
+    NOT raise. This is the exact RED-proof scenario the maintainer ruling
+    names: a community .dot author sets llm_provider alone.
+    """
+    from amplifier_module_loop_pipeline.backend import (
+        _PROVIDER_DEFAULT_MODEL_PATTERN,
+        _resolve_model,
+    )
 
     node = Node(id="anthro-node", shape="box", prompt="Anthropic task")
-    # Explicitly set provider, but no model
     node.attrs["llm_provider"] = "anthropic"
 
-    with pytest.raises(ValueError):
-        _resolve_model(node)
+    result = _resolve_model(node)
+
+    assert result == _PROVIDER_DEFAULT_MODEL_PATTERN["anthropic"][0] == "sonnet"
+    # Never the OLD hardcoded, rotting literal id this file used to guard against.
+    assert result != "claude-sonnet-4-20250514"
 
 
-def test_resolve_model_raises_for_openai_provider_without_model():
-    """_resolve_model() must not fall back to 'gpt-4o' for openai."""
-    from amplifier_module_loop_pipeline.backend import _resolve_model
+def test_resolve_model_returns_default_token_for_openai_provider_without_model():
+    """LANE-D: llm_provider=openai alone must resolve to the documented
+    default family glob, not raise, and not a literal hardcoded 'gpt-4o'.
+    """
+    from amplifier_module_loop_pipeline.backend import (
+        _PROVIDER_DEFAULT_MODEL_PATTERN,
+        _resolve_model,
+    )
 
     node = Node(id="oai-node", shape="box", prompt="OpenAI task")
     node.attrs["llm_provider"] = "openai"
 
-    with pytest.raises(ValueError):
-        _resolve_model(node)
+    result = _resolve_model(node)
+
+    assert result == _PROVIDER_DEFAULT_MODEL_PATTERN["openai"][0] == "gpt-5.*[0-9]"
+    assert result != "gpt-4o"
 
 
-def test_resolve_model_raises_for_gemini_provider_without_model():
-    """_resolve_model() must not fall back to 'gemini-2.0-flash' for gemini."""
-    from amplifier_module_loop_pipeline.backend import _resolve_model
+def test_resolve_model_returns_default_token_for_gemini_provider_without_model():
+    """LANE-D: llm_provider=gemini alone must resolve to the documented
+    default family glob, not raise, and not a literal hardcoded
+    'gemini-2.0-flash'.
+    """
+    from amplifier_module_loop_pipeline.backend import (
+        _PROVIDER_DEFAULT_MODEL_PATTERN,
+        _resolve_model,
+    )
 
     node = Node(id="gem-node", shape="box", prompt="Gemini task")
     node.attrs["llm_provider"] = "gemini"
 
-    with pytest.raises(ValueError):
+    result = _resolve_model(node)
+
+    assert result == _PROVIDER_DEFAULT_MODEL_PATTERN["gemini"][0] == "gemini-3*pro*"
+    assert result != "gemini-2.0-flash"
+
+
+def test_resolve_model_raises_for_unknown_provider_without_model():
+    """Malformed/unknown provider stays loud: _resolve_model() must still
+    raise ValueError when llm_provider is set to a value with no documented
+    default -- no silent guess for a provider we don't recognize.
+    """
+    from amplifier_module_loop_pipeline.backend import _resolve_model
+
+    node = Node(id="bogus-node", shape="box", prompt="Unknown provider task")
+    node.attrs["llm_provider"] = "not-a-real-provider"
+
+    with pytest.raises(ValueError) as exc_info:
         _resolve_model(node)
+
+    assert "not-a-real-provider" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +193,8 @@ def test_default_models_dict_not_used_as_fallback():
     _DEFAULT_MODELS remains for other reasons, _resolve_model() must not use
     it when llm_model is unset — it must raise instead.
     """
-    from amplifier_module_loop_pipeline.backend import _resolve_model
     import amplifier_module_loop_pipeline.backend as backend_module
+    from amplifier_module_loop_pipeline.backend import _resolve_model
 
     # If the dict exists, its values must not be returned by _resolve_model
     default_models = getattr(backend_module, "_DEFAULT_MODELS", {})

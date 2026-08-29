@@ -55,6 +55,7 @@ from ..backend import (
     _MAX_TOOL_LOOP_ROUNDS,
     _STATUS_MAP,
     _build_unified_tools,
+    _default_model_stable_only,
     _find_report_outcome_call,
     _outcome_from_structured_output,
     _parse_outcome,
@@ -174,8 +175,17 @@ class DirectWorker:
         import unified_llm
 
         provider_name = node.llm_provider or node.attrs.get("llm_provider", "anthropic")
+        model_token = _resolve_model(node)
+        # Rung 4 (per-provider default model, spec Sec8.5 item 4) may need
+        # stable_only=False when a provider's own current flagship is itself
+        # preview-named (see _PROVIDER_DEFAULT_MODEL_PATTERN in backend.py).
+        # Irrelevant -- and left at the pre-existing True -- when the node
+        # declared an explicit llm_model (rungs 1-3).
+        stable_only = (
+            True if node.llm_model else _default_model_stable_only(provider_name)
+        )
         model = await _resolve_concrete_model(
-            provider_name, _resolve_model(node), emit=self._emit
+            provider_name, model_token, emit=self._emit, stable_only=stable_only
         )
         reasoning_effort = node.attrs.get("reasoning_effort")
         max_agent_turns_raw = node.attrs.get("max_agent_turns")

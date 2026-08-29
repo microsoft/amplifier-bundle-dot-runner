@@ -2914,3 +2914,96 @@ writers) were fixed to match existing decided policy, not worked around.
   the read side, passes with it), goal_gate interaction (SF-006/SF-007), and unit-level
   `read_status_override()` coverage
 - `specs/conformance/attractor-matrix.yaml` — row `ATX-M-041`
+
+---
+
+## 41. Per-Provider Default Model for `llm_provider`-Alone Nodes (Direct Path, Spec §8.5 Rung 4)
+
+**Classification: implementor-level, NOT a spec divergence.** Canonical spec §8.5 /
+Appendix A already name this exact rung — "4. Handler/system default" — as reserved for
+the implementor; the spec text names no concrete default models. This entry documents
+which content this engine puts in that rung; it does not extend or diverge from spec
+text (contrast entry 39, which *does* diverge from an Appendix A default value). No
+`SPEC_CONFORMANCE.md` row is added for the same reason.
+
+**depends-on:** none
+
+**The gap (maintainer ruling, LANE D):** `llm_provider` is an nlspec-level node property
+(§2.6/Appendix A: `llm_provider` … "auto-detected") and must be honored **spec-first** so
+a community `.dot` author is never surprised. Before this entry, a box node that set
+`llm_provider=openai` (or `anthropic`/`gemini`) with no `llm_model` died on the direct
+path: `_resolve_model()` (`backend.py`) raised unconditionally whenever `llm_model` was
+unset, regardless of which provider was declared. Model *choice* remains on
+`model_stylesheet` (§8, the spec's own hook) — this entry only fills the terminal rung
+that previously always failed loud.
+
+**What shipped:** `_PROVIDER_DEFAULT_MODEL_PATTERN` (`backend.py`) maps `anthropic` /
+`openai` / `gemini` to a family token/glob (never a literal, rotting model id — the old
+`_DEFAULT_MODELS` table this repo already deleted once, see
+`test_profile_no_default_model.py`), resolved **live** via the pre-existing
+`unified_llm.resolve_latest_for` machinery (the same path an author gets today from
+writing `llm_model=sonnet`). Per unified-llm spec §2.9: "Implementations should default
+to the latest available models when no model is specified by the caller" —
+`get_latest_model()`/live resolution is the mechanism the spec itself names for this.
+
+| Provider    | Default token | `stable_only` | Why |
+|-------------|----------------|---------------|-----|
+| `anthropic` | `sonnet`       | `True`        | Existing family token; matches the spec's own §8.6 model_stylesheet example (`* { llm_model: claude-sonnet-4-5; llm_provider: anthropic; }`). |
+| `openai`    | `gpt-5.*[0-9]` | `True`        | Current flagship generation (unified-llm spec §2.9: "GPT-5+ series"). Anchored to end in a digit so tier-suffixed siblings (`-mini`, `-codex`) cannot outrank the bare release under the resolver's version-sort — verified empirically: a bare `gpt-5*` glob against `["gpt-5.2", "gpt-5.2-mini", "gpt-5.2-codex"]` picks `gpt-5.2-mini` (wrong). |
+| `gemini`    | `gemini-3*pro*`| `False`       | Current flagship generation is the Pro tier (unified-llm spec §2.9: "Gemini 3.1 Pro Preview"). The provider's own current top model is itself `-preview`-named, so the resolver's default `stable_only=True` would filter out every candidate and always raise. |
+
+**Precedence preserved and documented** (spec §8.5 / Appendix A, unchanged rung order):
+
+1. Explicit node `llm_model` attribute — highest precedence (unchanged).
+2. `model_stylesheet` rule — already resolved onto `node.llm_model`/`node.attrs` by
+   `stylesheet.py`'s `apply_stylesheet` transform *before* `_resolve_model` ever runs, so
+   it transparently outranks rung 4 with no code change needed here.
+3. Graph-level default — not implemented by any layer today (unchanged; out of scope).
+4. **NEW** — per-provider default model-family token (this entry), replacing the
+   previous unconditional fail-loud, gated on the node having an **explicit**
+   `llm_provider` (raw DOT attribute or stylesheet-resolved — both promote onto
+   `node.llm_provider`). A node with **neither** `llm_model` nor `llm_provider` set is
+   deliberately left unchanged (still fails loud) — the ruling's surprise-case is an
+   author who wrote `llm_provider=` alone, not a fully bare node.
+
+Malformed/unknown providers (no entry in the table) still fail loud, naming the provider
+and the known-defaults set — never a silent guess.
+
+**Scope boundary (ruling, honored verbatim):** provider-module integration is untouched
+— `unified-llm-client`'s native provider set (`anthropic`/`openai`/`gemini`) is the
+complete set this entry covers, by ruling. Model-*role* routing (stylesheet rules keyed
+by a semantic role rather than shape/class/id) is explicitly OUT of scope — a future
+stylesheet convention, not this entry.
+
+**Spawn path:** unchanged. `AmplifierBackend.run()`'s spawn branch (`backend.py:363-365`)
+already tolerates a `None` model (the spawned agent profile / provider_preferences own
+that default separately); this entry does not touch it, verified by the full
+loop-pipeline suite passing unchanged (spawn-path tests included) after this change.
+
+**Compatibility:** Additive on the direct path only. The three RED-proof unit tests that
+previously pinned "provider set, no model → raise" for anthropic/openai/gemini
+(`test_profile_no_default_model.py`) are updated in this same change to pin the new,
+sanctioned behavior instead (they demonstrably fail against the pre-entry code and pass
+after) — this is the exact behavior the maintainer ruling commissions, not an
+accommodation of an unrelated regression. The genuinely-bare-node case
+(`test_resolve_model_raises_without_explicit_model`) is intentionally left pinned,
+unchanged. `docs/DOT-AUTHORING-GUIDE.md` — the file entry 39 documents its
+`reasoning_effort` row in — is **not present in this repo**
+(`test_doc_consistency.py`'s own skip reason: "opinionated-layer content stayed in
+amplifier-bundle-attractor, DESIGN-repo-split.md S3.1"), so this table is documented here
+and in `backend.py`'s own docstrings/comments instead.
+
+**Implementation locations:**
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/backend.py` —
+  `_PROVIDER_DEFAULT_MODEL_PATTERN`, `_resolve_model` (rung 4 fallback),
+  `_default_model_stable_only`, `_resolve_concrete_model` (new `stable_only` parameter)
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/workers/direct_worker.py` —
+  `DirectWorker.run` threads `stable_only` from the rung-4 table only when `llm_model`
+  was not explicit
+- `modules/loop-pipeline/tests/test_profile_no_default_model.py` — updated RED-proofs
+  (provider-alone now resolves; genuinely-bare node still raises; unknown provider still
+  raises)
+- `modules/loop-pipeline/tests/test_llm_provider_alone_default_model.py` — end-to-end
+  `DirectWorker.run()` RED-proofs: provider-alone per provider, full precedence ladder
+  (explicit node model / stylesheet model both beat the rung-4 default), unknown-provider
+  loud

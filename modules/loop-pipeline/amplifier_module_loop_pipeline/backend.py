@@ -1015,22 +1015,68 @@ class AmplifierBackend:
 def _resolve_model(node: Node) -> str:
     """Resolve the LLM model identifier from a pipeline node.
 
-    Requires an explicit ``llm_model`` attribute on the node.  No silent
-    fallback to deprecated or hardcoded defaults — every pipeline that
-    uses the direct tool loop must declare its model explicitly.
+    Precedence (spec §8.5 / Appendix A, node attribute table -- llm_model
+    "inherited", llm_provider "auto-detected"):
+
+      1. Explicit node attribute (``node.llm_model``) -- highest precedence.
+         This also covers rung 2 (model_stylesheet rule) and rung 3
+         (graph-level default), both of which are already resolved onto
+         ``node.llm_model``/``node.attrs`` by transforms applied before this
+         function ever runs (stylesheet.py's ``apply_stylesheet``).
+      2. NEW -- rung 4, "Handler/system default" (spec §8.5 item 4): when the
+         node has no ``llm_model`` but DOES have an explicit ``llm_provider``
+         (again, either a raw DOT attribute or one set by the model
+         stylesheet -- both promote onto ``node.llm_provider``), resolve a
+         per-provider default MODEL FAMILY TOKEN so `llm_provider`-alone
+         works on the direct path instead of failing loud (maintainer
+         ruling: llm_provider is a spec-level node property, honor it
+         spec-first). The returned token is resolved live by
+         ``_resolve_concrete_model`` -- same machinery as an author writing
+         ``llm_model=sonnet`` today -- so this table never pins a rotting
+         concrete model id (see ``_PROVIDER_DEFAULT_MODEL_PATTERN`` below).
+      3. Otherwise (no llm_model AND no llm_provider at all on the node):
+         unchanged fail-loud. This is deliberately NOT widened by the new
+         rung 4 -- the ruling's surprise-case is an author who wrote
+         `llm_provider=` alone, not a node with neither attribute set.
 
     Args:
         node: The pipeline node to resolve a model for.
 
     Returns:
-        The explicit model identifier from ``node.llm_model``.
+        The explicit model identifier from ``node.llm_model``, or (rung 4)
+        a per-provider default model-family token to be resolved live.
 
     Raises:
-        ValueError: If neither ``node.llm_model`` nor ``attrs["llm_model"]``
-            is set.  The pipeline author must supply a model explicitly.
+        ValueError: If ``node.llm_model`` is unset AND either (a) no
+            ``llm_provider`` is set at all, or (b) ``llm_provider`` is set
+            to a value with no documented default (unknown/malformed
+            provider stays loud -- no silent guess).
     """
     if node.llm_model:
         return node.llm_model
+    provider = node.llm_provider
+    if provider is not None:
+        default = _PROVIDER_DEFAULT_MODEL_PATTERN.get(provider)
+        if default is not None:
+            token, _stable_only = default
+            logger.info(
+                "Node %r set llm_provider=%r with no llm_model -- using "
+                "per-provider default model family token %r (spec §8.5 rung "
+                "4; see specs/EXTENSIONS.md).",
+                node.id,
+                provider,
+                token,
+            )
+            return token
+        raise ValueError(
+            f"Node '{node.id}' set llm_provider={provider!r} but no "
+            f"llm_model, and no per-provider default model is documented "
+            f"for {provider!r} (known defaults: "
+            f"{sorted(_PROVIDER_DEFAULT_MODEL_PATTERN)}). Set "
+            f'llm_model="<model-name>" explicitly, or add a default for '
+            f"this provider to _PROVIDER_DEFAULT_MODEL_PATTERN. Malformed "
+            f"or unrecognized providers are never silently guessed."
+        )
     raise ValueError(
         f"Node '{node.id}' requires an explicit 'llm_model' attribute. "
         f'Set llm_model="<model-name>" in the node\'s DOT attributes or '
@@ -1038,6 +1084,17 @@ def _resolve_model(node: Node) -> str:
         f"No default model is provided — this prevents silently running "
         f"against a deprecated or unintended model."
     )
+
+
+def _default_model_stable_only(provider: str) -> bool:
+    """Whether the rung-4 default token for *provider* should exclude
+    preview/experimental variants (see ``_PROVIDER_DEFAULT_MODEL_PATTERN``).
+
+    Irrelevant when ``node.llm_model`` was explicit -- callers only consult
+    this on the rung-4 (default-token) path.
+    """
+    default = _PROVIDER_DEFAULT_MODEL_PATTERN.get(provider)
+    return default[1] if default is not None else True
 
 
 # ---------------------------------------------------------------------------
@@ -1054,10 +1111,48 @@ def _resolve_model(node: Node) -> str:
 # (e.g. "claude-sonnet-4-5") is NOT a family token and passes through unchanged.
 _FAMILY_TOKENS: frozenset[str] = frozenset({"opus", "sonnet", "haiku"})
 
+# ---------------------------------------------------------------------------
+# Per-provider DEFAULT model (spec §8.5 rung 4 / Appendix A -- "Handler/
+# system default"). The canonical attractor spec explicitly reserves this
+# rung for the implementor; it names no concrete defaults. The unified-llm
+# spec (§2.9) says implementations "should default to the latest available
+# models when no model is specified by the caller" and names
+# ``get_latest_model()``/live-resolution as the mechanism for that. Rather
+# than pin a literal model id here (the old, removed ``_DEFAULT_MODELS``
+# table -- see test_profile_no_default_model.py -- rotted exactly this way),
+# each entry names a FAMILY TOKEN/GLOB resolved live via the SAME
+# ``_resolve_concrete_model``/``unified_llm.resolve_latest_for`` machinery
+# already used for an author-written ``llm_model=sonnet``.
+#
+#   "anthropic" -> "sonnet": an EXISTING family token (_FAMILY_TOKENS above).
+#       Matches the spec's OWN model_stylesheet example (§8.6:
+#       `* { llm_model: claude-sonnet-4-5; llm_provider: anthropic; }`).
+#   "openai"    -> "gpt-5.*[0-9]": current flagship generation (unified-llm
+#       spec §2.9: "GPT-5+ series"). Anchored to END in a digit so
+#       tier-suffixed siblings (e.g. "-mini", "-codex") do not outrank the
+#       bare release under the resolver's version-sort -- verified
+#       empirically: a bare "gpt-5*" glob against
+#       ["gpt-5.2", "gpt-5.2-mini", "gpt-5.2-codex"] picks "gpt-5.2-mini"
+#       (a longer, non-numeric suffix compares *greater* once the shared
+#       prefix ties), which is the wrong default. stable_only=True is safe
+#       here (no provider-side "-preview" marker on this family today).
+#   "gemini"    -> "gemini-3*pro*", stable_only=False: current flagship
+#       generation is the Pro tier (unified-llm spec §2.9: "Gemini 3.1 Pro
+#       Preview"). The provider's own current top model is itself
+#       "-preview"-named, so stable_only=True (the resolver's default)
+#       would filter out every candidate and always raise.
+#
+# Value: (family_token_or_glob, stable_only).
+_PROVIDER_DEFAULT_MODEL_PATTERN: dict[str, tuple[str, bool]] = {
+    "anthropic": ("sonnet", True),
+    "openai": ("gpt-5.*[0-9]", True),
+    "gemini": ("gemini-3*pro*", False),
+}
+
 # Per-process cache: (provider, raw_token) -> concrete served id. A given
 # pattern resolves at most once per run, so a run is deterministic and the
 # resolved id is stable across every node/loop iteration that uses it.
-_MODEL_RESOLUTION_CACHE: dict[tuple[str, str], str] = {}
+_MODEL_RESOLUTION_CACHE: dict[tuple[str, str, bool], str] = {}
 
 
 def _is_model_pattern(model: str) -> bool:
@@ -1073,14 +1168,14 @@ def _is_model_pattern(model: str) -> bool:
 
 @overload
 async def _resolve_concrete_model(
-    provider: str, model: str, *, emit: Any = None
+    provider: str, model: str, *, emit: Any = None, stable_only: bool = True
 ) -> str: ...
 @overload
 async def _resolve_concrete_model(
-    provider: str, model: str | None, *, emit: Any = None
+    provider: str, model: str | None, *, emit: Any = None, stable_only: bool = True
 ) -> str | None: ...
 async def _resolve_concrete_model(
-    provider: str, model: str | None, *, emit: Any = None
+    provider: str, model: str | None, *, emit: Any = None, stable_only: bool = True
 ) -> str | None:
     """Resolve a node's ``llm_model`` token to a concrete served model id.
 
@@ -1088,7 +1183,14 @@ async def _resolve_concrete_model(
       model; the direct paths have already fail-loud'd via ``_resolve_model``).
     - concrete id     -> returned unchanged, NO network call (full back-compat).
     - glob / family   -> resolved live via ``unified_llm.resolve_latest_for``
-      and cached per ``(provider, token)`` so the run resolves once.
+      and cached per ``(provider, token, stable_only)`` so the run resolves
+      once.
+
+    ``stable_only`` (default ``True``, unchanged for every existing caller)
+    lets a rung-4 provider-default (see ``_PROVIDER_DEFAULT_MODEL_PATTERN``)
+    opt OUT of the stable-only filter when a provider's own current flagship
+    is itself preview-named (e.g. Gemini 3.1 Pro Preview) -- otherwise the
+    filter would exclude every candidate and always raise.
 
     Fail-loud: a no-match / unresolvable / missing-adapter condition raises
     ``ValueError`` from the resolver -- never a silent default.
@@ -1096,7 +1198,7 @@ async def _resolve_concrete_model(
     if not model or not _is_model_pattern(model):
         return model
 
-    cache_key = (provider, model)
+    cache_key = (provider, model, stable_only)
     cached = _MODEL_RESOLUTION_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -1106,15 +1208,17 @@ async def _resolve_concrete_model(
 
     token = model.strip().lower()
     pattern = f"*{token}*" if token in _FAMILY_TOKENS else model
-    concrete = await resolve_latest_for(provider, pattern, stable_only=True)
+    concrete = await resolve_latest_for(provider, pattern, stable_only=stable_only)
 
     _MODEL_RESOLUTION_CACHE[cache_key] = concrete
     logger.info(
-        "loop-pipeline resolved llm_model %r -> %r (provider=%s, pattern=%s)",
+        "loop-pipeline resolved llm_model %r -> %r (provider=%s, pattern=%s, "
+        "stable_only=%s)",
         model,
         concrete,
         provider,
         pattern,
+        stable_only,
     )
     # Emit the resolution as a pipeline event so the run's event stream records
     # exactly which concrete model a pattern/family token resolved to (audit /
