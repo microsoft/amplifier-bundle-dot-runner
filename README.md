@@ -22,6 +22,7 @@ docs) lives in the repos that consume this one.
 | `modules/remote-source` | Content-addressed `git+https://` fetcher (Layer A), used by `loop-pipeline[remote]` to materialize remote `.dot` graphs. |
 | `modules/tool-report-outcome` | The `report_outcome` tool module — lets a child agent set a structured pipeline verdict. Compat channel (WAVE 4): `status.json` (spec Sec 4.5 / Appendix C) is now the taught way; this module is unchanged, functional through a deprecation window. |
 | `modules/loop-agent` | The `coding-agent-loop` nlspec implementation — a general worker (registerable in the worker registry), not attractor-specific. |
+| `modules/loop-amplifier-agent` | OPT-IN adapter orchestrator: hosts [microsoft/amplifier-agent](https://github.com/microsoft/amplifier-agent)'s `Engine` as a pipeline node's worker via `session.spawn`. Heavy, optional peer dependency (`amplifier_agent_lib`, Python >=3.12) -- installed via the root package's `[agent]` extra. See "Default worker" below. |
 | `modules/hooks-pipeline-observability` | State aggregator, status bar, and event persistence hooks for pipeline runs. |
 | `modules/hooks-pipeline-progress` | Progress display hook. |
 | `modules/hooks-tool-truncation` | Tool-output truncation hook for context management. |
@@ -124,36 +125,126 @@ Equivalent to pattern (a) -- useful when you want to pin to the
 `pipeline-runner` module specifically (e.g. an existing subdirectory-pinned
 install). Both forms install the SAME single console script, `dot-runner`.
 
-### One CLI, bare by default, opinionated by declaration
+### One CLI -- default worker: amplifier-agent (the bet), `direct` (the fallback)
 
-`dot-runner` accepts `run` / `resume` / `doctor` / `trace` / `lint`. By
-default it is engine-native and bare: default worker `direct` (registry,
-in-repo — unified-llm-client + a provider key), zero runtime reach into any
-pattern repo (no bundle fetch, no provider→agent profiles, no
-`session.spawn` capability).
+`dot-runner` accepts `run` / `resume` / `doctor` / `trace` / `lint`. The
+engine itself stays bare and mechanism-only (no built-in knowledge of any
+pattern repo), but the **CLI** now has a maintainer-decided default-worker
+policy: amplifier-agent is the team's bet for new dot-runner surfaces.
 
 `run`/`resume` also accept `--worker <name>` (EXTENSIONS.md §40 — feeds the
 worker registry's run-level `default_worker`; a node's own `worker=`
 attribute still wins) and `--bundle <ref>` (or the `DOT_RUNNER_BUNDLE` env
 var) — an explicit bundle reference to compose as this run's base bundle.
-This is the preserved mechanism for an opinionated experience declared
-rather than assumed: the engine has zero built-in knowledge of what the
-reference contains, it simply composes it, registers `session.spawn`, and
-honors that bundle's own declared `worker`/`profiles` as this run's
-effective default (still overridable by an explicit `--worker`).
+**An explicit `--worker`/`--bundle` (or `DOT_RUNNER_BUNDLE`) always wins**
+over everything below.
+
+**The resolution ladder, when no explicit choice is made:**
+
+1. **Probe.** `amplifier_module_pipeline_runner.default_worker` checks --
+   cheaply, via `importlib.util.find_spec` (no import, no network) -- that
+   BOTH the in-repo `loop-amplifier-agent` adapter (`modules/loop-amplifier-
+   agent`) AND its heavy peer library (`amplifier_agent_lib`,
+   [microsoft/amplifier-agent](https://github.com/microsoft/amplifier-agent))
+   are installed.
+2. **Available -> amplifier-agent.** The CLI synthesizes a minimal bundle
+   (one agent entry backed by `loop-amplifier-agent`, `worker: spawn`, a
+   `profiles` map routing every known LLM provider to that one agent) and
+   hands it to `run_pipeline`/`resume_pipeline` as an ordinary `bundle=`
+   argument -- the EXACT mechanism an explicit `--bundle <ref>` already
+   uses (a local file path is a legitimate bundle reference). No new
+   engine internals: the runner loads it via its own existing
+   `_load_named_bundle` and reads back its declared worker/profiles via
+   its own existing `_declared_worker_and_profiles`, unchanged.
+3. **Unavailable -> `direct`, loudly.** One stderr line names the upgrade
+   path:
+
+   ```
+   dot-runner: no --worker/--bundle given and amplifier-agent is not installed --
+   falling back to worker=direct. Install the agent extra for the default
+   amplifier-agent worker: uv tool install "amplifier-dot-runner[agent]"
+   ```
+
+   Every box node then runs through the worker registry's `direct` worker
+   (unified-llm-client + a provider key) -- unchanged, bare-engine behavior.
 
 ```bash
-# bare: runs every box node through the `direct` worker
+# amplifier-agent installed (see "The [agent] extra" below): every box node
+# is hosted by microsoft/amplifier-agent's Engine, no flags needed
 dot-runner run path/to/pipeline.dot
 
-# same pipeline, the attractor pattern's opinionated experience -- by
-# declaration, not by a second command
+# amplifier-agent NOT installed: falls back to `direct`, with the notice above
+dot-runner run path/to/pipeline.dot
+
+# explicit choice always wins, either direction
+dot-runner run path/to/pipeline.dot --worker direct
 dot-runner run path/to/pipeline.dot \
   --bundle "git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=bundles/attractor-pipeline.yaml"
 ```
 
 An unknown `--worker` name is refused with a clean error naming every
 registered worker — never a stack trace.
+
+**Disclosure:** the hosted amplifier-agent worker does not (yet) receive a
+pipeline node's own declared tools -- `loop-amplifier-agent` boots
+amplifier-agent's own self-contained bundle (its own tool roster), and
+tools-passthrough from a `.dot` node's config to that hosted agent has not
+been built (an upstream, public-seam ask -- tracked, not silently dropped).
+If a node's prompt assumes a custom pipeline-declared tool will be
+available to the LLM, it will not reach amplifier-agent's Engine this way.
+
+### The `[agent]` extra
+
+Root install (`amplifier-dot-runner`) ships the thin engine only --
+amplifier-agent (`amplifier_agent_lib` and its own heavy dependency tree:
+fastapi/uvicorn/mcp/..., Python >=3.12) is never a forced dependency. Opt in
+with the `[agent]` extra to make the default-worker probe above resolve
+`True`:
+
+```bash
+uv tool install "amplifier-dot-runner[agent]"
+```
+
+Without it, `dot-runner` still works standalone (falls back to `direct`
+with the one-line notice above) -- the extra only changes what the
+DEFAULT worker resolves to, never whether the CLI runs at all.
+
+**Known limitation, disclosed honestly:** as of this writing, a single
+`uv tool install "amplifier-dot-runner[agent]"` can fail with `uv`
+reporting *"Requirements contain conflicting URLs for package
+`amplifier-foundation`"*. This is a real, pre-existing cross-repo
+declaration-style mismatch that only surfaces once something actually asks
+`uv` to co-resolve these two graphs in one solve (nothing had, before this
+extra): `modules/pipeline-runner` declares `amplifier-foundation` as a
+direct `pkg @ git+https://...@main` URL (deliberately, to avoid a
+different, already-encountered collision -- see that file's own comment on
+issue #213), while `microsoft/amplifier-agent`'s own `pyproject.toml`
+declares the same package as a plain named dependency redirected via its
+own `[tool.uv.sources]` entry. Both resolve the identical repo/branch, but
+`uv` treats the two declaration shapes as structurally different
+requirements for the same package and refuses to unify them. Fixing this
+for real requires either upstream's declaration style to change (a
+different repo) or a change to `modules/pipeline-runner`'s own,
+deliberately-tuned dependency declaration whose interaction with its
+existing CI-determinism pin (`[tool.uv] override-dependencies`, same file)
+we could not safely re-verify in this pass -- so it was left untouched
+rather than risk a silent regression there. **Workaround that installs
+cleanly today:** install the base package, then add the two `[agent]`
+components as a second, separate `uv pip install` into the same
+environment (a separate resolve, so it never hits the one-solve collision
+above):
+
+```bash
+uv tool install "amplifier-dot-runner"
+uv pip install --python "$(uv tool dir)/amplifier-dot-runner/bin/python" \
+  "amplifier-module-loop-amplifier-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-amplifier-agent" \
+  "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main"
+```
+
+Once both packages are present in the environment (however they got
+there), the default-worker probe resolves `True` and every subsequent
+`dot-runner run`/`resume` with no explicit `--worker`/`--bundle` wires
+amplifier-agent automatically -- verified end-to-end.
 
 ### Pattern (c) — mount as an Amplifier bundle
 
