@@ -126,7 +126,7 @@ def _load_dependencies() -> SimpleNamespace:
     the real modules the probe (``/var/tmp/aa-probe/probe_q1_q2.py``)
     exercised directly.
     """
-    from amplifier_agent_cli.provider_sources import inject_provider
+    from amplifier_agent_cli.provider_sources import inject_provider, inject_routing_matrix
     from amplifier_agent_lib import __version__ as aaa_version
     from amplifier_agent_lib._runtime import prepare_bundle_for_session
     from amplifier_agent_lib.bundle.cache import load_and_prepare_cached
@@ -154,6 +154,7 @@ def _load_dependencies() -> SimpleNamespace:
         CliApprovalSystem=CliApprovalSystem,
         CliDisplaySystem=CliDisplaySystem,
         inject_provider=inject_provider,
+        inject_routing_matrix=inject_routing_matrix,
         # v2 capability closures (see README "Capability gaps" section):
         prepare_bundle_for_session=prepare_bundle_for_session,  # gap 1
         resolve_workspace=resolve_workspace,  # gap 1
@@ -467,6 +468,13 @@ class AmplifierAgentOrchestrator:
         if model_override is not None:
             inject_kwargs["model_override"] = model_override
         deps.inject_provider(prepared, effective_provider, **inject_kwargs)
+        # amplifier-agent docs/INTEGRATION.md:65,85 (fresh clone, commit 66d5896):
+        # `inject_routing_matrix(prepared, provider)` is a SEPARATE, REQUIRED
+        # call alongside `inject_provider` -- without it the prepared bundle's
+        # routing matrix still points at whatever the baked-in bundle declared,
+        # so a non-default `llm_provider` on this node would inject the right
+        # provider mount but never actually get ROUTED to.
+        deps.inject_routing_matrix(prepared, effective_provider)
 
         # max_turns -> best-effort forward into the session orchestrator's
         # own config (see docstring above).
@@ -529,7 +537,17 @@ class AmplifierAgentOrchestrator:
             session = await prepared.create_session(
                 session_id=engine_session_id,
                 session_cwd=working_dir,
-                is_resumed=False,
+                # amplifier-agent docs/INTEGRATION.md:155,158,322-324,366-367
+                # (fresh clone, commit 66d5896): continuity is keyed on
+                # (workspace, sessionId), and a turn that continues a prior
+                # conversation must pass is_resumed=True, reusing the same
+                # sessionId/workspace -- not sessionId=""+is_resumed=False on
+                # every turn regardless of whether history is being replayed.
+                # `history` (this adapter's own parent_messages capture, see
+                # _history_from_context above) is exactly that signal: a
+                # present, non-empty history means this turn continues an
+                # earlier one.
+                is_resumed=bool(history),
             )
 
             # gap 1 (D5-equivalent): write the resolved workspace identity
@@ -604,19 +622,37 @@ class AmplifierAgentOrchestrator:
             protocol_points={"approval": approval, "display": display},
         )
 
+        # amplifier-agent docs/INTEGRATION.md:90-91,155,158,161,322-324,366-367
+        # (fresh clone, commit 66d5896): "Build one Engine per turn and pass
+        # is_resumed=True for every turn after the first, reusing the same
+        # sessionId and workspace" -- this adapter already boots one fresh
+        # Engine per node invocation (module docstring's "STATE ISOLATION");
+        # what was missing is threading a REAL, stable sessionId (not the ""
+        # sentinel) and `resume`/is_resumed matching whether this invocation
+        # is continuing a fidelity="full" thread (`history` non-empty) or
+        # starting fresh. `engine_session_id` (below, inside `handler`) is
+        # already resolved from this same signal; reuse it here too instead
+        # of the empty-string placeholder that always forced the ephemeral-id
+        # fallback branch.
+        engine_session_id = f"engine-{uuid.uuid4().hex}"
+        is_resumed = bool(history)
         init_params = {
             "protocolVersion": deps.PROTOCOL_VERSION,
             "clientInfo": {"name": ORCHESTRATOR_NAME, "version": "0.1.0"},
             "capabilities": dict(deps.server_default_capabilities()),
-            "sessionId": "",
-            "resume": False,
+            "sessionId": engine_session_id,
+            "resume": is_resumed,
         }
 
         try:
             await engine.boot(init_params, bundle_override=prepared)
             full_prompt = self._build_prompt(prompt, user_instructions)
             result = await engine.submit_turn(
-                {"sessionId": "", "turnId": "turn-1", "prompt": full_prompt}
+                {
+                    "sessionId": engine_session_id,
+                    "turnId": "turn-1",
+                    "prompt": full_prompt,
+                }
             )
         finally:
             # A shutdown failure here must never mask whatever the try block
