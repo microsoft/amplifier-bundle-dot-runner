@@ -4,7 +4,7 @@ that sets `llm_provider` alone (no `llm_model`) now resolves a documented,
 LIVE-resolved per-provider default family token instead of failing loud
 (spec Sec8.5 rung 4 / Appendix A "Handler/system default" -- see
 _PROVIDER_DEFAULT_MODEL_PATTERN and its citations in backend.py, and
-specs/EXTENSIONS.md entry 41).
+specs/EXTENSIONS.md entry 42).
 
 Original (pre-LANE-D) behavior, still true for the genuinely-bare case:
     _resolve_model(node)
