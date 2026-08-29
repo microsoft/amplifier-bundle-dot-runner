@@ -46,6 +46,7 @@ docs) lives in the repos that consume this one.
 | `specs/EXTENSIONS.md` | Append-only ledger of every place this implementation extends or deviates from the canonical specs. |
 | `specs/conformance/attractor-matrix.yaml` | The conformance matrix: one row per normative statement cluster, each runner-verified against canonical spec bytes. |
 | `SPEC_CONFORMANCE.md` | Compat doctrine + deviation ledger, human-readable. |
+| `.github/capsule-pipeline/` | Issue -> attractor -> PR pipeline (ported from `amplifier-bundle-attractor`): label an issue `ready:spec`/`ready:feature-spec` and an autonomous pipeline proposes a work capsule, then (on merge) a fix PR. See `.github/capsule-pipeline/README.md` and [docs/ISSUE_PIPELINE.md](docs/ISSUE_PIPELINE.md). |
 
 Python distribution and import names are unchanged from their original
 home (`amplifier-module-loop-pipeline`, `import amplifier_module_loop_pipeline`,
