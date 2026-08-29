@@ -12,8 +12,9 @@ default), :func:`resolve` decides what the CLI does about it:
    the thing that actually runs a turn). The probe
    (:func:`amplifier_agent_available`) is a cheap ``importlib.util.find_spec``
    check -- it locates a module without importing it, so it never pays
-   amplifier-agent's heavy transitive import cost (fastapi/uvicorn/mcp/...)
-   and never touches the network.
+   amplifier-agent's heavy transitive import cost (its own web-framework/
+   ASGI-server stack, MCP client libs, etc. -- see amplifier_agent_lib's own
+   pyproject.toml for the full list) and never touches the network.
 
 2. If BOTH resolve: synthesize a MINIMAL bundle
    (:func:`synthesize_default_agent_bundle_yaml`) declaring one agent entry

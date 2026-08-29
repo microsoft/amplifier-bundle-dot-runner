@@ -206,40 +206,45 @@ available to the LLM, it will not reach amplifier-agent's Engine this way.
 
 Root install (`amplifier-dot-runner`) ships the thin engine only --
 amplifier-agent (`amplifier_agent_lib` and its own heavy dependency tree:
-fastapi/uvicorn/mcp/..., Python >=3.12) is never a forced dependency. Opt in
-with the `[agent]` extra to make the default-worker probe above resolve
-`True`:
+a web-framework/ASGI-server stack, MCP client libs, etc., Python >=3.12) is
+never a forced dependency.
 
-```bash
-uv tool install "amplifier-dot-runner[agent]"
-```
-
-Without it, `dot-runner` still works standalone (falls back to `direct`
-with the one-line notice above) -- the extra only changes what the
-DEFAULT worker resolves to, never whether the CLI runs at all.
-
-**Known limitation, disclosed honestly:** as of this writing, a single
-`uv tool install "amplifier-dot-runner[agent]"` can fail with `uv`
-reporting *"Requirements contain conflicting URLs for package
-`amplifier-foundation`"*. This is a real, pre-existing cross-repo
-declaration-style mismatch that only surfaces once something actually asks
-`uv` to co-resolve these two graphs in one solve (nothing had, before this
-extra): `modules/pipeline-runner` declares `amplifier-foundation` as a
-direct `pkg @ git+https://...@main` URL (deliberately, to avoid a
-different, already-encountered collision -- see that file's own comment on
-issue #213), while `microsoft/amplifier-agent`'s own `pyproject.toml`
-declares the same package as a plain named dependency redirected via its
-own `[tool.uv.sources]` entry. Both resolve the identical repo/branch, but
-`uv` treats the two declaration shapes as structurally different
-requirements for the same package and refuses to unify them. Fixing this
-for real requires either upstream's declaration style to change (a
-different repo) or a change to `modules/pipeline-runner`'s own,
+**Known limitation, disclosed honestly, and why there is no single-command
+install:** amplifier-agent is deliberately **not** declared as a formal
+`[project.optional-dependencies]` extra in this repo's root `pyproject.toml`
+(so `uv tool install "amplifier-dot-runner[agent]"` is not a thing you can
+run -- there is no `[agent]` extra for `uv`/`pip` to resolve). This is a
+review finding, not an oversight: a real, pre-existing cross-repo
+declaration-style mismatch means `uv` reports *"Requirements contain
+conflicting URLs for package `amplifier-foundation`"* the moment anything
+asks it to co-resolve these two dependency graphs in one solve --
+`modules/pipeline-runner` declares `amplifier-foundation` as a direct
+`pkg @ git+https://...@main` URL (deliberately, to avoid a different,
+already-encountered collision -- see that file's own comment on issue
+#213), while `microsoft/amplifier-agent`'s own `pyproject.toml` declares
+the same package as a plain named dependency redirected via its own
+`[tool.uv.sources]` entry. Both resolve the identical repo/branch, but `uv`
+treats the two declaration shapes as structurally different requirements
+for the same package and refuses to unify them. Declaring `[agent]` as a
+formal extra earlier in this repo's history did not just make the
+single-command install fail -- it broke `uv lock`/`uv sync`/`uv run` for
+the **whole root project**, for every consumer, because `uv`'s universal
+lock resolution must still prove the "extra requested" split resolvable
+even when nobody asked for the extra (this repo's own "Validate Bundle
+Repo" CI check, which never installs `[agent]`, failed on exactly that).
+Removing the formal extra fixes that for everyone; it changes nothing
+about the runtime feature, since the default-worker probe
+(`amplifier_agent_available()`) only checks what is actually installed
+(`importlib.util.find_spec`), never how it got there. Fixing the
+collision for real requires either upstream's declaration style to change
+(a different repo) or a change to `modules/pipeline-runner`'s own,
 deliberately-tuned dependency declaration whose interaction with its
 existing CI-determinism pin (`[tool.uv] override-dependencies`, same file)
 we could not safely re-verify in this pass -- so it was left untouched
-rather than risk a silent regression there. **Workaround that installs
-cleanly today:** install the base package, then add the two `[agent]`
-components as a second, separate `uv pip install` into the same
+rather than risk a silent regression there.
+
+**Install path that works today:** install the base package, then add the
+two peer components as a second, separate `uv pip install` into the same
 environment (a separate resolve, so it never hits the one-solve collision
 above):
 
@@ -250,7 +255,10 @@ uv pip install --python "$(uv tool dir)/amplifier-dot-runner/bin/python" \
   "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main"
 ```
 
-Once both packages are present in the environment (however they got
+Without doing this, `dot-runner` still works standalone (falls back to
+`direct` with the one-line notice above) -- this two-step install only
+changes what the DEFAULT worker resolves to, never whether the CLI runs at
+all. Once both packages are present in the environment (however they got
 there), the default-worker probe resolves `True` and every subsequent
 `dot-runner run`/`resume` with no explicit `--worker`/`--bundle` wires
 amplifier-agent automatically -- verified end-to-end.
