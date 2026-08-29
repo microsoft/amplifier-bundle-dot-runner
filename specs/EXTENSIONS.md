@@ -2917,7 +2917,7 @@ writers) were fixed to match existing decided policy, not worked around.
 
 ---
 
-## 41. Per-Provider Default Model for `llm_provider`-Alone Nodes (Direct Path, Spec §8.5 Rung 4)
+## 42. Per-Provider Default Model for `llm_provider`-Alone Nodes (Direct Path, Spec §8.5 Rung 4)
 
 **Classification: implementor-level, NOT a spec divergence.** Canonical spec §8.5 /
 Appendix A already name this exact rung — "4. Handler/system default" — as reserved for
