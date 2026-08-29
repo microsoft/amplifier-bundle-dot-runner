@@ -82,7 +82,19 @@ AMPLIFIER_AGENT_NAME = "amplifier-agent"
 #: heavy peer library (never imported at this module's top level, see
 #: modules/loop-amplifier-agent/README.md "Python version note"); loop-agent
 #: has no comparable heavy peer, so its own adapter module doubles as the probe.
-_ADAPTER_REGISTRY: dict[str, tuple[str, str, str]] = {
+#: name -> (adapter python package, probe module, git source, REGISTERED
+#: orchestrator module name). The 4th element is the name the adapter
+#: registers under its own ``[project.entry-points."amplifier.modules"]``
+#: table (e.g. modules/loop-amplifier-agent/pyproject.toml registers
+#: ``loop-amplifier-agent = amplifier_module_loop_amplifier_agent:mount``) --
+#: it is NOT always identical to the worker name a user types after
+#: --worker. In particular ``--worker amplifier-agent`` is hosted by the
+#: ``loop-amplifier-agent`` module: reusing the worker name itself as the
+#: synthesized bundle's ``session.orchestrator.module`` would declare a
+#: module that does not exist and fail to mount at spawn time. loop-agent's
+#: worker name happens to equal its module name; that coincidence must not
+#: be baked in as an assumption for future registry entries.
+_ADAPTER_REGISTRY: dict[str, tuple[str, str, str, str]] = {
     LOOP_AGENT_NAME: (
         "amplifier_module_loop_agent",
         "amplifier_module_loop_agent",
@@ -90,6 +102,7 @@ _ADAPTER_REGISTRY: dict[str, tuple[str, str, str]] = {
             "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
             "#subdirectory=modules/loop-agent"
         ),
+        "loop-agent",
     ),
     AMPLIFIER_AGENT_NAME: (
         "amplifier_module_loop_amplifier_agent",
@@ -98,6 +111,7 @@ _ADAPTER_REGISTRY: dict[str, tuple[str, str, str]] = {
             "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
             "#subdirectory=modules/loop-amplifier-agent"
         ),
+        "loop-amplifier-agent",
     ),
 }
 
@@ -151,7 +165,7 @@ def _worker_available(name: str) -> bool:
     entry = _ADAPTER_REGISTRY.get(name)
     if entry is None:
         return False
-    adapter_module, probe_module, _source = entry
+    adapter_module, probe_module, _source, _orch_module = entry
     try:
         adapter_spec = importlib.util.find_spec(adapter_module)
     except (ImportError, ValueError, ModuleNotFoundError):
@@ -187,7 +201,9 @@ def _synthesize_agent_bundle_yaml(worker_name: str) -> str:
     entirely INTERNAL: it is never surfaced in the CLI, its help text, or
     any user-facing error (maintainer ruling: "bundles are under the hood").
     """
-    adapter_module, _probe_module, adapter_source = _ADAPTER_REGISTRY[worker_name]
+    adapter_module, _probe_module, adapter_source, orch_module = _ADAPTER_REGISTRY[
+        worker_name
+    ]
     providers = sorted(runner.PROVIDER_KEY_ENV)
     profile_lines = "\n".join(
         f"        {provider}: {DEFAULT_AGENT_NAME}" for provider in providers
@@ -225,7 +241,7 @@ agents:
       {adapter_module} adapter (modules/{worker_name}).
     session:
       orchestrator:
-        module: {worker_name}
+        module: {orch_module}
         source: {adapter_source}
         config:
           llm_provider: anthropic
@@ -298,16 +314,18 @@ def resolve(
     if worker is not None and worker in _ADAPTER_REGISTRY:
         if _worker_available(worker):
             return None, str(write_agent_bundle(worker))
-        adapter_module, probe_module, _source = _ADAPTER_REGISTRY[worker]
+        adapter_module, probe_module, _source, _orch_module = _ADAPTER_REGISTRY[worker]
         print(
             f"{prog}: --worker {worker!r} was requested but is not "
             f"installed (missing {adapter_module!r} and/or "
             f"{probe_module!r}). Install its dependencies, or choose "
-            f"--worker direct" + (
+            f"--worker direct"
+            + (
                 f" / --worker {AMPLIFIER_AGENT_NAME!r}"
                 if worker == LOOP_AGENT_NAME
                 else ""
-            ) + ".",
+            )
+            + ".",
             file=sys.stderr,
         )
         raise SystemExit(1)

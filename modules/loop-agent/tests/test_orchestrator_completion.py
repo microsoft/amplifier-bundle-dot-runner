@@ -3,24 +3,29 @@
 EXTENSIONS.md §35 ("Spawned-Agent Outcome Transport and `report_outcome`
 Ordering Barrier").
 
-WHY THIS FILE EXISTS (issue #285): a spawned child's semantic verdict reaches
-its parent through exactly one channel — the `orchestrator:complete` event's
-`metadata.report_outcome`.  Foundation's `PreparedBundle.spawn` registers a
-temporary hook on that event and copies `metadata` verbatim into the spawn
-result dict; loop-pipeline's `_outcome_from_spawn_result` then reads
-`metadata["report_outcome"]` and is the ONLY place an `is_explicit=True`
-outcome can come from on the spawn path.
+WAVE 5 repair (2026-08-30, maintainer ruling): `report_outcome` the VERDICT
+TRANSPORT is REMOVED, no compat window. `_emit_completion`'s `metadata` is
+always `{}` now -- there is no `metadata.report_outcome` channel left for a
+node's semantic verdict to ride out of a spawn boundary on (see
+`amplifier_module_loop_agent/__init__.py`'s WAVE 5 repair notes). The tests
+this file used to carry for that channel (a report's contents reaching
+`metadata.report_outcome`, last-write-wins across a batch, rejection/promotion
+semantics, etc.) tested a mechanism that no longer exists and are deleted
+with it -- see git history for `test_report_outcome_verdict_rides_the_
+completion_envelope` and its siblings.
 
-Before #285, loop-agent never emitted this event at all, so every spawned
-child arrived at its parent as a verdict-less status-only completion and the
-parent recorded `notes="Child session completed with empty final message",
-is_explicit=false` — no matter what the child had actually reported.
+Two pieces of `report_outcome`-adjacent behavior are UNCHANGED and remain
+covered below, because they never depended on the metadata channel:
 
-The two layers of the envelope are deliberately separate and are asserted
-separately below:
+  * the ORDERING BARRIER (`agent_session.py`): a successful tool call
+    literally named `report_outcome` still terminates the `execute()`
+    invocation immediately -- no further provider call. This is a
+    tool-loop control-flow mechanic, not a metadata-population mechanic.
+  * lifecycle-only `status` on the completion envelope (success / incomplete
+    / cancelled), independent of any verdict.
 
-  * top-level `status` — LIFECYCLE ONLY (how the invocation ended)
-  * `metadata.report_outcome` — the SEMANTIC verdict (what the node decided)
+`metadata` is asserted to be `{}` on every remaining test below -- this is
+now the universal case (see `__init__.py`), not a special "no report" case.
 """
 
 import asyncio
@@ -67,8 +72,11 @@ class _ReportOutcomeDouble:
       * a call that fails validation returns an unsuccessful ToolResult and
         leaves `last_outcome` untouched.
 
-    The real tool is exercised end-to-end against this same contract in
-    ``modules/pipeline-runner/tests/test_spawn_report_outcome_transport.py``.
+    WAVE 5 repair (2026-08-30): the metadata-population half of this
+    contract is gone (see module docstring); this double is kept only to
+    drive the still-real ordering-barrier test below, which depends on the
+    tool call being *named* ``report_outcome`` and *succeeding*, not on
+    anything it writes to ``metadata``.
     """
 
     name = "report_outcome"
@@ -125,58 +133,6 @@ def _completions(hooks) -> list[dict]:
 
 
 @pytest.mark.asyncio
-async def test_report_outcome_verdict_rides_the_completion_envelope():
-    """A child's report_outcome lands in `metadata.report_outcome`.
-
-    This is the #285 defect in one assertion: at origin/main no
-    `orchestrator:complete` was emitted at all, so this list was empty and the
-    verdict never crossed the spawn boundary.
-    """
-    report = _ReportOutcomeDouble()
-    orch, ctx, provs, tools, hooks = _make_orchestrator(
-        responses=[
-            _tool_response(
-                ("tc1", "report_outcome", {"status": "fail", "preferred_label": "escalate"})
-            )
-        ],
-        tools={"report_outcome": report},
-    )
-
-    await orch.execute("go", ctx, provs, tools, hooks)
-
-    completions = _completions(hooks)
-    assert len(completions) == 1, "exactly one completion envelope per invocation"
-    envelope = completions[0]
-    assert envelope["orchestrator"] == "loop-agent"
-    assert envelope["status"] == "success"
-    assert envelope["metadata"]["report_outcome"] == {
-        "status": "fail",
-        "preferred_label": "escalate",
-    }
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_status_is_not_the_semantic_verdict():
-    """A FAIL verdict does NOT make the lifecycle status 'fail'.
-
-    The two layers stay separate: the invocation completed cleanly (lifecycle
-    `success`) while the node's verdict is `fail`.  Collapsing them would make
-    every reporting child look like a broken session.
-    """
-    report = _ReportOutcomeDouble()
-    orch, ctx, provs, tools, hooks = _make_orchestrator(
-        responses=[_tool_response(("tc1", "report_outcome", {"status": "fail"}))],
-        tools={"report_outcome": report},
-    )
-
-    await orch.execute("go", ctx, provs, tools, hooks)
-
-    envelope = _completions(hooks)[0]
-    assert envelope["status"] == "success"
-    assert envelope["metadata"]["report_outcome"]["status"] == "fail"
-
-
-@pytest.mark.asyncio
 async def test_execute_still_returns_the_final_string():
     """§35 Compatibility: the `execute(...) -> str` contract is unchanged."""
     orch, ctx, provs, tools, hooks = _make_orchestrator(
@@ -208,52 +164,9 @@ async def test_no_report_outcome_leaves_metadata_empty():
     assert envelope["metadata"] == {}
 
 
-@pytest.mark.asyncio
-async def test_a_rejected_report_is_not_promoted():
-    """A report that fails validation leaves no verdict behind."""
-    report = _ReportOutcomeDouble()
-    orch, ctx, provs, tools, hooks = _make_orchestrator(
-        responses=[
-            _tool_response(("tc1", "report_outcome", {"status": "nonsense"})),
-            _text_response("oh well"),
-        ],
-        tools={"report_outcome": report},
-    )
-
-    await orch.execute("go", ctx, provs, tools, hooks)
-
-    assert report.last_outcome is None
-    assert _completions(hooks)[0]["metadata"] == {}
-
-
 # ---------------------------------------------------------------------------
 # Per-invocation isolation
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_verdict_does_not_leak_into_the_next_invocation():
-    """`last_outcome` is reset before each invocation.
-
-    The tool instance is mounted once per session and the session is reused
-    across `execute()` calls, so without the reset invocation #2 would report
-    invocation #1's verdict as if the child had just asserted it.
-    """
-    report = _ReportOutcomeDouble()
-    orch, ctx, provs, tools, hooks = _make_orchestrator(
-        responses=[
-            _tool_response(("tc1", "report_outcome", {"status": "fail"})),
-            _text_response("nothing to report this time"),
-        ],
-        tools={"report_outcome": report},
-    )
-
-    await orch.execute("first", ctx, provs, tools, hooks)
-    await orch.execute("second", ctx, provs, tools, hooks)
-
-    first, second = _completions(hooks)
-    assert first["metadata"]["report_outcome"]["status"] == "fail"
-    assert second["metadata"] == {}, "invocation 2 inherited invocation 1's verdict"
 
 
 @pytest.mark.asyncio
@@ -290,47 +203,6 @@ def _make_noop_tool():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_last_successful_report_in_a_batch_wins():
-    """Two valid reports in one batch: the LAST declared one is transported."""
-    report = _ReportOutcomeDouble()
-    orch, ctx, provs, tools, hooks = _make_orchestrator(
-        responses=[
-            _tool_response(
-                ("tc1", "report_outcome", {"status": "success", "preferred_label": "first"}),
-                ("tc2", "report_outcome", {"status": "fail", "preferred_label": "second"}),
-            )
-        ],
-        tools={"report_outcome": report},
-    )
-
-    await orch.execute("go", ctx, provs, tools, hooks)
-
-    verdict = _completions(hooks)[0]["metadata"]["report_outcome"]
-    assert verdict["status"] == "fail"
-    assert verdict["preferred_label"] == "second"
-
-
-@pytest.mark.asyncio
-async def test_a_later_invalid_report_does_not_erase_a_valid_one():
-    """§35: 'A later report that fails ... does not erase the prior valid report.'"""
-    report = _ReportOutcomeDouble()
-    orch, ctx, provs, tools, hooks = _make_orchestrator(
-        responses=[
-            _tool_response(
-                ("tc1", "report_outcome", {"status": "fail", "preferred_label": "escalate"}),
-                ("tc2", "report_outcome", {"status": "not-a-status"}),
-            )
-        ],
-        tools={"report_outcome": report},
-    )
-
-    await orch.execute("go", ctx, provs, tools, hooks)
-
-    verdict = _completions(hooks)[0]["metadata"]["report_outcome"]
-    assert verdict == {"status": "fail", "preferred_label": "escalate"}
-
-
 # ---------------------------------------------------------------------------
 # Terminal report path
 # ---------------------------------------------------------------------------
@@ -360,6 +232,50 @@ async def test_successful_report_terminates_the_invocation():
     assert result == "closing prose emitted alongside the verdict"
     assert provs["test"].complete.await_count == 1
     assert _completions(hooks)[0]["turn_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_report_outcome_terminates_even_though_metadata_stays_empty():
+    """WAVE 5 regression: the ordering barrier and the (removed) metadata
+    channel are INDEPENDENT mechanisms. A successful `report_outcome` call
+    still ends the invocation with no further provider call (unchanged tool-
+    loop control flow), even though `metadata` carries none of its content
+    anymore (the transport channel is gone). Proves the repair did not
+    accidentally couple the two -- removing metadata population must not
+    also have silently removed the termination behavior, or vice versa.
+    """
+    report = _ReportOutcomeDouble()
+    orch, ctx, provs, tools, hooks = _make_orchestrator(
+        responses=[
+            _tool_response(
+                (
+                    "tc1",
+                    "report_outcome",
+                    {"status": "fail", "preferred_label": "escalate"},
+                ),
+                text="closing prose",
+            ),
+            AssertionError("a second provider call was made after report_outcome"),
+        ],
+        tools={"report_outcome": report},
+    )
+
+    result = await orch.execute("go", ctx, provs, tools, hooks)
+
+    assert result == "closing prose"
+    assert provs["test"].complete.await_count == 1, (
+        "the ordering barrier must still terminate on a successful "
+        "report_outcome call, independent of metadata population"
+    )
+    envelope = _completions(hooks)[0]
+    assert envelope["status"] == "success"
+    assert envelope["metadata"] == {}, (
+        "report_outcome's content must never populate metadata anymore"
+    )
+    # The double itself still recorded the call (proves the tool DID run
+    # and DID succeed -- the barrier fired for the right reason, not
+    # because the call was silently skipped).
+    assert report.last_outcome == {"status": "fail", "preferred_label": "escalate"}
 
 
 # ---------------------------------------------------------------------------

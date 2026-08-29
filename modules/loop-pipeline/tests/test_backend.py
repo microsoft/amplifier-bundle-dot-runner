@@ -668,8 +668,6 @@ def _install_fallback_spy(backend: AmplifierBackend) -> dict[str, Any]:
     return state
 
 
-
-
 @pytest.mark.asyncio
 async def test_spawn_empty_output_with_success_status_does_not_fall_back():
     """Empty final text but status=success => treat as a successful completion.
@@ -701,8 +699,6 @@ async def test_spawn_empty_output_with_success_status_does_not_fall_back():
     )
     assert isinstance(result, Outcome)
     assert result.status == StageStatus.SUCCESS
-
-
 
 
 @pytest.mark.asyncio
@@ -840,21 +836,26 @@ def _assert_valid_marker(
 
 @pytest.mark.asyncio
 async def test_spawn_explicit_verdict_empty_output_appends_synthesized_marker_turn():
-    """support#498: explicit verdict + EMPTY output => the exchange IS
-    appended, with the assistant half synthesized as an honest
-    ``[report_outcome: ...]`` marker.
+    """support#498 + WAVE 5 repair: EMPTY output + clean completion status
+    => the exchange IS appended, with the assistant half synthesized as an
+    honest ``[spawn-completion: ...]`` marker -- and a ``metadata`` payload
+    shaped like the retired ``report_outcome`` tool call has ZERO effect.
 
-    This FLIPS the pre-support#498 pinned-wrong test (formerly named
-    ``..._appends_no_empty_turn``): that test only asserted the ABSENCE of an
-    empty assistant turn, which was trivially satisfied by the bug (dropping
-    BOTH halves of the exchange entirely) -- it never positively asserted
-    that the turn was recorded at all. "work -> report_outcome -> end" is the
-    normal agentic turn shape, and the engine's own outcome ladder already
-    treats this turn as legitimately completed for ROUTING (the verdict below
-    still round-trips exactly as before); recording must not contradict that.
-    Issue #287's REAL invariant -- never emit a literal empty assistant
-    message some providers reject -- is preserved by synthesizing a
-    non-empty marker instead of skipping the append.
+    This test used to pin the pre-repair ``metadata.report_outcome``
+    precedence read (is_explicit=True, ``[report_outcome: ...]`` marker
+    carrying the metadata's own preferred_label/notes). WAVE 5 (2026-08-30)
+    removed that precedence read with no compat window (EXTENSIONS.md \u00a735,
+    dated ``status: REMOVED``); a stray ``metadata.report_outcome`` key is
+    now inert junk, not a channel. The fixture deliberately KEEPS that key
+    to prove it is ignored, rather than dropping it and losing that
+    regression coverage.
+
+    The still-true invariant from issue #287 / support#498 survives: a
+    child that finished via tool calls and has no closing prose still gets
+    its turn recorded (never silently dropped, never a literal empty
+    assistant message), recovered here from the orchestrator's own
+    completion ``status`` (spec \u00a74.5 / EXTENSIONS.md \u00a725) -- which is an
+    INFERRED outcome (``is_explicit=False``), not an explicit verdict.
     """
     coordinator = MockCoordinator(
         spawn_result={
@@ -862,6 +863,7 @@ async def test_spawn_explicit_verdict_empty_output_appends_synthesized_marker_tu
             "session_id": "c-empty-verdict",
             "status": "success",
             "metadata": {
+                # Retired-shape payload, kept to prove it is now inert.
                 "report_outcome": {
                     "status": "success",
                     "preferred_label": "validated",
@@ -888,19 +890,27 @@ async def test_spawn_explicit_verdict_empty_output_appends_synthesized_marker_tu
     assert messages[0] == {"role": "user", "content": "First instruction"}
     assert messages[1]["role"] == "assistant"
     marker = messages[1]["content"]
-    _assert_valid_marker(marker)
+    _assert_valid_marker(marker, expected_prefix="spawn-completion")
     assert "status=success" in marker
-    assert "preferred_label=validated" in marker
-    assert "Work done via tool calls" in marker
-
-    # --- #231/#286 must NOT regress: the verdict still round-trips ---
-    assert isinstance(outcome, Outcome)
-    assert outcome.is_explicit is True, (
-        "metadata.report_outcome must still set is_explicit=True for an "
-        "empty-output child -- the #231 parent-side fix must not regress"
+    # --- WAVE 5: metadata.report_outcome content must NOT leak into the
+    # marker or the Outcome -- it is not read at all anymore. ---
+    assert "preferred_label" not in marker, (
+        f"metadata.report_outcome is removed/inert; got {marker!r}"
     )
-    assert outcome.preferred_label == "validated", (
-        f"expected preferred_label='validated', got {outcome.preferred_label!r}"
+    assert "Work done via tool calls" not in marker, (
+        f"metadata.report_outcome notes must not leak into the inferred "
+        f"marker, got {marker!r}"
+    )
+
+    assert isinstance(outcome, Outcome)
+    assert outcome.is_explicit is False, (
+        "an empty-output child has no explicit-verdict channel left "
+        "(report_outcome is removed); the completion status is an "
+        "INFERRED outcome, is_explicit must be False"
+    )
+    assert outcome.preferred_label is None, (
+        f"metadata.report_outcome.preferred_label must never be carried "
+        f"onto the Outcome, got {outcome.preferred_label!r}"
     )
     assert outcome.status == StageStatus.SUCCESS
     assert outcome.session_id == "c-empty-verdict"
@@ -946,7 +956,9 @@ async def test_spawn_empty_output_envelope_marker_reaches_next_same_thread_spawn
     )
     assert parent_messages[0] == {"role": "user", "content": "First instruction"}
     assert parent_messages[1]["role"] == "assistant"
-    _assert_valid_marker(parent_messages[1]["content"])
+    _assert_valid_marker(
+        parent_messages[1]["content"], expected_prefix="spawn-completion"
+    )
     assert not [
         m
         for m in parent_messages
@@ -1259,9 +1271,18 @@ async def test_spawn_explicit_verdict_nonempty_output_still_appends_turn():
         {"role": "assistant", "content": "The analysis is complete."},
     ]
 
-    # The explicit verdict is honored here too (spec 35 / #231).
-    assert outcome.is_explicit is True
-    assert outcome.preferred_label == "validated"
+    # WAVE 5 repair: metadata.report_outcome is dead (no precedence read
+    # left anywhere); non-empty prose runs through _parse_outcome's
+    # fail-closed §25 ladder same as any other plain-text response, and
+    # "The analysis is complete." carries no JSON/embedded verdict.
+    assert outcome.is_explicit is False, (
+        "metadata.report_outcome must have no effect; plain prose with no "
+        "JSON/embedded verdict is_explicit=False (§25 fail-closed)"
+    )
+    assert outcome.preferred_label is None, (
+        f"metadata.report_outcome.preferred_label must never be carried "
+        f"onto the Outcome, got {outcome.preferred_label!r}"
+    )
     assert outcome.status == StageStatus.SUCCESS
 
 
@@ -1854,10 +1875,6 @@ class _MockReportOutcomeTool:
         return _MockToolResult(output=f"recorded: {input.get('status', '?')}")
 
 
-
-
-
-
 @pytest.mark.asyncio
 async def test_build_unified_tools_falls_back_to_input_schema():
     """_build_unified_tools resolves input_schema when parameters and schema are absent.
@@ -1890,10 +1907,6 @@ async def test_build_unified_tools_falls_back_to_input_schema():
     assert "properties" in tools[0].parameters
     assert "status" in tools[0].parameters["properties"]
     assert tools[0].parameters.get("required") == ["status"]
-
-
-
-
 
 
 def test_clone_isolates_stateful_tool_instances():

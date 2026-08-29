@@ -28,10 +28,20 @@ from typing import Any
 
 import pytest
 
-# M3's authority is enforced by feeding a worker's own completion envelope to
-# the REAL engine reader -- never a reimplementation of its logic. The
-# import is the actual production symbol loop-pipeline's spawn path calls.
-from amplifier_module_loop_pipeline.backend import _outcome_from_spawn_result
+# M3's authority is enforced by feeding a worker's own completion envelope
+# (and its reply text) to the REAL engine readers -- never a
+# reimplementation of their logic. These are the actual production symbols
+# loop-pipeline's spawn path (`_run_with_spawn`) calls, and the SAME branch
+# decision is mirrored below (empty final text -> `_outcome_from_spawn_
+# result`; non-empty -> `_parse_outcome`) -- WAVE 5 repair (2026-08-30):
+# `metadata.report_outcome` is removed, so `_outcome_from_spawn_result`
+# alone can never again produce a fabricated `is_explicit=True` verdict;
+# the ONLY channel left for a spawn-path verdict is the child's own final
+# text parsing as JSON (`_parse_outcome`).
+from amplifier_module_loop_pipeline.backend import (
+    _outcome_from_spawn_result,
+    _parse_outcome,
+)
 
 from .protocol import TurnResult, WorkerHarness
 
@@ -172,27 +182,41 @@ async def test_m3_no_signal_never_fabricates_explicit_success(
     ``outcome.is_success`` (SUCCESS-or-PARTIAL_SUCCESS), not a
     SUCCESS-only status check, to match what the engine actually honors.
 
-    Verified via the REAL engine reader, never a reimplementation of its
-    logic (binding design mandate): this feeds the worker's own completion
-    envelope into ``amplifier_module_loop_pipeline.backend.
-    _outcome_from_spawn_result`` -- the actual function loop-pipeline's
-    spawn path calls -- and checks it does NOT come back as an explicit,
-    gate-satisfying verdict. Incident #2/#3 from the kit's motivating story
-    (the same bug class recurred in a SECOND worker, support#497's actual
-    incident): a worker must not let "no verdict" quietly read as
-    "success" -- in either flavor.
+    Verified via the REAL engine readers, never a reimplementation of their
+    logic (binding design mandate): this feeds the worker's own reply text
+    and completion envelope through the SAME branch loop-pipeline's spawn
+    path (``_run_with_spawn``) actually applies -- empty final text ->
+    ``_outcome_from_spawn_result``, non-empty -> ``_parse_outcome`` -- and
+    checks the result does NOT come back as an explicit, gate-satisfying
+    verdict. Incident #2/#3 from the kit's motivating story (the same bug
+    class recurred in a SECOND worker, support#497's actual incident): a
+    worker must not let "no verdict" quietly read as "success" -- in either
+    flavor, and on either branch of the real decision.
+
+    WAVE 5 repair (2026-08-30) note: ``metadata.report_outcome`` is removed,
+    so ``_outcome_from_spawn_result`` can never again produce
+    ``is_explicit=True`` by itself -- that half of this check is now a
+    permanent, structural regression guard (it MUST stay green; a
+    reintroduced metadata-verdict channel should make it red again). The
+    live remaining attack surface is a worker whose final reply text itself
+    parses as a bare verdict object with zero real mechanism behind it --
+    ``_parse_outcome`` is exercised for that branch, matching
+    ``broken_worker.py``'s current fixtures (see there).
     """
     result = await worker_harness.run_turn(
         "Do some work, but never call report_outcome or assert any verdict.",
         None,
     )
-    spawn_result: dict[str, Any] = {
-        "output": result.reply,
-        "status": result.completion_envelope.get("status"),
-        "metadata": result.completion_envelope.get("metadata", {}),
-        "session_id": None,
-    }
-    outcome = _outcome_from_spawn_result(spawn_result)
+    if result.reply.strip():
+        outcome = _parse_outcome(result.reply, node=None)
+    else:
+        spawn_result: dict[str, Any] = {
+            "output": result.reply,
+            "status": result.completion_envelope.get("status"),
+            "metadata": result.completion_envelope.get("metadata", {}),
+            "session_id": None,
+        }
+        outcome = _outcome_from_spawn_result(spawn_result)
     fabricated_verdict = (
         outcome is not None and outcome.is_explicit and outcome.is_success
     )

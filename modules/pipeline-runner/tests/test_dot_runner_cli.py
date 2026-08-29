@@ -5,13 +5,17 @@ attractor-specific policy in this engine repo; full removal, no alias/shim).
 Covers:
   1. `dot-runner run` on a minimal box-node .dot with a FAKE provider
      (hermetic): executes via the `direct` worker, zero bundle/profile
-     resolution attempted when `--bundle` is not given.
+     resolution attempted for a bare run.
   2. `--worker` flag: selects a registered worker; unknown name -> clean
      error listing registered workers (exit code + message, no traceback).
-  3. `--bundle` flag / `DOT_RUNNER_BUNDLE` env var: the preserved mechanism
-     for an opinionated experience by explicit declaration -- loads a named
-     bundle, registers `session.spawn`, and honors the loaded bundle's own
-     declared `worker`/`profiles` as this run's effective default.
+  3. WAVE 5 repair (2026-08-30): `--bundle`/`DOT_RUNNER_BUNDLE` are REMOVED
+     from this CLI's surface entirely -- no flag, no env var, help text
+     never mentions either (maintainer ruling: "bundles are under the
+     hood -- never exposed to runner users"). `runner.run_pipeline`'s own
+     `bundle=` parameter still exists as an internal mechanism
+     (`default_worker.py` synthesizes one under the hood for a named
+     worker) -- see test_default_worker.py for that coverage -- but the CLI
+     itself never accepts or surfaces a bundle reference from the user.
   4. Entry-point registration: `main` dispatches correctly and `--help` works.
   5. doctor/lint/trace smoke.
 
@@ -305,90 +309,80 @@ def test_run_pipeline_bundle_explicit_worker_overrides_declared(monkeypatch, tmp
     assert captured["default_worker"] == "direct"
 
 
-def test_cli_bundle_flag_reaches_run_pipeline(monkeypatch, tmp_path):
-    """cmd_run threads --bundle straight through to runner.run_pipeline."""
+# ---------------------------------------------------------------------------
+# WAVE 5 repair regression: --bundle / DOT_RUNNER_BUNDLE must be GONE from
+# the CLI surface entirely -- no flag, no env var fallback, and argparse
+# must reject an attempt to pass one (never silently ignore it).
+# ---------------------------------------------------------------------------
+
+
+def test_cli_rejects_bundle_flag(monkeypatch, tmp_path, capsys):
+    """--bundle is not a recognized flag anymore -- argparse fails loud
+    (exit 2, "unrecognized arguments"), it is never silently accepted."""
+    dot_path = _make_dot_file(tmp_path)
+    parser = cli.build_parser(prog="dot-runner")
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(
+            [
+                "run",
+                dot_path,
+                "--bundle",
+                "git+https://example.invalid/x.yaml",
+                "--cwd",
+                str(tmp_path),
+            ]
+        )
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "--bundle" in err
+    assert "unrecognized" in err
+
+
+def test_cli_dot_runner_bundle_env_var_has_no_effect(monkeypatch, tmp_path):
+    """DOT_RUNNER_BUNDLE is no longer consulted anywhere -- a leftover
+    value in the environment (e.g. from a pre-repair install/shell rc
+    file) must have zero effect on the run."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
-    monkeypatch.delenv("DOT_RUNNER_BUNDLE", raising=False)
+    monkeypatch.setenv("DOT_RUNNER_BUNDLE", "git+https://example.invalid/env.yaml")
+    # Amplifier-agent unavailable in this hermetic env -- falls back to direct.
     dot_path = _make_dot_file(tmp_path)
 
     captured: dict = {}
 
     async def fake_run_pipeline(dot_source, **kwargs):
         captured["bundle"] = kwargs.get("bundle")
+        captured["worker"] = kwargs.get("worker")
         return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
 
     monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
 
     parser = cli.build_parser(prog="dot-runner")
     args = parser.parse_args(
-        [
-            "run",
-            dot_path,
-            "--bundle",
-            "git+https://example.invalid/x.yaml",
-            "--cwd",
-            str(tmp_path),
-        ]
+        ["run", dot_path, "--worker", "direct", "--cwd", str(tmp_path)]
     )
     args.prog_name = "dot-runner"
 
     rc = cli.cmd_run(args)
     assert rc == 0
-    assert captured["bundle"] == "git+https://example.invalid/x.yaml"
-
-
-def test_cli_bundle_env_var_fallback_when_flag_omitted(monkeypatch, tmp_path):
-    """DOT_RUNNER_BUNDLE is consulted only when --bundle is not passed."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
-    monkeypatch.setenv("DOT_RUNNER_BUNDLE", "git+https://example.invalid/env.yaml")
-    dot_path = _make_dot_file(tmp_path)
-
-    captured: dict = {}
-
-    async def fake_run_pipeline(dot_source, **kwargs):
-        captured["bundle"] = kwargs.get("bundle")
-        return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
-
-    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
-
-    parser = cli.build_parser(prog="dot-runner")
-    args = parser.parse_args(["run", dot_path, "--cwd", str(tmp_path)])
-    args.prog_name = "dot-runner"
-
-    rc = cli.cmd_run(args)
-    assert rc == 0
-    assert captured["bundle"] == "git+https://example.invalid/env.yaml"
-
-
-def test_cli_bundle_flag_wins_over_env_var(monkeypatch, tmp_path):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
-    monkeypatch.setenv("DOT_RUNNER_BUNDLE", "git+https://example.invalid/env.yaml")
-    dot_path = _make_dot_file(tmp_path)
-
-    captured: dict = {}
-
-    async def fake_run_pipeline(dot_source, **kwargs):
-        captured["bundle"] = kwargs.get("bundle")
-        return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
-
-    monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
-
-    parser = cli.build_parser(prog="dot-runner")
-    args = parser.parse_args(
-        [
-            "run",
-            dot_path,
-            "--bundle",
-            "git+https://example.invalid/flag.yaml",
-            "--cwd",
-            str(tmp_path),
-        ]
+    assert captured["bundle"] is None, (
+        "DOT_RUNNER_BUNDLE must not reach run_pipeline as a bundle= arg -- "
+        f"got {captured['bundle']!r}"
     )
-    args.prog_name = "dot-runner"
+    assert captured["worker"] == "direct"
 
-    rc = cli.cmd_run(args)
-    assert rc == 0
-    assert captured["bundle"] == "git+https://example.invalid/flag.yaml"
+
+def test_help_text_has_zero_bundle_vocabulary(capsys):
+    """--help output for both run and resume must never mention --bundle
+    or DOT_RUNNER_BUNDLE (maintainer ruling: bundles are under the hood)."""
+    parser = cli.build_parser(prog="dot-runner")
+    for sub in ("run", "resume"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([sub, "--help"])
+        out = capsys.readouterr().out
+        assert "--bundle" not in out, f"{sub} --help must not mention --bundle:\n{out}"
+        assert "DOT_RUNNER_BUNDLE" not in out, (
+            f"{sub} --help must not mention DOT_RUNNER_BUNDLE:\n{out}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -408,12 +402,6 @@ def test_worker_flag_defaults_to_none():
     parser = cli.build_parser(prog="dot-runner")
     args = parser.parse_args(["run", "dummy.dot"])
     assert args.worker is None
-
-
-def test_bundle_flag_defaults_to_none():
-    parser = cli.build_parser(prog="dot-runner")
-    args = parser.parse_args(["run", "dummy.dot"])
-    assert args.bundle is None
 
 
 def test_worker_flag_reaches_run_pipeline(monkeypatch, tmp_path):
