@@ -51,11 +51,9 @@ if "amplifier_core" not in sys.modules:
     sys.modules["amplifier_core.message_models"] = _stub_msg
 
 from amplifier_module_loop_pipeline.backend import AmplifierBackend
-from amplifier_module_loop_pipeline import DirectProviderBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
-
 
 # ---------------------------------------------------------------------------
 # Mock unified_llm Client — returns canned Response objects
@@ -340,7 +338,7 @@ async def test_direct_backend_uses_unified_client():
         [_make_text_response('{"status": "success", "notes": "Done"}')]
     )
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),  # truthy sentinel
         unified_client=mock_client,
     )
@@ -357,7 +355,7 @@ async def test_direct_backend_maps_sdk_error_to_fail():
     """SDKError from unified_llm maps to Outcome(FAIL) in DirectProviderBackend."""
     mock_client = _FailingUnifiedClient(unified_llm.SDKError("API key invalid"))
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
     )
@@ -373,7 +371,7 @@ async def test_direct_backend_adds_context_updates():
     """DirectProviderBackend sets context_updates on the outcome."""
     mock_client = _MockUnifiedClient([_make_text_response("stage complete")])
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
     )
@@ -394,7 +392,7 @@ async def test_direct_backend_full_fidelity_accumulates_messages():
         ]
     )
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
     )
@@ -435,7 +433,7 @@ async def test_direct_backend_compact_fidelity_uses_preamble():
         ]
     )
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
     )
@@ -536,7 +534,7 @@ async def test_direct_backend_report_outcome_terminal_action_empty_text():
         ]
     )
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         tools={"report_outcome": report_tool},
         unified_client=mock_client,
@@ -553,7 +551,7 @@ async def test_direct_backend_report_outcome_terminal_action_empty_text():
 async def test_direct_backend_report_outcome_no_cross_node_bleed():
     """DirectProviderBackend: each generate() call has its own steps — no cross-node bleed."""
     report_tool = _MockReportOutcomeTool()
-    backend = DirectProviderBackend(provider=object())
+    backend = AmplifierBackend(provider=object())
     backend._tools = {"report_outcome": report_tool}
 
     # Node 1: report_outcome called as terminal tool, result.text empty

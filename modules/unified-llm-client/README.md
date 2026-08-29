@@ -26,7 +26,8 @@ Provider adapter tests require `anthropic` and `google-genai`. If those packages
 
 The library exposes per-call USD cost through three public surfaces:
 `compute_cost`, `usage.cost_usd` on responses, and the `cost_usd` key on
-`provider:response` events emitted by `DirectProviderBackend`.
+`provider:response` events emitted by the `direct` worker
+(loop-pipeline's `workers/direct_worker.py`).
 
 ### `compute_cost`
 

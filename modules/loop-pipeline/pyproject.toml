@@ -42,6 +42,12 @@ package = true
 [tool.uv.sources]
 amplifier-unified-llm-client = { path = "../unified-llm-client" }
 amplifier-module-remote-source = { path = "../remote-source" }
+# Test-only, same-repo path source: tests/test_worker_parity.py wires the
+# `direct` worker into worker-parity-kit's shared M1-M3 + TARGET suite (see
+# that module's README, "Why this exists"). Editable so the test always
+# runs the working tree's kit. Mirrors loop-amplifier-agent/pyproject.toml's
+# identical dev-only wiring.
+amplifier-worker-parity-kit = { path = "../worker-parity-kit", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = [
@@ -56,6 +62,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=1.0.0",
     "respx>=0.22",
+    "amplifier-worker-parity-kit",
 ]
 
 [tool.pytest.ini_options]

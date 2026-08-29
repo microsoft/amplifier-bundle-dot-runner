@@ -581,7 +581,6 @@ async def test_amplifier_backend_sets_node_context():
 # ---------------------------------------------------------------------------
 # Task 17: Wire ContextVar into DirectProviderBackend
 # ---------------------------------------------------------------------------
-from amplifier_module_loop_pipeline import DirectProviderBackend
 
 
 @pytest.mark.asyncio
@@ -590,7 +589,7 @@ async def test_direct_backend_lazy_client_gets_middleware():
     hooks = RecordingHooks()
     mock_client = _TrackingClient(_make_response("done"))
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
         hooks=hooks,
@@ -609,7 +608,7 @@ async def test_direct_backend_sets_node_context():
     hooks = RecordingHooks()
     mock_client = _TrackingClient(_make_response("done"))
 
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
         hooks=hooks,

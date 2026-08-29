@@ -51,11 +51,10 @@ if "amplifier_core" not in sys.modules:
     _stub_msg.ToolCallBlock = _StubToolCallBlock  # type: ignore[attr-defined]
     sys.modules["amplifier_core.message_models"] = _stub_msg
 
-from amplifier_module_loop_pipeline import DirectProviderBackend
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.outcome import StageStatus
-
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -139,7 +138,7 @@ async def test_direct_backend_compact_fidelity_prepends_preamble():
             _make_text_response('{"status": "success", "notes": "Step 2 done"}'),
         ]
     )
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),  # truthy sentinel — no longer called
         unified_client=mock_client,
     )
@@ -189,7 +188,7 @@ async def test_direct_backend_truncate_fidelity_minimal_preamble():
             _make_text_response('{"status": "success", "notes": "Done 2"}'),
         ]
     )
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
     )
@@ -229,7 +228,7 @@ async def test_direct_backend_full_fidelity_reuses_messages():
             _make_text_response("Response 2"),
         ]
     )
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
     )
@@ -266,7 +265,7 @@ async def test_direct_backend_without_graph_falls_back_gracefully():
     mock_client = _MockUnifiedClient(
         [_make_text_response('{"status": "success", "notes": "ok"}')]
     )
-    backend = DirectProviderBackend(
+    backend = AmplifierBackend(
         provider=object(),
         unified_client=mock_client,
     )

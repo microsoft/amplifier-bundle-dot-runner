@@ -15,20 +15,17 @@ __amplifier_module_type__ = "orchestrator"
 import json
 import logging
 import os
-import re
 import tempfile
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from .context import PipelineContext
 from .engine import PipelineEngine
-from .graph import resolve_bool_attr
 from .handlers import HandlerRegistry
 from .handlers.context import HandlerContext
-from .hook_bridge import _current_node_context, set_node_context
-from .outcome import Outcome, StageStatus
-from .pipeline_events import PROVIDER_ERROR, PROVIDER_REQUEST, PROVIDER_RESPONSE
+from .outcome import Outcome
 from .preflight import check_provider_preflight
 from .transforms import apply_transforms
 from .validation import validate_or_raise
@@ -37,12 +34,32 @@ logger = logging.getLogger(__name__)
 
 
 class DirectProviderBackend:
-    """Backend that calls a provider directly via unified_llm.generate().
+    """DEPRECATED compatibility shim for the former standalone direct-execution backend.
 
-    This is the default backend when no session.spawn capability is
-    available.  It delegates the agentic tool loop to the unified-llm-client
-    library, which handles LLM calls, tool execution, retry, and error
-    mapping internally.
+    ``DirectProviderBackend`` was a documented library-integration path (the
+    former class lived HERE, at ``__init__.py:39-394`` pre-merge, so
+    ``from amplifier_module_loop_pipeline import DirectProviderBackend``
+    worked) -- notably ``amplifier-bundle-attractor/README.md:323,343`` and
+    ``examples/programmatic_usage.py:71,86``, plus that repo's
+    ``docs/APP-INTEGRATION-GUIDE.md``. DESIGN-worker-registry-core-split.md
+    P1 (gap-table row 2) merged that class's body into the registry's
+    ``direct`` worker (``workers/direct_worker.py``) and deleted the
+    standalone class. This shim exists ONLY to keep that documented import
+    path and constructor/``run()`` signature working through a deprecation
+    window -- it is not itself registered anywhere (the worker registry
+    only ever knows the real ``\"direct\"`` worker by name; see
+    ``workers/registry.py``) and carries no independent logic: every call
+    delegates straight through to ``AmplifierBackend`` constructed in the
+    spawn-absent shape (``coordinator=None``, ``default_worker=\"direct\"``),
+    the exact routing ``_build_backend`` now uses for a standalone,
+    no-coordinator caller.
+
+    Migrate to: construct ``AmplifierBackend`` directly (optionally passing
+    ``default_worker=\"direct\"`` to pin the worker explicitly, though a
+    coordinator-less/spawn-less construction already resolves to ``direct``
+    by the unchanged capability-fallback chain -- see
+    ``specs/EXTENSIONS.md`` Sec40 for the full selection policy this
+    replaces this class with).
     """
 
     def __init__(
@@ -53,15 +70,35 @@ class DirectProviderBackend:
         coordinator: Any = None,
         unified_client: Any | None = None,
     ) -> None:
-        self._provider = provider
-        self._tools = tools or {}
-        self._hooks = hooks
+        warnings.warn(
+            "DirectProviderBackend is deprecated and will be removed in a "
+            "future release. Use the worker registry's `direct` worker via "
+            "AmplifierBackend instead (see specs/EXTENSIONS.md Sec40 for "
+            "the worker-selection policy that replaces this class). This "
+            'shim delegates to AmplifierBackend(default_worker="direct") '
+            "and will keep working, unchanged, through the deprecation "
+            "window.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # coordinator is accepted for constructor-signature compatibility
+        # with the pre-merge class (which took it but never consulted it in
+        # run()) -- deliberately NOT forwarded to AmplifierBackend. This
+        # shim always constructs the spawn-absent shape, matching the
+        # original class's own contract: "the default backend when no
+        # session.spawn capability is available."
         self._coordinator = coordinator
-        self._unified_client = unified_client
-        # Fidelity state (H-9): track completed nodes and message history
-        self._completed_nodes: dict[str, Any] = {}
-        self._message_pools: dict[str, list] = {}  # thread_key -> unified_llm Messages
-        self._last_node_id: str | None = None
+
+        from .backend import AmplifierBackend
+
+        self._backend = AmplifierBackend(
+            coordinator=None,
+            provider=provider,
+            tools=tools,
+            hooks=hooks,
+            unified_client=unified_client,
+            default_worker="direct",
+        )
 
     async def run(
         self,
@@ -73,323 +110,15 @@ class DirectProviderBackend:
         graph: Any | None = None,
         **kwargs: Any,
     ) -> Outcome:
-        """Run an LLM call for *node* via unified_llm.generate().
+        """Delegate to the ``direct`` worker via ``AmplifierBackend``.
 
-        Supports fidelity-aware context carryover (spec Section 5.4):
-        - full: reuse message history from previous calls with same thread key
-        - compact/truncate/summary: prepend preamble from completed node history
+        Preserves the pre-merge public ``run()`` signature and Outcome
+        return shape so existing library-integration callers keep working,
+        unmodified, through the deprecation window.
         """
-        import unified_llm
-
-        from .backend import (
-            _build_unified_tools,
-            _find_report_outcome_call,
-            _outcome_from_structured_output,
-            _parse_outcome,
-            _resolve_concrete_model,
-            _resolve_model,
-            _STATUS_MAP,
-            _MAX_TOOL_LOOP_ROUNDS,
+        return await self._backend.run(
+            node, prompt, context, incoming_edge=incoming_edge, graph=graph
         )
-
-        # Resolve fidelity mode (spec FID-001)
-        from .fidelity import build_preamble, resolve_fidelity, resolve_thread_key
-
-        fidelity = "compact"  # default
-        thread_key = node.id
-        if graph is not None:
-            fidelity = resolve_fidelity(node, incoming_edge, graph)
-            thread_key = resolve_thread_key(
-                node, incoming_edge, graph, self._last_node_id
-            )
-
-        # Resolve model, provider, tools, reasoning, max_agent_turns
-        provider_name = (
-            node.llm_provider
-            if hasattr(node, "llm_provider") and node.llm_provider
-            else node.attrs.get("llm_provider", "anthropic")
-        )
-        model = await _resolve_concrete_model(
-            provider_name, _resolve_model(node), emit=self._emit
-        )
-        reasoning_effort = node.attrs.get("reasoning_effort")
-        max_agent_turns_raw = node.attrs.get("max_agent_turns")
-        max_agent_turns = (
-            int(max_agent_turns_raw) if max_agent_turns_raw is not None else None
-        )
-        tools = _build_unified_tools(self._tools)
-        client = self._get_or_create_unified_client()
-
-        # EXT-23: Build response_format when response_schema is set on the node
-        response_format_obj: Any = None
-        if node.response_schema is not None:
-            response_format_obj = unified_llm.ResponseFormat(
-                type="json_schema",
-                json_schema=node.response_schema,
-                strict=True,
-            )
-
-        # Build generate() kwargs based on fidelity mode
-        generate_kwargs: dict[str, Any] = dict(
-            model=model,
-            tools=tools or None,
-            max_tool_rounds=max_agent_turns
-            if max_agent_turns is not None
-            else _MAX_TOOL_LOOP_ROUNDS,
-            reasoning_effort=reasoning_effort,
-            provider=provider_name,
-            client=client,
-            response_format=response_format_obj,
-        )
-
-        if fidelity == "full":
-            # Reuse accumulated message history for this thread key
-            ulm_messages: list[unified_llm.Message] = list(
-                self._message_pools.get(thread_key, [])
-            )
-            ulm_messages.append(unified_llm.Message.user(prompt))
-            generate_kwargs["messages"] = ulm_messages
-        else:
-            # Fresh session with preamble
-            if graph is not None and self._completed_nodes:
-                preamble = build_preamble(fidelity, context, self._completed_nodes)
-                effective_prompt = (
-                    f"{preamble}\n\n---\n\n{prompt}" if preamble else prompt
-                )
-            else:
-                effective_prompt = prompt
-            generate_kwargs["prompt"] = effective_prompt
-
-        # Set node context for the hook bridge middleware
-        token = set_node_context({"node_id": node.id})
-
-        try:
-            # Emit provider:request before the LLM call
-            pre_result = await self._emit(
-                PROVIDER_REQUEST,
-                {
-                    "provider": provider_name,
-                    "model": model,
-                    "node_id": node.id,
-                    "tool_names": [t.name for t in tools] if tools else [],
-                    "message_count": len(generate_kwargs.get("messages", [])) or 1,
-                },
-            )
-
-            # Check for deny action from hooks
-            if (
-                pre_result is not None
-                and getattr(pre_result, "action", "continue") == "deny"
-            ):
-                reason = getattr(pre_result, "reason", None) or "Denied by hook"
-                return Outcome(
-                    status=StageStatus.FAIL,
-                    failure_reason=f"Denied by hook: {reason}",
-                )
-
-            # Call unified_llm.generate() — handles tool loop, retry, errors
-            result = await unified_llm.generate(**generate_kwargs)
-        except unified_llm.SDKError as exc:
-            logger.warning("unified_llm.generate failed for node %s: %s", node.id, exc)
-            await self._emit(
-                PROVIDER_ERROR,
-                {
-                    "provider": provider_name,
-                    "model": model,
-                    "node_id": node.id,
-                    "error_type": type(exc).__name__,
-                    "error_class": type(exc).__mro__[1].__name__,
-                    "retryable": getattr(exc, "retryable", False),
-                    "message": str(exc),
-                },
-            )
-            return Outcome(
-                status=StageStatus.FAIL,
-                failure_reason=str(exc),
-            )
-        except Exception as exc:
-            logger.warning("Unexpected error in generate for node %s: %s", node.id, exc)
-            return Outcome(
-                status=StageStatus.FAIL,
-                failure_reason=str(exc),
-            )
-        finally:
-            _current_node_context.reset(token)
-
-        # Emit provider:response after successful LLM call
-        await self._emit(
-            PROVIDER_RESPONSE,
-            {
-                "provider": provider_name,
-                "model": model,
-                "node_id": node.id,
-                "usage": {
-                    "input_tokens": result.total_usage.input_tokens,
-                    "output_tokens": result.total_usage.output_tokens,
-                    "total_tokens": result.total_usage.total_tokens,
-                    "reasoning_tokens": result.total_usage.reasoning_tokens,
-                    "cache_read_tokens": result.total_usage.cache_read_tokens,
-                    "cache_write_tokens": result.total_usage.cache_write_tokens,
-                },
-                "finish_reason": result.finish_reason.reason,
-                "text_length": len(result.text) if result.text else 0,
-                "step_count": len(result.steps),
-                "cost_usd": result.total_usage.cost_usd,
-            },
-        )
-
-        # EXT-23: Structured output mode — result.text is the JSON response, not an Outcome.
-        # Skip Outcome-parsing logic entirely; stash the JSON as the node output.
-        if node.response_schema is not None:
-            raw_json = result.text or ""
-            # Anthropic tool-extraction path: structured output lives in the
-            # __structured_output__ tool call arguments, not in result.text.
-            # Recover the JSON string when result.text is empty and a tool call is present.
-            if not raw_json.strip() and result.tool_calls:
-                _STRUCT_TOOL = "__structured_output__"
-                for _tc in result.tool_calls:
-                    if _tc.name == _STRUCT_TOOL:
-                        _args = _tc.arguments
-                        raw_json = (
-                            json.dumps(_args)
-                            if isinstance(_args, dict)
-                            else (str(_args) if _args else "")
-                        )
-                        break
-            parsed_obj: Any = None
-            if raw_json.strip():
-                try:
-                    parsed_obj = json.loads(raw_json)
-                except json.JSONDecodeError:
-                    pass
-            ctx_ext23: dict[str, Any] = {
-                "last_stage": node.id,
-                "last_response": raw_json[:200],
-            }
-            if parsed_obj is not None:
-                ctx_ext23[node.id] = parsed_obj
-            # EXTENSIONS.md §25 policy (corrected in independent review round
-            # 2): format ≠ verdict. Schema output is explicit ONLY when it
-            # carries a recognized verdict (captured report_outcome, or a
-            # `status` field with a recognized value — the same verdict
-            # ladder as every other path). Generic structured output stays
-            # DERIVED (is_explicit=False) so a goal_gate schema node
-            # returning non-verdict JSON fails closed. See
-            # backend._outcome_from_structured_output.
-            outcome = _outcome_from_structured_output(
-                raw_json=raw_json,
-                parsed_obj=parsed_obj,
-                ctx_updates=ctx_ext23,
-                result=result,
-            )
-            self._completed_nodes[node.id] = outcome
-            self._last_node_id = node.id
-            return outcome
-
-        # Map GenerateResult → Outcome (same priority order as _run_with_tool_loop)
-        text = result.text
-
-        if text:
-            stripped = text.strip()
-            _fence_match = re.match(
-                r"^```(?:json)?\s*([\s\S]*?)\s*```$", stripped, re.DOTALL
-            )
-            if bool(_fence_match) or stripped.startswith("{"):
-                outcome = _parse_outcome(text, node=node)
-                outcome.context_updates = {
-                    "last_stage": node.id,
-                    "last_response": text[:200],
-                }
-                self._completed_nodes[node.id] = outcome
-                self._last_node_id = node.id
-                return outcome
-
-        # Text is plain prose or empty — check if report_outcome was called
-        lo = _find_report_outcome_call(result)
-        if lo is not None:
-            outcome = Outcome(
-                status=_STATUS_MAP.get(lo.get("status"), StageStatus.FAIL),
-                context_updates=lo.get("context_updates"),
-                failure_reason=lo.get("failure_reason"),
-                preferred_label=lo.get("preferred_label"),
-                suggested_next_ids=lo.get("suggested_next_ids"),
-                notes=lo.get("notes"),
-                is_explicit=True,
-            )
-            self._completed_nodes[node.id] = outcome
-            self._last_node_id = node.id
-            return outcome
-
-        if text:
-            outcome = _parse_outcome(text, node=node)
-        else:
-            # No text and no report_outcome.
-            # EXTENSIONS.md §25 scope decision: apply fail-closed only to
-            # goal_gate nodes. Non-goal-gate nodes retain spec §4.5 SUCCESS
-            # default. goal_gate nodes require an explicit verdict.
-            _is_goal_gate = resolve_bool_attr(node.attrs.get("goal_gate"), "goal_gate")
-            if _is_goal_gate:
-                outcome = Outcome(
-                    status=StageStatus.FAIL,
-                    notes=f"No output from DirectProviderBackend: {node.id}",
-                    failure_reason="Empty DirectProviderBackend response — goal_gate node requires explicit verdict",
-                    is_explicit=False,
-                )
-            else:
-                # Non-goal-gate: spec §4.5 SUCCESS default preserved.
-                outcome = Outcome(
-                    status=StageStatus.SUCCESS,
-                    notes=f"Stage completed: {node.id}",
-                    is_explicit=False,
-                )
-
-        outcome.context_updates = {
-            "last_stage": node.id,
-            "last_response": text[:200] if text else "",
-        }
-
-        # Record fidelity state for future calls
-        self._completed_nodes[node.id] = outcome
-        self._last_node_id = node.id
-
-        # For full fidelity: save conversation history including tool steps
-        if fidelity == "full":
-            conversation: list[unified_llm.Message] = list(ulm_messages)
-            for i, step in enumerate(result.steps):
-                conversation.append(step.response.message)
-                # Add tool results for intermediate steps (loop continued)
-                if i < len(result.steps) - 1:
-                    for tr in step.tool_results:
-                        conversation.append(
-                            unified_llm.Message.tool_result(
-                                tool_call_id=tr.tool_call_id,
-                                content=tr.content
-                                if isinstance(tr.content, str)
-                                else str(tr.content),
-                                is_error=tr.is_error,
-                            )
-                        )
-            self._message_pools[thread_key] = conversation
-
-        return outcome
-
-    def _get_or_create_unified_client(self) -> Any:
-        """Return the injected client or lazily create one from environment."""
-        if self._unified_client is not None:
-            return self._unified_client
-        import unified_llm
-
-        self._unified_client = unified_llm.Client.from_env()
-        return self._unified_client
-
-    async def _emit(self, event_name: str, data: dict[str, Any]) -> Any:
-        """Emit an event via hooks, if provided.
-
-        Returns the HookResult from hooks.emit(), or None if hooks is not set.
-        """
-        if self._hooks is not None:
-            return await self._hooks.emit(event_name, data)
-        return None
 
 
 def _spawn_capability(coordinator: Any | None) -> Any | None:
@@ -495,63 +224,81 @@ def _build_backend(
 ) -> Any | None:
     """Auto-construct a backend from the available providers.
 
-    Resolution order:
-    1. If coordinator exposes ``session.spawn`` \u2192 use AmplifierBackend
-       (full "sessions all the way down").  Profiles are resolved from
+    Resolution order (DESIGN-worker-registry-core-split.md P1, gap-table
+    row 2): ``AmplifierBackend`` is now the ONE adapter class constructed
+    here in every case -- what used to be a choice between two top-level
+    *classes* (``AmplifierBackend`` vs. the now-deleted
+    ``DirectProviderBackend``) is a choice the adapter itself makes at
+    ``run()`` time between registered *workers* (``"spawn"`` vs.
+    ``"direct"``; see ``AmplifierBackend._resolve_worker_name``). The
+    observable ROUTING is unchanged (capability-fallback still selects the
+    `direct` worker when spawn is absent, exactly as the former
+    `DirectProviderBackend` branch did) -- what's new is that `direct` is
+    now also selectable BY NAME even when spawn IS available.
+
+    1. If coordinator exposes ``session.spawn`` -> profiles are resolved from
        ``orchestrator_config["profiles"]`` or auto-discovered from
-       ``coordinator.config["agents"]``.
-    2. Else if at least one provider is available \u2192 use
-       DirectProviderBackend (mini agentic tool loop per node).
-    3. Otherwise \u2192 return None (codergen handler falls through to
+       ``coordinator.config["agents"]``; the "spawn" worker becomes
+       selectable.
+    2. Else if at least one provider is available -> the adapter is still
+       constructed (with no working spawn capability), so the "direct"
+       worker handles every node -- the former ``DirectProviderBackend``
+       standalone-usage scenario.
+    3. Otherwise -> return None (codergen handler falls through to
        simulation mode).
+
+    ``orchestrator_config["worker"]`` (if set) becomes the run-level
+    ``default_worker`` -- EXTENSIONS.md \u00a740.
     """
     first_provider = next(iter(providers.values()), None) if providers else None
+    default_worker = (orchestrator_config or {}).get("worker")
 
-    # Try the full spawn-based backend first
-    if coordinator is not None:
-        spawn_fn = _spawn_capability(coordinator)
-        if spawn_fn is not None:
-            from .backend import AmplifierBackend
+    if first_provider is None and (
+        coordinator is None or _spawn_capability(coordinator) is None
+    ):
+        logger.warning(
+            "No providers available \u2014 codergen nodes will run in simulation mode"
+        )
+        return None
 
-            # Resolve profiles: explicit config > auto-discovery from agents.
-            # ONE home for that rule -- _resolve_profiles() (issue #279); the
-            # startup preflight in execute() step 5b consumes the SAME
-            # function, and tests/test_profile_resolver_parity.py pins both
-            # call sites to it so the two can no longer drift apart.
-            profiles: dict[str, str] = _resolve_profiles(
-                orchestrator_config, coordinator
+    from .backend import AmplifierBackend
+
+    spawn_fn = _spawn_capability(coordinator) if coordinator is not None else None
+    if spawn_fn is not None:
+        # Resolve profiles: explicit config > auto-discovery from agents.
+        # ONE home for that rule -- _resolve_profiles() (issue #279); the
+        # startup preflight in execute() step 5b consumes the SAME
+        # function, and tests/test_profile_resolver_parity.py pins both
+        # call sites to it so the two can no longer drift apart.
+        profiles: dict[str, str] = _resolve_profiles(orchestrator_config, coordinator)
+
+        if profiles:
+            logger.info(
+                "Using AmplifierBackend (session.spawn available, profiles=%s)",
+                list(profiles.keys()),
             )
-
-            if profiles:
-                logger.info(
-                    "Using AmplifierBackend (session.spawn available, profiles=%s)",
-                    list(profiles.keys()),
-                )
-            else:
-                logger.warning(
-                    "Using AmplifierBackend but profiles dict is empty. "
-                    "Pipeline nodes may fail to resolve agent profiles. "
-                    "Add 'profiles' to orchestrator config or 'agents' "
-                    "to the bundle."
-                )
-
-            return AmplifierBackend(
-                coordinator,
-                profiles=profiles,
-                provider=first_provider,
-                tools=tools,
-                hooks=hooks,
+        else:
+            logger.warning(
+                "Using AmplifierBackend but profiles dict is empty. "
+                "Pipeline nodes may fail to resolve agent profiles. "
+                "Add 'profiles' to orchestrator config or 'agents' "
+                "to the bundle."
             )
+    else:
+        profiles = {}
+        logger.info(
+            "Using AmplifierBackend (session.spawn unavailable -- the "
+            "`direct` worker will handle every node)"
+        )
 
-    # Fall back to direct provider tool loop
-    if first_provider is not None:
-        logger.info("Using DirectProviderBackend (direct provider tool loop)")
-        return DirectProviderBackend(first_provider, tools, hooks, coordinator)
-
-    logger.warning(
-        "No providers available \u2014 codergen nodes will run in simulation mode"
+    return AmplifierBackend(
+        coordinator,
+        profiles=profiles,
+        provider=first_provider,
+        tools=tools,
+        hooks=hooks,
+        default_worker=default_worker,
     )
-    return None
 
 
 async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
@@ -599,7 +346,9 @@ class PipelineOrchestrator:
         # Shared with the direct-engine `drive_engine`/`_load_graph` hook in
         # pipeline-runner via remote_dot.load_remote_or_local_graph, so the two
         # engine entry points can't diverge (see that function's docstring).
-        from .remote_dot import load_remote_or_local_graph  # lazy: keeps import net-free
+        from .remote_dot import (
+            load_remote_or_local_graph,
+        )  # lazy: keeps import net-free
 
         graph, _source_cleanup = await load_remote_or_local_graph(dot_source)
         # A file-backed root graph carries the directory it was read from, so
@@ -699,7 +448,9 @@ class PipelineOrchestrator:
             coordinator = kwargs.get("coordinator")
             backend = kwargs.get("backend")
             if backend is None:
-                backend = _build_backend(providers, tools, hooks, coordinator, self.config)
+                backend = _build_backend(
+                    providers, tools, hooks, coordinator, self.config
+                )
 
             # 7b. Environment setup (if configured)
             env_config: dict[str, Any] | None = self.config.get("execution_environment")
@@ -780,7 +531,9 @@ class PipelineOrchestrator:
                 # Environment teardown
                 if container_id and "env_destroy" in tools:
                     try:
-                        await tools["env_destroy"].execute({"instance": env_instance_name})
+                        await tools["env_destroy"].execute(
+                            {"instance": env_instance_name}
+                        )
                         logger.info(
                             "Execution environment destroyed: %s",
                             env_instance_name,

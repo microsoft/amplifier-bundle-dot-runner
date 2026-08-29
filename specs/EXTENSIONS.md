@@ -2683,3 +2683,115 @@ wired; this entry and ATX-14 record the decision, not a code change.
 - `specs/conformance/attractor-matrix.yaml` row `ATX-M-F04` + its probe in
   `modules/loop-pipeline/tests/test_spec_conformance_matrix.py` — asserts unset stays unset
   through parse *and* transforms, so a silently-introduced default fails CI naming this entry
+
+---
+
+## 40. Worker Registry: `worker=` Node Attribute and Selection Policy
+
+> **depends-on:** §12/§13 (fidelity=full continuity realization this registry's `direct`
+> worker now shares uniformly with the spawn path), §25 (`is_explicit` / fail-closed
+> goal-gate), §35 (`report_outcome` precedence — the registry's admission bar for a new
+> worker).
+>
+> **upstream action:** not applicable — identical footing to §35's own banner. Canonical
+> §1.4 fixes the delegation point exactly here: "What that backend does internally is
+> entirely up to the implementor" (`attractor-spec-canonical.md:58`), and canonical §4.5
+> fixes the outer boundary this program never moves: `CodergenBackend.run(node, prompt,
+> context) -> String | Outcome` (`:711-715`). A named worker registered BELOW that boundary
+> is implementor-level mechanism inside the delegated space, exactly the precedent §35
+> already established ("spawned-agent outcome transport... is implementor-level semantics
+> inside the canonical backend contract, not a divergence from it"). There is nothing to
+> propose upstream.
+
+**What:** Two additive surfaces, both defaulted and both optional for any spec-conformant
+`.dot` file:
+
+1. A per-node **`worker=`** attribute selecting which registered worker executes that node,
+   e.g. `worker="direct"`. Read via `node.attrs.get("worker")` — no grammar change, no new
+   BareValue production.
+2. A run-level **worker-selection default**, read from orchestrator config
+   (`orchestrator_config["worker"]`, e.g. `PipelineOrchestrator`'s `config["worker"]`, which
+   `_build_backend` threads into `AmplifierBackend(..., default_worker=...)`).
+
+**Selection precedence** (highest to lowest), implemented in
+`AmplifierBackend._resolve_worker_name`:
+
+1. The node's own `worker=` attribute, if present.
+2. The run-level `default_worker`, if configured.
+3. Today's capability-fallback chain, unchanged: `"spawn"` if `session.spawn` resolved for
+   this run, else `"direct"`.
+
+An unrecognized `worker=` value (or an unrecognized `default_worker` at construction time)
+raises `ValueError` naming every known worker — **never a silent fallback**. "Known workers"
+is the registry's registered names (today: only `"direct"`) plus the reserved sentinel
+`"spawn"`, which is not a registry entry at all (see below).
+
+**The registry, and what it does not manage.** A new `amplifier_module_loop_pipeline.workers`
+package holds a `WorkerRegistry` mapping **names** to `Worker` objects, plus the `Worker`
+protocol itself: stateless per node visit — `(prompt, context, replayed_history)` in,
+`(output, outcome)` out. A worker never receives `graph`/`incoming_edge` — the adapter
+(`AmplifierBackend`, still the canonical §4.5 `CodergenBackend` implementation registered as
+`ctx.backend`; the outer seam is untouched) resolves fidelity, applies the §5.3 rule-6 resume
+degrade, and hands the worker its already-replayed history (node-exchange granularity, §12).
+This phase ships exactly one registered worker, `"direct"` — the merge of the former
+`AmplifierBackend._run_with_tool_loop` and the standalone `DirectProviderBackend` class (both
+now gone; see `modules/loop-pipeline/amplifier_module_loop_pipeline/workers/direct_worker.py`
+for the asymmetries the merge resolved). `"spawn"` — the hosted `session.spawn` path — is a
+reserved name the adapter recognizes directly, **not** a `WorkerRegistry` entry: the registry
+keys names bound to a Python `Worker` instance, and there is no single such instance for
+"whichever agent orchestrator module a spawned profile happens to name" (`loop-agent`,
+`loop-amplifier-agent`, or an `attractor-agent-*` profile) — that identity is resolved
+entirely by the pre-existing `profiles` map and bundle composition, untouched by this entry.
+
+**`llm_provider` reverts to meaning ONLY provider.** Before this entry, a node's declared
+`llm_provider` did double duty on the spawn path: selecting a provider AND, via the
+`profiles` map, indirectly naming the agent (hence the worker). That map is unchanged and
+keeps working as a compat layer for as long as it has consumers — it is not extended, and
+`worker=` does not replace it, they are orthogonal: `llm_provider` picks the model family;
+`worker=` (or the run-level default) picks the execution mechanism.
+
+**The honest §1.4 tension.** Canonical §1.4 states: "The pipeline definition (the DOT file)
+does not change regardless of backend choice." A `worker=` node attribute is in visible
+tension with that sentence — a DOT file author who wants a specific mechanism for one node
+now has a way to say so in the file. The resolution is not to argue the tension away: a
+community `.dot` written to the canonical spec **never needs the attribute** — it is
+defaulted at every level, and the run-level default (item 2 above) is the primary control
+surface for an opinionated layer that wants to pin a worker without touching individual node
+attributes. This satisfies `SPEC_CONFORMANCE.md` compat-doctrine rule 3 ("additive and
+non-interfering") — the attribute only adds reachable behavior a conformant graph never
+exercises unless its author opts in.
+
+**Compatibility:** Additive and non-breaking, verified by RED-proven pinning tests:
+
+- A zero-attribute, zero-config run resolves the SAME worker as before this entry
+  (`tests/test_worker_selection.py`'s default-unchanged proofs): spawn present → the spawn
+  path; spawn absent → the `direct` worker (`_build_backend` now always constructs
+  `AmplifierBackend`, never a second backend class — see the merge note above — but the
+  *observable routing* is unchanged).
+- `clone()`/`close()` are registration-time guarantees on every registered worker
+  (`WorkerRegistry.register` refuses a worker missing either), closing the silent
+  `hasattr`/`getattr`-guard gap the former `DirectProviderBackend` left open
+  (`handlers/__init__.py`'s branch clone, `__init__.py`'s finalize path).
+- `human.gate.text` injection, `response_schema` (EXT-23), and
+  `provider:{request,response,error}` events are uniform across every path that reaches the
+  `direct` worker — the former asymmetry (`DirectProviderBackend` alone lacked gate-text
+  injection) is closed by construction: `_build_backend` constructs ONE adapter class in
+  every case, and gate-text injection happens once, in the adapter, before either path.
+
+**Implementation locations:**
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/workers/worker_protocol.py` — the
+  `Worker` protocol
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/workers/registry.py` —
+  `WorkerRegistry`
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/workers/direct_worker.py` —
+  `DirectWorker`, the merged `direct` worker
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/backend.py` — `AmplifierBackend`:
+  `_resolve_worker_name` (selection precedence), the registry it owns, and the `_run_with_spawn`
+  / `_run_with_tool_loop` dispatch
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/__init__.py` — `_build_backend`
+  (constructs the ONE adapter in every case; threads `orchestrator_config["worker"]`)
+- `modules/loop-pipeline/tests/test_worker_registry.py`,
+  `tests/test_worker_selection.py`, `tests/test_direct_worker_merge.py` — the registry,
+  selection-precedence, and merge-asymmetry contract tests
+- `modules/loop-pipeline/tests/test_worker_parity.py` — this repo's own worker-parity-kit
+  admission for the `direct` worker (see `modules/worker-parity-kit/README.md`)

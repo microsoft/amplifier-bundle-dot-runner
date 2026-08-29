@@ -62,10 +62,8 @@ if "amplifier_core" not in sys.modules:
     sys.modules["amplifier_core.message_models"] = _stub_msg
 
 from amplifier_module_loop_pipeline.backend import AmplifierBackend
-from amplifier_module_loop_pipeline import DirectProviderBackend
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Node
-
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -289,7 +287,7 @@ async def test_direct_backend_passes_reasoning_effort_all_values(
     # through to unified_llm.Client.from_env(), which requires a real API key
     # and would make this test non-hermetic.  unified_llm.generate is
     # monkeypatched above, so the client's identity is never used.
-    backend = DirectProviderBackend(provider=object(), unified_client=object())
+    backend = AmplifierBackend(provider=object(), unified_client=object())
     node = _make_node(
         attrs={
             "llm_provider": "test",
@@ -320,7 +318,7 @@ async def test_direct_backend_reasoning_effort_defaults_to_none(
     # through to unified_llm.Client.from_env(), which requires a real API key
     # and would make this test non-hermetic.  unified_llm.generate is
     # monkeypatched above, so the client's identity is never used.
-    backend = DirectProviderBackend(provider=object(), unified_client=object())
+    backend = AmplifierBackend(provider=object(), unified_client=object())
     node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
     result = await backend.run(node, "task", _make_context())
 
@@ -461,7 +459,7 @@ async def test_direct_backend_passes_max_agent_turns(
     # through to unified_llm.Client.from_env(), which requires a real API key
     # and would make this test non-hermetic.  unified_llm.generate is
     # monkeypatched above, so the client's identity is never used.
-    backend = DirectProviderBackend(provider=object(), unified_client=object())
+    backend = AmplifierBackend(provider=object(), unified_client=object())
     node = _make_node(
         attrs={
             "llm_provider": "test",
@@ -492,7 +490,7 @@ async def test_direct_backend_max_agent_turns_defaults_to_constant(
     # through to unified_llm.Client.from_env(), which requires a real API key
     # and would make this test non-hermetic.  unified_llm.generate is
     # monkeypatched above, so the client's identity is never used.
-    backend = DirectProviderBackend(provider=object(), unified_client=object())
+    backend = AmplifierBackend(provider=object(), unified_client=object())
     node = _make_node(attrs={"llm_provider": "test", "llm_model": "test-model"})
     result = await backend.run(node, "task", _make_context())
 

@@ -9,6 +9,8 @@ Verifies that _build_backend() populates the profiles dict from:
 from unittest.mock import MagicMock
 
 from amplifier_module_loop_pipeline import _build_backend
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
+from amplifier_module_loop_pipeline.graph import Node
 
 
 def _make_coordinator(has_spawn=True, agents=None):
@@ -56,9 +58,7 @@ def test_profiles_auto_discovered_from_agents():
             "attractor-anthropic": {
                 "session": {"orchestrator": {"module": "loop-agent"}}
             },
-            "attractor-openai": {
-                "session": {"orchestrator": {"module": "loop-agent"}}
-            },
+            "attractor-openai": {"session": {"orchestrator": {"module": "loop-agent"}}},
         },
     )
     providers = {"anthropic": MagicMock()}
@@ -98,15 +98,29 @@ def test_empty_profiles_still_creates_backend():
 
 
 def test_no_spawn_falls_back_to_direct_provider():
-    """Without session.spawn, should use DirectProviderBackend."""
+    """Without session.spawn, the `direct` worker handles every node.
+
+    CHANGED (DESIGN-worker-registry-core-split.md P1, gap-table row 2): the
+    former assertion (``not hasattr(backend, "_profiles")``) pinned the
+    pre-merge TWO-CLASS architecture -- proving "not AmplifierBackend" was
+    the only available proxy for "used the direct-provider path" back when
+    ``DirectProviderBackend`` was a separate class with no ``_profiles``
+    attribute. The merge makes ``AmplifierBackend`` the ONE adapter class in
+    every case (``_build_backend`` no longer constructs a second backend
+    class at all) -- the capability-fallback SEMANTICS this test actually
+    cares about (spawn absent -> the direct worker) are unchanged and are
+    now asserted directly via the registry-backed selection method, rather
+    than by a class-identity proxy that no longer distinguishes anything.
+    """
     coordinator = _make_coordinator(has_spawn=False)
     providers = {"anthropic": MagicMock()}
 
     backend = _build_backend(providers, {}, None, coordinator, {})
 
     assert backend is not None
-    # Should be DirectProviderBackend, not AmplifierBackend
-    assert not hasattr(backend, "_profiles")
+    assert isinstance(backend, AmplifierBackend)
+    node = Node(id="n1", shape="box", prompt="do work")
+    assert backend._resolve_worker_name(node) == "direct"
 
 
 def test_orchestrator_config_threaded_from_execute():

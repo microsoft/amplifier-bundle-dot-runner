@@ -58,22 +58,56 @@ from .fidelity import (
     resolve_thread_key,
 )
 from .graph import Edge, Graph, Node, resolve_bool_attr
-from .hook_bridge import _current_node_context, set_node_context
 from .outcome import Outcome, StageStatus
-from .pipeline_events import (
-    MODEL_RESOLVED,
-    PROVIDER_ERROR,
-    PROVIDER_REQUEST,
-    PROVIDER_RESPONSE,
-)
+from .pipeline_events import MODEL_RESOLVED
+
+# NOTE: `.workers` is imported LAZILY inside `AmplifierBackend.__init__`
+# (not here at module level). `workers/direct_worker.py` imports several
+# helpers back FROM this module (`_find_report_outcome_call`,
+# `_MAX_TOOL_LOOP_ROUNDS`, etc.) -- a top-level `from .workers import ...`
+# here would run during THIS module's own top-level execution, before those
+# names are defined below, producing a circular partial-init ImportError.
+# This mirrors the existing lazy-import idiom already used elsewhere in this
+# module/package to break the same class of cycle (e.g. `_build_backend`'s
+# `from .backend import AmplifierBackend` in `__init__.py`).
 
 logger = logging.getLogger(__name__)
 
 # Map StageStatus value strings to enum members for parsing
 _STATUS_MAP: dict[str, StageStatus] = {s.value: s for s in StageStatus}
 
-# Maximum rounds for the direct tool loop fallback
+# Maximum rounds for the direct tool loop fallback. Preserved verbatim as the
+# merged `direct` worker's round cap (DESIGN-worker-registry-core-split.md
+# P1 scope note) -- see workers/direct_worker.py.
 _MAX_TOOL_LOOP_ROUNDS = 20
+
+#: Reserved worker-selection name recognized by the adapter directly -- NOT a
+#: `WorkerRegistry` entry. DESIGN-worker-registry-core-split.md P1 ("Why P1
+#: lands standalone"): the registry keys NAMES, not source trees. The hosted
+#: `session.spawn` path resolves an agent identity via the pre-existing
+#: `profiles` map (provider -> agent name), untouched by this program --
+#: there is no single Python `Worker` object to register for it. See
+#: `AmplifierBackend._resolve_worker_name`.
+_SPAWN_WORKER_SENTINEL = "spawn"
+
+
+def _safe_get_spawn_fn(coordinator: Any) -> Any | None:
+    """Resolve ``session.spawn`` off *coordinator*, tolerating a missing or
+    ``None`` coordinator.
+
+    Mirrors ``__init__.py``'s ``_spawn_capability`` (duplicated here, not
+    imported, to avoid a module-load-order dependency between ``backend.py``
+    and ``__init__.py`` -- see the lazy `.workers` import note above).
+    Needed since P1: ``_build_backend`` now always constructs
+    ``AmplifierBackend`` -- including the former ``DirectProviderBackend``
+    standalone scenario, where ``coordinator`` may be ``None`` entirely.
+    """
+    if coordinator is None or not hasattr(coordinator, "get_capability"):
+        return None
+    try:
+        return coordinator.get_capability("session.spawn")
+    except Exception:  # noqa: BLE001 -- tolerant probe, mirrors _spawn_capability
+        return None
 
 
 class AmplifierBackend:
@@ -97,34 +131,78 @@ class AmplifierBackend:
 
     def __init__(
         self,
-        coordinator: Any,
-        profiles: dict[str, str],
+        coordinator: Any = None,
+        profiles: dict[str, str] | None = None,
         provider: Any | None = None,
         tools: dict[str, Any] | None = None,
         unified_client: Any | None = None,
         hooks: Any | None = None,
+        default_worker: str | None = None,
     ) -> None:
-        """Initialize the backend.
+        """Initialize the backend -- the Sec4.5 "adapter" (see the
+        ``amplifier_module_loop_pipeline.workers`` package docstring for the
+        registry that lives one layer below it).
 
         Args:
             coordinator: Amplifier coordinator with session.spawn capability.
+                Optional (default ``None``): a coordinator lacking (or
+                without) ``session.spawn`` simply means the ``"spawn"``
+                worker is never selectable (see ``_resolve_worker_name``) --
+                this mirrors the former standalone ``DirectProviderBackend``,
+                which never required a coordinator at all.
             profiles: Map of provider name to profile/bundle name.
                       e.g. {"anthropic": "attractor-anthropic", ...}
-            provider: Optional LLM provider for direct tool loop fallback.
-                      Used as a truthiness flag to enable Path B.
-            tools: Optional tool dict for direct tool loop fallback.
-            unified_client: Optional ``unified_llm.Client`` for LLM calls.
-                            Created lazily via ``Client.from_env()`` if not provided.
+            provider: Optional LLM provider for the ``direct`` worker.
+                      Used as a truthiness flag to enable it.
+            tools: Optional tool dict, shared with the ``direct`` worker.
+            unified_client: Optional ``unified_llm.Client`` for the
+                            ``direct`` worker's LLM calls. Created lazily if
+                            not provided.
             hooks: Optional HookRegistry for emitting provider-level events.
+            default_worker: Run-level worker-selection default
+                (EXTENSIONS.md Sec40 /
+                DESIGN-worker-registry-core-split.md P1 item 3). One of the
+                registry's registered names (today: only ``"direct"``) or
+                the reserved ``"spawn"`` sentinel. Selection precedence:
+                per-node ``worker=`` attribute > this run-level default >
+                today's capability-fallback chain (spawn if resolved, else
+                direct). ``None`` (the default) leaves the fallback chain as
+                the sole selector -- a zero-config run is unaffected.
         """
         self._coordinator = coordinator
-        self._profiles = profiles
+        self._profiles = profiles or {}
         self._provider = provider
         self._tools = tools or {}
-        self._unified_client = unified_client
         self._hooks = hooks
         self._spawn_fn: Any | None = None
         self._spawn_checked = False
+
+        # The worker registry (DESIGN-worker-registry-core-split.md P1,
+        # gap-table row 1). `direct` is the one Python-level Worker this
+        # phase ships -- the merge of the former `_run_with_tool_loop` +
+        # `DirectProviderBackend` (gap-table row 2). `"spawn"` is a reserved
+        # sentinel, never a registry entry -- see `_SPAWN_WORKER_SENTINEL`.
+        # Lazy import: see the module-level NOTE above this class for why.
+        from .workers import DirectWorker, WorkerRegistry
+
+        self._registry = WorkerRegistry()
+        # Concrete reference (not the Protocol-typed registry lookup) so the
+        # `_unified_client` backward-compat property below stays type-clean.
+        self._direct_worker = DirectWorker(
+            provider=provider,
+            tools=tools,
+            hooks=hooks,
+            unified_client=unified_client,
+        )
+        self._registry.register("direct", self._direct_worker)
+        known_workers = frozenset({_SPAWN_WORKER_SENTINEL}) | self._registry.names()
+        if default_worker is not None and default_worker not in known_workers:
+            raise ValueError(
+                f"Unknown default_worker={default_worker!r}. Known workers: "
+                f"{sorted(known_workers)}."
+            )
+        self._default_worker = default_worker
+
         # _thread_transcripts: thread_key → list of (node_id, instruction, output) triples.
         # Replaces the former _session_pool (which stored a session_id — a type confusion:
         # an id where a conversation belongs).  Each triple represents one node-exchange
@@ -132,9 +210,23 @@ class AmplifierBackend:
         # truncate-to-node-then-append (see _append_to_transcript).
         # Born branch-local: clone() resets to {} so parallel branches never share history.
         # See docs/designs/fidelity-full-session-continuity.md and EXTENSIONS.md §12–13.
+        # Shared uniformly by BOTH the spawn path and the `direct` worker path since P1 --
+        # see `run()`'s worker-name routing and EXTENSIONS.md §40.
         self._thread_transcripts: dict[str, list[tuple[str, str, str]]] = {}
         self._completed_nodes: dict[str, Outcome] = {}
         self._last_node_id: str | None = None
+
+    @property
+    def _unified_client(self) -> Any:
+        """Backward-compat passthrough to the `direct` worker's cached
+        client. Kept as a real (readable/settable) attribute because
+        existing tests read/write ``backend._unified_client`` directly
+        (e.g. ``test_backend_clone.py``, ``test_unified_llm_wiring.py``)."""
+        return self._direct_worker._unified_client
+
+    @_unified_client.setter
+    def _unified_client(self, value: Any) -> None:
+        self._direct_worker._unified_client = value
 
     def clone(self) -> AmplifierBackend:
         """Create a clone with shared immutable refs but fresh mutable state.
@@ -149,8 +241,16 @@ class AmplifierBackend:
         new._coordinator = self._coordinator
         new._profiles = self._profiles
         new._provider = self._provider
-        new._unified_client = self._unified_client
         new._hooks = self._hooks
+        new._default_worker = self._default_worker
+
+        # Worker registry: each registered worker (today: `direct`) gets its
+        # own branch-isolated clone -- see `WorkerRegistry.clone()` /
+        # `DirectWorker.clone()`. This is what makes `_unified_client`'s
+        # backward-compat property above return the right (shared-by-
+        # reference) object for the clone too.
+        new._registry = self._registry.clone()
+        new._direct_worker = new._registry.resolve("direct")
 
         # Copy tools: stateless tools are shared across clones (safe); stateful tools
         # (those exposing last_outcome) get an independent shallow copy with last_outcome
@@ -202,10 +302,34 @@ class AmplifierBackend:
         Idempotent: safe to call multiple times; subsequent calls are no-ops.
         """
         if not self._spawn_checked:
-            cap = self._coordinator.get_capability("session.spawn")
-            if cap is not None:
-                self._spawn_fn = cap
+            self._spawn_fn = _safe_get_spawn_fn(self._coordinator)
             self._spawn_checked = True
+
+    def _resolve_worker_name(self, node: Node) -> str:
+        """Selection precedence (EXTENSIONS.md §40 / DESIGN-worker-registry-
+        core-split.md P1 item 3): per-node ``worker=`` attribute > run-level
+        ``default_worker`` (orchestrator config) > today's capability-
+        fallback chain (``"spawn"`` if ``session.spawn`` resolved, else
+        ``"direct"``).
+
+        Raises ``ValueError`` (never a silent fallback) naming every known
+        worker when the node declares an unrecognized ``worker=`` value.
+        Must be called AFTER step 1's spawn-capability resolution so
+        ``self._spawn_fn`` reflects this run's real capability.
+        """
+        known_workers = frozenset({_SPAWN_WORKER_SENTINEL}) | self._registry.names()
+        node_worker = node.attrs.get("worker") if node.attrs else None
+        if node_worker:
+            if node_worker not in known_workers:
+                raise ValueError(
+                    f"Node '{node.id}' declared worker={node_worker!r}, which "
+                    f"is not a known worker. Known workers: "
+                    f"{sorted(known_workers)}."
+                )
+            return node_worker
+        if self._default_worker is not None:
+            return self._default_worker
+        return _SPAWN_WORKER_SENTINEL if self._spawn_fn is not None else "direct"
 
     async def run(
         self,
@@ -232,9 +356,7 @@ class AmplifierBackend:
         """
         # 1. Get spawn capability (lazy resolution, checked once)
         if not self._spawn_checked:
-            cap = self._coordinator.get_capability("session.spawn")
-            if cap is not None:
-                self._spawn_fn = cap
+            self._spawn_fn = _safe_get_spawn_fn(self._coordinator)
             self._spawn_checked = True
 
         # 2. Resolve provider and profile from node attributes
@@ -301,6 +423,26 @@ class AmplifierBackend:
                 node.id,
             )
 
+        # 3c. Resolve the thread key once, uniformly for BOTH the spawn path
+        # and the `direct` worker path (DESIGN-worker-registry-core-split.md
+        # P1, gap-table row 32: the adapter resolves fidelity/thread-key and
+        # hands the worker its already-replayed history; the worker never
+        # sees `graph`/`incoming_edge` itself). `_run_with_spawn` ALSO
+        # independently recomputes the same thread_key internally (untouched
+        # by this change, to keep the well-exercised spawn path's diff
+        # minimal) -- both computations are pure and take identical inputs,
+        # so they cannot disagree.
+        thread_key: str | None = None
+        if fidelity == "full" and graph is not None:
+            thread_key = resolve_thread_key(
+                node, incoming_edge, graph, self._last_node_id
+            )
+
+        # 3d. Selection precedence (EXTENSIONS.md §40 / DESIGN-worker-
+        # registry-core-split.md P1 item 3): per-node `worker=` attribute >
+        # run-level `default_worker` > today's capability-fallback chain.
+        worker_name = self._resolve_worker_name(node)
+
         # 4. Build the instruction with preamble for non-full modes
         if fidelity == "full":
             instruction = prompt
@@ -328,8 +470,19 @@ class AmplifierBackend:
                 )
                 instruction = gate_section + instruction
 
-        # 6. Route to Path A (spawn) or Path B (direct tool loop)
-        if self._spawn_fn is not None:
+        # 6. Route by resolved worker name -- "spawn" (Path A) or a
+        # registry-resolved worker, today only "direct" (Path B). Selection
+        # precedence and the fallback-chain default are unchanged in
+        # substance from the pre-registry code below; what changed is that
+        # the choice now has a NAME, explicitly selectable (EXTENSIONS.md
+        # §40).
+        if worker_name == _SPAWN_WORKER_SENTINEL:
+            if self._spawn_fn is None:
+                raise ValueError(
+                    f"Node '{node.id}' selected worker={_SPAWN_WORKER_SENTINEL!r} "
+                    f"(explicitly or via run-level default) but the "
+                    f"session.spawn capability is not available for this run."
+                )
             # Fail-loud guard (issue #155 R3, defense-in-depth under the
             # startup preflight in preflight.py): the spawn path consumes a
             # provider->agent profile, and there is NO fallback when the
@@ -376,6 +529,10 @@ class AmplifierBackend:
                 instruction,
                 reasoning_effort,
                 max_agent_turns,
+                context=context,
+                fidelity=fidelity,
+                thread_key=thread_key,
+                worker_name=worker_name,
             )
         else:
             return Outcome(
@@ -710,234 +867,51 @@ class AmplifierBackend:
         instruction: str,
         reasoning_effort: str | None,
         max_agent_turns: int | None = None,
+        *,
+        context: PipelineContext | None = None,
+        fidelity: str | None = None,
+        thread_key: str | None = None,
+        worker_name: str = "direct",
     ) -> Outcome:
-        """Execute via unified_llm.generate() (no child session).
+        """Path B entry point -- now a thin dispatch to a registry-resolved
+        worker (default: ``direct``), not an inline tool-loop implementation.
 
-        Delegates the full agentic tool loop to the unified-llm-client
-        library, which handles LLM calls, tool execution, retry, and
-        error mapping internally.
+        Kept under its original name (this is the pre-existing Path B
+        method call sites and tests already know) even though the body no
+        longer implements the loop itself -- the merge
+        (DESIGN-worker-registry-core-split.md P1, gap-table row 2) moved
+        that implementation to ``workers.direct_worker.DirectWorker``. This
+        method's remaining job is exactly what row 32 assigns the adapter:
+        resolve the worker, hand it ``replayed_history``, and own the
+        node-exchange transcript append -- uniformly with the spawn path.
 
-        EXT-23: When ``node.response_schema`` is set, passes a
-        ``ResponseFormat(type="json_schema", ...)`` to ``generate()`` and
-        returns the raw JSON text as the node output (SUCCESS outcome).
+        ``reasoning_effort``/``max_agent_turns`` are accepted for backward
+        compatibility with existing call sites/tests but are no longer
+        consulted here -- ``DirectWorker.run()`` re-derives both directly
+        from ``node.attrs`` (matching the former standalone
+        ``DirectProviderBackend``'s self-sufficient style), so a worker is
+        usable hermetically without an upstream resolver.
         """
-        import unified_llm
+        worker = self._registry.resolve(worker_name)
+        replayed_history: list[dict[str, Any]] = []
+        if fidelity == "full" and thread_key is not None:
+            replayed_history = self._get_parent_messages_for_thread(thread_key)
 
-        client = self._get_or_create_unified_client()
-        provider_name = node.llm_provider or node.attrs.get("llm_provider", "anthropic")
-        model = await _resolve_concrete_model(
-            provider_name, _resolve_model(node), emit=self._emit
-        )
-        tools = _build_unified_tools(self._tools)
-
-        # EXT-23: Build response_format when response_schema is set
-        response_format: Any = None
-        if node.response_schema is not None:
-            response_format = unified_llm.ResponseFormat(
-                type="json_schema",
-                json_schema=node.response_schema,
-                strict=True,
-            )
-
-        # Set node context for the hook bridge middleware
-        token = set_node_context({"node_id": node.id})
-
-        try:
-            # Emit provider:request before the LLM call
-            pre_result = await self._emit(
-                PROVIDER_REQUEST,
-                {
-                    "provider": provider_name,
-                    "model": model,
-                    "node_id": node.id,
-                    "tool_names": [t.name for t in tools] if tools else [],
-                    "message_count": 1,  # prompt-only = 1 message
-                },
-            )
-
-            # Check for deny action from hooks (e.g., approval gates)
-            if (
-                pre_result is not None
-                and getattr(pre_result, "action", "continue") == "deny"
-            ):
-                reason = getattr(pre_result, "reason", None) or "Denied by hook"
-                return Outcome(
-                    status=StageStatus.FAIL,
-                    failure_reason=f"Denied by hook: {reason}",
-                )
-
-            result = await unified_llm.generate(
-                model=model,
-                prompt=instruction,
-                tools=tools or None,
-                max_tool_rounds=max_agent_turns
-                if max_agent_turns is not None
-                else _MAX_TOOL_LOOP_ROUNDS,
-                reasoning_effort=reasoning_effort,
-                provider=provider_name,
-                client=client,
-                response_format=response_format,
-            )
-        except unified_llm.SDKError as exc:
-            logger.warning("unified_llm.generate failed for node %s: %s", node.id, exc)
-            await self._emit(
-                PROVIDER_ERROR,
-                {
-                    "provider": provider_name,
-                    "model": model,
-                    "node_id": node.id,
-                    "error_type": type(exc).__name__,
-                    "error_class": type(exc).__mro__[1].__name__,
-                    "retryable": getattr(exc, "retryable", False),
-                    "message": str(exc),
-                },
-            )
-            return Outcome(
-                status=StageStatus.FAIL,
-                failure_reason=str(exc),
-            )
-        except Exception as exc:
-            logger.warning("Unexpected error in generate for node %s: %s", node.id, exc)
-            return Outcome(
-                status=StageStatus.FAIL,
-                failure_reason=str(exc),
-            )
-        finally:
-            _current_node_context.reset(token)
-
-        # Emit provider:response after successful LLM call
-        await self._emit(
-            PROVIDER_RESPONSE,
-            {
-                "provider": provider_name,
-                "model": model,
-                "node_id": node.id,
-                "usage": {
-                    "input_tokens": result.total_usage.input_tokens,
-                    "output_tokens": result.total_usage.output_tokens,
-                    "total_tokens": result.total_usage.total_tokens,
-                    "reasoning_tokens": result.total_usage.reasoning_tokens,
-                    "cache_read_tokens": result.total_usage.cache_read_tokens,
-                    "cache_write_tokens": result.total_usage.cache_write_tokens,
-                },
-                "finish_reason": result.finish_reason.reason,
-                "text_length": len(result.text) if result.text else 0,
-                "step_count": len(result.steps),
-            },
+        output_text, outcome = await worker.run(
+            node, instruction, context or PipelineContext(), replayed_history
         )
 
-        # EXT-23: Structured output mode — result.text is the JSON response, not an Outcome.
-        # Skip Outcome-parsing logic entirely; stash the JSON as the node output.
-        if node.response_schema is not None:
-            raw_json = result.text or ""
-            # Anthropic tool-extraction path: structured output lives in the
-            # __structured_output__ tool call arguments, not in result.text.
-            # Recover the JSON string when result.text is empty and a tool call is present.
-            if not raw_json.strip() and result.tool_calls:
-                _STRUCT_TOOL = "__structured_output__"
-                for _tc in result.tool_calls:
-                    if _tc.name == _STRUCT_TOOL:
-                        _args = _tc.arguments
-                        raw_json = (
-                            json.dumps(_args)
-                            if isinstance(_args, dict)
-                            else (str(_args) if _args else "")
-                        )
-                        break
-            parsed_obj: Any = None
-            if raw_json.strip():
-                try:
-                    parsed_obj = json.loads(raw_json)
-                except json.JSONDecodeError:
-                    pass
-            ctx_updates: dict[str, Any] = {
-                "last_stage": node.id,
-                "last_response": raw_json[:200],
-            }
-            if parsed_obj is not None:
-                ctx_updates[node.id] = parsed_obj
-            # EXTENSIONS.md §25 policy (corrected in independent review round
-            # 2): FORMAT is not a VERDICT. Schema-parsed output is explicit
-            # ONLY when it carries a recognized verdict — a captured
-            # report_outcome tool call, or a `status` field with a recognized
-            # StageStatus value (the same verdict ladder every other path
-            # uses). Generic structured output (e.g. {"name": "Alice"} or
-            # {"assessment": "NOT CONVERGED"}) proves the model followed the
-            # schema, not that it asserted a verdict — it stays DERIVED
-            # (is_explicit=False), so a goal_gate schema node returning
-            # non-verdict JSON does not satisfy its gate (fail-closed).
-            return _outcome_from_structured_output(
-                raw_json=raw_json,
-                parsed_obj=parsed_obj,
-                ctx_updates=ctx_updates,
-                result=result,
+        if fidelity == "full" and thread_key is not None:
+            transcript_output = (
+                output_text
+                if output_text.strip()
+                else _synthesize_outcome_marker(outcome)
+            )
+            self._append_to_transcript(
+                thread_key, node.id, instruction, transcript_output
             )
 
-        # Map GenerateResult → Outcome
-        #
-        # Priority order (reordered — see the report_outcome-priority-inversion fix;
-        # original order was issue #238):
-        #   1. report_outcome tool call was made → authoritative, use it
-        #      UNCONDITIONALLY, regardless of what result.text also contains. A
-        #      model that correctly calls report_outcome and then ALSO emits
-        #      JSON-shaped trailing text (e.g. echoing part of a written artifact,
-        #      or habitually summarizing in JSON) must not have its real verdict
-        #      silently discarded in favor of that trailing text — that would be
-        #      fail-UNSAFE (a plausible-looking but wrong verdict wins) instead of
-        #      fail-safe. Extracted from result.steps — immutable, race-free;
-        #      avoids the last_outcome shared-state bug when backend instances
-        #      are cloned for parallel branches.
-        #   2. No report_outcome call → result.text (JSON, fenced JSON, embedded
-        #      JSON, or plain prose) → _parse_outcome handles all of these,
-        #      falling back to SUCCESS for plain prose per spec 4.5 (or RETRY
-        #      for goal_gate=true nodes per EXTENSIONS.md §25).
-        #   3. No text at all → FAIL for goal_gate=true nodes (consistent with
-        #      the spawn path's empty→FAIL; EXTENSIONS.md §25); non-goal_gate
-        #      nodes keep the spec 4.5 SUCCESS default.
-        lo = _find_report_outcome_call(result)
-        if lo is not None:
-            return Outcome(
-                status=_STATUS_MAP.get(lo.get("status"), StageStatus.FAIL),
-                context_updates=lo.get("context_updates"),
-                failure_reason=lo.get("failure_reason"),
-                preferred_label=lo.get("preferred_label"),
-                suggested_next_ids=lo.get("suggested_next_ids"),
-                notes=lo.get("notes"),
-                is_explicit=True,
-            )
-
-        if result.text:
-            return _parse_outcome(result.text, node=node)
-        # No text and no report_outcome call.
-        # EXTENSIONS.md §25 scope decision: apply fail-closed only to goal_gate
-        # nodes. Non-goal-gate nodes retain the spec §4.5 SUCCESS default so
-        # that observer/reporter nodes with plain out-edges are not broken.
-        # goal_gate nodes require an explicit verdict; no-text is treated as
-        # FAIL (same as the spawn path's empty→FAIL).
-        is_goal_gate = resolve_bool_attr(node.attrs.get("goal_gate"), "goal_gate")
-        if is_goal_gate:
-            logger.warning(
-                "Node %s (goal_gate=true): tool loop returned no text and no "
-                "report_outcome call. Fail-closed contract (EXTENSIONS.md §25).",
-                node.id,
-            )
-            return Outcome(
-                status=StageStatus.FAIL,
-                notes=f"No output from tool loop: {node.id}",
-                failure_reason="Empty tool-loop response — goal_gate node requires explicit verdict",
-                is_explicit=False,
-            )
-        # Non-goal-gate node: spec §4.5 SUCCESS default preserved.
-        logger.warning(
-            "Node %s: tool loop returned no text and no report_outcome call "
-            "(non-goal-gate node; SUCCESS per spec §4.5).",
-            node.id,
-        )
-        return Outcome(
-            status=StageStatus.SUCCESS,
-            notes=f"Stage completed: {node.id}",
-            is_explicit=False,
-        )
+        return outcome
 
     # ------------------------------------------------------------------
     # _thread_transcripts helpers — fidelity=full continuity carrier
@@ -1006,35 +980,20 @@ class AmplifierBackend:
             messages.append({"role": "assistant", "content": out})
         return messages
 
-    def _get_or_create_unified_client(self) -> Any:
-        """Return the injected client or lazily create one from environment."""
-        if self._unified_client is not None:
-            return self._unified_client
-        import unified_llm
-
-        self._unified_client = unified_llm.Client.from_env()
-        return self._unified_client
-
     async def close(self) -> None:
-        """Release the cached unified LLM client (spec finalize contract).
+        """Release every registered worker's held resources (spec finalize
+        contract) -- e.g. the `direct` worker's cached ``unified_llm``
+        client, which wraps an ``AsyncAnthropic``/httpx client bound to the
+        running event loop.  Under the per-article ``asyncio.run()``
+        lifecycle, that client must be closed WITHIN its loop; otherwise GC
+        later runs ``aclose()`` on a dead loop, raising ``RuntimeError:
+        Event loop is closed``.  This method is called by the
+        orchestrator's finalize path.
 
-        The fallback path lazily creates a ``unified_llm.Client`` wrapping an
-        ``AsyncAnthropic``/httpx client bound to the running event loop.  Under
-        the per-article ``asyncio.run()`` lifecycle, that client must be closed
-        WITHIN its loop; otherwise GC later runs ``aclose()`` on a dead loop,
-        raising ``RuntimeError: Event loop is closed``.  This method is called
-        by the orchestrator's finalize path.
-
-        Idempotent and safe: a no-op when no client was created, and tolerant of
-        clients that do not expose ``close()``.
+        Idempotent and safe: delegates to ``WorkerRegistry.close_all()``,
+        which is itself a no-op per worker when nothing was ever created.
         """
-        client = self._unified_client
-        if client is None:
-            return
-        close_fn = getattr(client, "close", None)
-        if close_fn is not None:
-            await close_fn()
-        self._unified_client = None
+        await self._registry.close_all()
 
     async def _emit(self, event_name: str, data: dict[str, Any]) -> Any:
         """Emit an event via hooks, if provided.
