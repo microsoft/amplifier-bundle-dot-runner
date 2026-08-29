@@ -57,6 +57,29 @@ jobs:
             # (tests/test_worker_parity.py) runs inside ITS OWN job/cell
             # above, not here -- it needs the adapter's py3.12+ fakes.
             extra_args: ""
+          - name: loop-agent
+            # P2 second extraction (DESIGN-worker-registry-core-split.md):
+            # coding-agent-loop nlspec implementation, a general worker (not
+            # attractor-specific). Its own tests/test_worker_parity.py wires
+            # the worker-parity-kit's M1-M3 + TARGET suite for THIS worker
+            # (mirrors loop-amplifier-agent's cell above), and
+            # tests/test_truncation_e2e_real_hook.py mounts the real
+            # hooks-tool-truncation module -- both sibling modules now live
+            # in this repo, so pyproject.toml's `pythonpath` entries resolve
+            # unchanged.
+            extra_args: ""
+          - name: hooks-pipeline-observability
+            extra_args: ""
+          - name: hooks-pipeline-progress
+            extra_args: ""
+          - name: hooks-tool-truncation
+            extra_args: ""
+          - name: tool-apply-patch
+            extra_args: ""
+          - name: tool-dashboard-query
+            extra_args: ""
+          - name: tool-pipeline-status
+            extra_args: ""
         exclude:
           # loop-amplifier-agent's own pyproject.toml declares
           # `requires-python = ">=3.12"` -- one floor higher than this repo's
