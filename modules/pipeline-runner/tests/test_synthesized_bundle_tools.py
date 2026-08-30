@@ -1,4 +1,4 @@
-"""Live-gate regression proof: the synthesized ``--worker loop-agent`` /
+"""Live-gate regression proof: the synthesized ``--worker coding-agent`` /
 ``--worker amplifier-agent`` bundle must actually MOUNT a tool surface, not
 only providers.
 
@@ -62,7 +62,7 @@ async def _load_synthesized_bundle(worker_name: str):
     return await amplifier_foundation.load_bundle(str(bundle_path))
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_synthesized_bundle_mounts_a_real_tool_surface(monkeypatch, worker_name):
     """The core proof: the synthesized bundle's own mount plan must carry
     real ``tools`` entries, so a spawned box-node worker can read, write, and
@@ -90,7 +90,7 @@ def test_synthesized_bundle_mounts_a_real_tool_surface(monkeypatch, worker_name)
     )
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_every_mounted_tool_entry_carries_a_resolvable_source(
     monkeypatch, worker_name
 ):
@@ -107,7 +107,7 @@ def test_every_mounted_tool_entry_carries_a_resolvable_source(
         assert entry.get("source"), f"tool entry missing 'source': {entry!r}"
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_tool_mount_is_unconditional_not_keyed_off_provider_choice(
     monkeypatch, worker_name
 ):

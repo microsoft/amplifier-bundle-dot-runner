@@ -1,4 +1,4 @@
-"""Issue #338 regression proof: the synthesized ``--worker loop-agent`` /
+"""Issue #338 regression proof: the synthesized ``--worker coding-agent`` /
 ``--worker amplifier-agent`` bundle must actually MOUNT a provider module,
 not just declare a ``profiles:`` routing map.
 
@@ -51,7 +51,7 @@ async def _load_synthesized_bundle(worker_name: str):
     return await amplifier_foundation.load_bundle(str(bundle_path))
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_synthesized_bundle_mounts_a_provider_for_the_configured_key(
     monkeypatch, worker_name
 ):
@@ -83,7 +83,7 @@ def test_synthesized_bundle_mounts_a_provider_for_the_configured_key(
         assert entry.get("source"), f"provider entry missing 'source': {entry!r}"
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_synthesized_bundle_mounts_a_provider_per_every_configured_key(
     monkeypatch, worker_name
 ):
@@ -102,7 +102,7 @@ def test_synthesized_bundle_mounts_a_provider_per_every_configured_key(
     assert provider_modules == {"provider-anthropic", "provider-openai"}
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_synthesize_raises_loud_never_silent_empty_mount_when_zero_keys(
     monkeypatch, worker_name
 ):
