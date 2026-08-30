@@ -40,17 +40,31 @@ package = true
 # conflicting URLs for package amplifier-unified-llm-client"). Redirecting
 # it here too resolves the root graph.
 #
-# Trade-off (accepted -- see issue #338 fix notes): this module's OWN
-# dev-inclusive `uv sync`/`uv run pytest` resolution has historically relied
-# on this edge staying UNMODIFIED so it matches worker-parity-kit's (a
-# dev-only dependency, below) own separately-fetched transitive chain onto
-# the same package. `uv tool install` -- the root production path this
-# unblocks -- never resolves dev dependency-groups, so that historical
-# constraint does not apply there. For THIS module's own dev-group
-# resolution, `pythonpath` below still points `../unified-llm-client` first
-# regardless of which copy `uv sync` installs, so what loop-agent's own
-# tests actually IMPORT is unaffected either way.
+# Follow-up fix (was a disclosed trade-off, now closed): overriding ONLY the
+# amplifier-unified-llm-client edge above broke THIS module's own
+# dev-inclusive `uv sync`/`uv run pytest` resolution -- worker-parity-kit
+# (dev-only, below) transitively depends on amplifier-module-loop-pipeline,
+# which is reached via an unmodified git+ URL when loop-agent itself is the
+# resolution root, so *its* onward edge to amplifier-unified-llm-client
+# stayed on git+ while loop-agent's own (overridden) edge was now a local
+# path -- two shapes again, just one hop further out
+# ("Requirements contain conflicting URLs for package
+# amplifier-module-loop-pipeline" / "...amplifier-unified-llm-client",
+# reproduced empirically via `uv lock` in this directory). Fixed by also
+# redirecting worker-parity-kit's and loop-pipeline's own edges to local
+# paths here (both are real sibling modules in this repo, not external
+# packages) so every edge in this module's OWN resolution is local-path,
+# matching the root graph's shape. `editable = true` on the loop-pipeline
+# entry matches worker-parity-kit's own [tool.uv.sources] declaration for
+# the same package (see modules/worker-parity-kit/pyproject.toml) --
+# otherwise editable/non-editable is itself a second "two different
+# shapes" conflict. Verified: `uv lock` and `uv run pytest` both green in
+# this directory (557 passed), and root/pipeline-runner/loop-pipeline/
+# loop-amplifier-agent/unified-llm-client/worker-parity-kit `uv lock` all
+# stay green too.
 amplifier-unified-llm-client = { path = "../unified-llm-client" }
+amplifier-worker-parity-kit = { path = "../worker-parity-kit" }
+amplifier-module-loop-pipeline = { path = "../loop-pipeline", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_module_loop_agent"]
