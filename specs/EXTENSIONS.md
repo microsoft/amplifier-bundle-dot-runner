@@ -575,6 +575,17 @@ predecessors) — the explicit-edge pattern above needs one edge per predecessor
 > pipeline author reaches for first; `runs_on=`/`continue_on_fail=` is retained, documented
 > second, as the shared-target escape hatch resolver-dot-graph's shipped pipelines depend on.
 
+> **Status update (2026-08-30, maintainer ruling, branch `feat/extensions-rip-3` --
+> supersedes the 2026-08-29 DEMOTE above): status: REMOVED.** "Rip those band-aids off
+> now too." `runs_on=`/`continue_on_fail=` are DELETED -- `edge_selection.py`'s
+> `_target_runs_on()` fail-fast gate and `engine.py`'s `_get_runs_on()`/continue_on_fail
+> override are gone, not merely de-emphasized. One-line migration: replace with an
+> explicit `condition="outcome=fail"` edge (canonical Sec3.7). This repo's own one
+> fixture (`tests/fixtures/parent_with_child.dot`) is migrated in-branch; its 12 test
+> files are deleted with the mechanism. `attractor lint` gains ATTR-LINT-001 (ERROR,
+> one release) naming the migration pattern when either attribute is still declared.
+> See `MIGRATION.md`.
+
 ## 17. Node I/O Contracts: `requires=` / `outputs=` with Skip Propagation
 
 **What:** Nodes may declare `requires=<keys>` and `outputs=<keys>`. A node whose required
@@ -630,6 +641,19 @@ from an internal `PIPELINE_NODE_SKIPPED` event.
 > `requires=`/`outputs=` is retained, documented second, for pipelines already declaring it
 > (12 shipped resolver-dot-graph pipelines, including its own `goal.dot` and `dev_machine.dot`
 > entry points).
+
+> **Status update (2026-08-30, maintainer ruling, branch `feat/extensions-rip-3` --
+> supersedes the 2026-08-29 DEMOTE above): status: REMOVED.** `requires=`/`outputs=`
+> are DELETED: the Bug H pre-execution file-validation backstop (`engine.py
+> ::_check_requires`) and the explicit `outputs=` parser (`node_outputs.py`) are gone.
+> One-line migration: `condition=context.<key>` plus a `shape=tool` file-existence
+> probe (canonical vocabulary only). This repo's engine-internal test files
+> (`test_outputs_attribute.py`, `test_engine_bug_h_requires_attribute.py`,
+> `test_contract_violation_event.py`,
+> `test_parallel_ignore_does_not_populate_failed_outputs.py`) are deleted with the
+> mechanism. `attractor lint` gains ATTR-LINT-001 (ERROR, one release) for either
+> attribute. The handler-INFERRED output table (tool/parallel skip-propagation) is
+> unaffected -- only the two EXPLICIT DOT attributes are removed. See `MIGRATION.md`.
 
 ## 18. Parallel Join Policies Beyond Canonical: `k_of_n` / `quorum` / `error_policy`
 
@@ -1834,6 +1858,17 @@ prompt edit can silently sever the loop), curation (unbounded file growth vs. th
 > documented second, as the hardening step a loop graduates to once the informal convention
 > proves load-bearing (exactly attractor's own capsule pipelines' history, per this entry's
 > original "Why").
+
+> **Status update (2026-08-30, maintainer ruling, branch `feat/extensions-rip-3` --
+> supersedes the 2026-08-29 DEMOTE above): status: REMOVED.** `feedback_from=` is
+> DELETED: `feedback.py` (`collect_and_inject_feedback`/`ensure_feedback_placeholder`)
+> is removed outright, along with its call sites in `engine.py`'s loop_restart step and
+> `handlers/codergen.py`. One-line migration: file-mediated feedback -- the critique
+> node writes `.ai/feedback/<name>.md`, the generator's own prompt reads it back (the
+> worked example already shown above in this entry, now the ONLY supported form).
+> `tests/test_feedback_mechanism.py` is deleted with the mechanism. `attractor lint`
+> gains ATTR-LINT-001 (ERROR, one release) naming the migration pattern. See
+> `MIGRATION.md`.
 
 ---
 

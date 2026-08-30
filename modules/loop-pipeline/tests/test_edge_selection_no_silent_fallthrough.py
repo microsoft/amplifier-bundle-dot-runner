@@ -51,11 +51,11 @@ def test_fail_outcome_does_not_traverse_unconditional_edges():
 
     result = select_edge("N1", outcome, PipelineContext(), graph)
 
-    assert result is None, (
-        "FAIL outcome must NOT traverse unconditional outgoing edges "
-        f"(spec §3.7 fail-fast). Expected None, got edge to "
-        f"'{result.to_node if result else None}'"
-    )
+    assert result is not None and result.to_node == "N2", (
+            "EXTENSIONS.md Sec16 REMOVED (feat/extensions-rip-3): FAIL now "
+            "traverses the best unconditional edge (canonical Sec3.3 step 4 "
+            f"restored). Got {result!r}"
+        )
 
 
 def test_success_outcome_traverses_unconditional_edges_as_before():

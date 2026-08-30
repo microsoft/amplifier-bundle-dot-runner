@@ -1,9 +1,8 @@
 """Handler-side output inference table for node failure propagation.
 
 M1 (R12): Defines which context keys each handler type contributes on a
-successful execution.  Pipeline authors may also declare keys explicitly via
-the node's ``outputs="key1,key2"`` DOT attribute.  Effective output set is
-``inferred ∪ explicit``.
+successful execution.  EXTENSIONS.md Sec17 REMOVED (2026-08-30): the explicit ``outputs=`` DOT
+attribute is deleted -- the output set is now handler-inferred only.
 
 SC-2 (COE Phase 4 resolution) — closed inference table:
   ``tool``      → ``tool.output``, ``tool.last_line``
@@ -126,14 +125,10 @@ def build_output_table(graph: Graph) -> dict[str, frozenset[str]]:
             )
             inferred = inferred | branch_keys
 
-        # Explicit outputs= declaration
-        outputs_attr = node.attrs.get("outputs", "") or ""
-        explicit: frozenset[str] = frozenset()
-        if outputs_attr:
-            explicit = frozenset(
-                k.strip() for k in str(outputs_attr).split(",") if k.strip()
-            )
-
-        table[node_id] = inferred | explicit
+        # EXTENSIONS.md Sec17 REMOVED (2026-08-30, feat/extensions-rip-3):
+        # the explicit outputs= declaration is deleted -- only handler-
+        # inferred outputs remain (see MIGRATION.md for the spec-intended
+        # condition=context.<key> / file-existence-probe alternative).
+        table[node_id] = inferred
 
     return table

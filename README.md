@@ -108,6 +108,22 @@ useful for resolving any pre-extraction commit citation (council
 transcripts, `SPEC_CONFORMANCE.md` entries, code review comments) to its
 corresponding commit here.
 
+## Breaking changes (0.3.0)
+
+Three demoted extensions are DELETED as of 0.3.0 -- mechanism removed, not merely
+discouraged. Each has a spec-intended replacement using canonical vocabulary only;
+see `MIGRATION.md` for before/after `.dot` snippets:
+
+- `runs_on=` / `continue_on_fail=` (EXTENSIONS.md Sec16) -- use an explicit
+  `condition="outcome=fail"` edge.
+- `requires=` / `outputs=` (EXTENSIONS.md Sec17) -- use `condition=context.<key>`
+  and/or a `shape=tool` file-existence probe.
+- `feedback_from=` (EXTENSIONS.md Sec29) -- use file-mediated feedback (critique
+  writes `.ai/feedback/*.md`; the generator's own prompt reads it back).
+
+`attractor lint` reports **ATTR-LINT-001** (ERROR) for one release when a graph
+still declares any of these five attributes, naming the migration pattern.
+
 ## Getting started
 
 **The `attractor` command is gone.** If you landed here from old docs or a

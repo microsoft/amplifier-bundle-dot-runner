@@ -30,7 +30,6 @@ from .checkpoint import (
 )
 from .context import PipelineContext
 from .edge_selection import select_edge
-from .feedback import collect_and_inject_feedback
 from .fidelity import RESUME_FIDELITY_CAP_KEY, resolve_fidelity
 from .graph import Graph, Node, resolve_bool_attr
 from .handlers import HandlerRegistry
@@ -845,20 +844,15 @@ class PipelineEngine:
                     current_node = self.graph.nodes[edge.to_node]
                     continue
 
-                # M4: For runs_on=always or runs_on=failure nodes, resolve
-                # missing context references to empty string before the handler.
-                runs_on = self._get_runs_on(current_node)
-                if runs_on in ("always", "failure"):
-                    self._resolve_missing_as_empty(current_node)
+                # EXTENSIONS.md Sec16 REMOVED (2026-08-30, feat/extensions-rip-3):
+                # runs_on=/continue_on_fail= gating is deleted; missing
+                # context references are no longer special-cased here.
 
-                # Step 1.9 (Bug H): Pre-execution requires= file validation.
-                # If a node declares ``requires=`` (comma-separated relative paths),
-                # every path must exist under context.target_dir (or os.getcwd() as
-                # fallback) before the handler runs.  Missing files cause an
-                # immediate FAIL with a clear error — the handler is never invoked.
-                # This prevents LLM agents from fabricating missing inputs when
-                # upstream branches didn't produce their expected artifacts.
-                _requires_fail = self._check_requires(current_node)
+                # EXTENSIONS.md Sec17 REMOVED (2026-08-30, feat/extensions-rip-3):
+                # the requires= pre-execution file-validation backstop (Bug H)
+                # is deleted. Spec-intended alternative: a shape=tool
+                # file-existence probe + condition= routing (MIGRATION.md).
+                _requires_fail = None
 
                 # Step 2: Execute node handler with retry policy
                 handler = self.handler_registry.get(current_node)
@@ -1055,65 +1049,11 @@ class PipelineEngine:
                         attempt_count=outcome.attempt_count,
                     )
 
-                # continue_on_fail: override FAIL to SUCCESS for routing, log the failure
-                #
-                # NOTE — continue_on_fail and runs_on are NOT orthogonal:
-                # - continue_on_fail (per-predecessor-node override) flips FAIL→SUCCESS
-                #   BEFORE _populate_failed_outputs runs (see the M2/R12 FAIL check
-                #   below, which tests the already-overridden outcome).
-                # - runs_on=failure (per-cleanup-node gate) checks the failed_outputs
-                #   table populated by _populate_failed_outputs.
-                # - A predecessor with continue_on_fail=true that "fails" will appear
-                #   SUCCESSFUL to a runs_on=failure cleanup node — the cleanup will NOT
-                #   trigger.
-                # - This is intentional: continue_on_fail says "treat this as success;
-                #   do not surface a failure to the rest of the graph." A cleanup that
-                #   wants to fire on the original failure should use runs_on=always
-                #   instead of runs_on=failure.
-                if (
-                    resolve_bool_attr(
-                        current_node.attrs.get("continue_on_fail"), "continue_on_fail"
-                    )
-                    and outcome.status == StageStatus.FAIL
-                ):
-                    logger.warning(
-                        "Node '%s' failed but continue_on_fail=true; overriding to SUCCESS "
-                        "(failure: %s)",
-                        current_node.id,
-                        outcome.failure_reason or outcome.notes or "no reason given",
-                    )
-                    # S2 field audit (Outcome has 11 fields; see outcome.py) --
-                    # continue_on_fail override:
-                    #   status         -> OVERRIDDEN (this IS the override)
-                    #   notes          -> OVERRIDDEN; failure_reason is folded
-                    #     into the new notes text above, so the standalone
-                    #     failure_reason field is intentionally RESET to None
-                    #     below (not carried) rather than duplicated.
-                    #   context_updates, preferred_label, suggested_next_ids,
-                    #   session_id, response_text, failed_step, attempt_count
-                    #                  -> CARRIED forward; nothing upstream lost
-                    #     (failed_step in particular: continue_on_fail
-                    #     suppresses the failure for ROUTING only -- it must
-                    #     not erase the diagnostic record of what failed).
-                    #   is_explicit    -> RESET to default False: same
-                    #     reasoning as the auto_status override above -- this
-                    #     SUCCESS was synthesized by policy, not asserted by
-                    #     the node, so it must not silently satisfy a
-                    #     goal_gate (see _check_goal_gates()).
-                    outcome = Outcome(
-                        status=StageStatus.SUCCESS,
-                        notes=(
-                            f"continue_on_fail override (was FAIL: "
-                            f"{outcome.failure_reason or outcome.notes})"
-                        ),
-                        context_updates=outcome.context_updates,
-                        preferred_label=outcome.preferred_label,
-                        suggested_next_ids=outcome.suggested_next_ids,
-                        session_id=outcome.session_id,
-                        response_text=outcome.response_text,
-                        failed_step=outcome.failed_step,
-                        attempt_count=outcome.attempt_count,
-                    )
+                # EXTENSIONS.md Sec16 REMOVED (2026-08-30, feat/extensions-rip-3):
+                # the continue_on_fail=true FAIL->SUCCESS override is deleted.
+                # Spec-intended alternative: an explicit
+                # condition="outcome=fail" edge routes around the failure
+                # instead of masking it (MIGRATION.md).
 
                 # Step 2.7: must_write= final backstop (EXTENSIONS.md §27).
                 # The per-attempt check inside execute_with_retry() already consumed
@@ -1311,17 +1251,11 @@ class PipelineEngine:
                     iteration_dir,
                     edge.to_node,
                 )
-                # Extension #29: collect feedback_from= critique output BEFORE
-                # clearing node_outcomes so the critic's output is still
-                # available.  The accumulated channel survives the restart
-                # because context_updates are intentionally left untouched.
-                collect_and_inject_feedback(
-                    graph=self.graph,
-                    node_outcomes=self.node_outcomes,
-                    context=self.context,
-                    iteration_count=self.iteration_count,
-                    logs_root=self.logs_root,
-                )
+                # EXTENSIONS.md Sec29 REMOVED (2026-08-30, feat/extensions-rip-3):
+                # feedback_from= engine-enforced critique collection is
+                # deleted. Spec-intended alternative: file-mediated feedback
+                # -- the critique node writes .ai/feedback/<name>.md, the
+                # generator's own prompt reads it back (MIGRATION.md).
                 # Reset engine state for clean re-execution
                 self.completed_nodes.clear()
                 self.node_outcomes.clear()
@@ -2168,31 +2102,9 @@ class PipelineEngine:
 
     # -- R12 M1-M4 helpers ---------------------------------------------------
 
-    def _get_runs_on(self, node: Node) -> str:
-        """Return the node's ``runs_on`` axis value.
-
-        M4: Determines whether the node executes based on upstream state.
-
-        Returns:
-            One of ``"success"`` (default), ``"always"``, or ``"failure"``.
-
-        Interaction with ``continue_on_fail``:
-            ``continue_on_fail`` and ``runs_on`` are NOT orthogonal. A
-            predecessor node with ``continue_on_fail=true`` that fails at
-            runtime has its outcome flipped FAIL→SUCCESS *before*
-            ``_populate_failed_outputs`` runs. This means the failure signal
-            is swallowed: a downstream ``runs_on=failure`` cleanup node will
-            NOT trigger, because the failed-outputs table is never populated
-            for that predecessor. Use ``runs_on=always`` on the cleanup node
-            if you want it to fire regardless of whether the predecessor used
-            ``continue_on_fail``. See also the comment block at the
-            ``continue_on_fail`` override site in ``run()``.
-        """
-        raw = node.attrs.get("runs_on", "success") or "success"
-        val = str(raw).strip().lower()
-        if val in ("always", "failure"):
-            return val
-        return "success"
+    # EXTENSIONS.md Sec16 REMOVED (2026-08-30, feat/extensions-rip-3):
+    # _get_runs_on() (the runs_on= axis reader) is deleted along with the
+    # mechanism it served. See MIGRATION.md.
 
     def _extract_node_refs(self, node: Node) -> set[str]:
         """Extract all context key references from a node's substitutable attrs.
@@ -2241,45 +2153,15 @@ class PipelineEngine:
         Returns:
             A SKIPPED ``Outcome`` if the node should be skipped, else ``None``.
         """
-        runs_on = self._get_runs_on(node)
-
-        if runs_on == "always":
-            # Always execute; missing references resolve to empty string.
-            return None
-
-        if runs_on == "failure":
-            # Execute only when something upstream has failed.
-            if not self.failed_outputs:
-                # Nothing has failed — skip this failure-cleanup node.
-                skip_outcome = Outcome(
-                    status=StageStatus.SKIPPED,
-                    notes=(
-                        f"Node '{node.id}' runs_on=failure but no predecessors failed"
-                    ),
-                    failure_reason="no_predecessor_failure",
-                )
-                await self._emit(
-                    PIPELINE_NODE_SKIPPED,
-                    {
-                        "node_id": node.id,
-                        "cause": "no_predecessor_failure",
-                        "references": [],
-                        "missing_keys": [],
-                        # failure_mode is intentionally None here: this skip
-                        # is the *absence* of a failure (the happy path ran
-                        # clean). Emitting "predecessor_failed" when no
-                        # predecessor failed produces false-positive hits for
-                        # downstream observability filters and queries on
-                        # failure_mode=predecessor_failed.
-                        "failure_mode": None,
-                        "failure_mode_taxonomy_version": 1,
-                    },
-                )
-                return skip_outcome
-            # Something failed — run this node, resolving missing refs to "".
-            return None
-
-        # runs_on == "success" (default): skip if any referenced key is failed.
+        # EXTENSIONS.md Sec16 REMOVED (2026-08-30, feat/extensions-rip-3):
+        # the runs_on=always/failure branches that used to live here are
+        # deleted along with _get_runs_on(). Every node now takes the same
+        # (formerly "default") path below: skip if any referenced context
+        # key was produced by a failed/skipped upstream node. This part is
+        # NOT the runs_on=/requires=/outputs= extension -- it is the
+        # engine's automatic inferred-output skip-propagation substrate
+        # (node_outputs.py's HANDLER_INFERRED_OUTPUTS), unaffected by this
+        # branch's Sec16/Sec17 removals.
         refs = self._extract_node_refs(node)
         failed_refs: list[dict[str, str]] = []
         for key in refs:
@@ -2411,58 +2293,6 @@ class PipelineEngine:
             if self.context.get(key) is None:
                 self.context.set(key, "")
 
-    def _check_requires(self, node: Node) -> Outcome | None:
-        """Pre-execution file existence check for the ``requires=`` attribute (Bug H).
-
-        Reads the node's ``requires`` attribute (comma-separated relative file
-        paths) and verifies that every declared path exists on disk before the
-        handler runs.  Paths are resolved relative to ``context.target_dir``
-        if set, falling back to ``os.getcwd()``.
-
-        This prevents LLM agents from fabricating missing inputs when upstream
-        parallel branches didn't produce their expected artifacts.  Failing
-        fast here surfaces the real error (missing file) rather than letting
-        the agent hallucinate a plausible-looking result.
-
-        Returns:
-            A FAIL ``Outcome`` naming all missing files if any are absent,
-            ``None`` if all required files exist (or no ``requires=`` is set).
-        """
-        raw_requires = node.attrs.get("requires") if node.attrs else None
-        if not raw_requires:
-            return None
-
-        # Resolve base directory: context.target_dir takes precedence
-        base_dir_raw = self.context.get("context.target_dir")
-        base_dir = Path(str(base_dir_raw)) if base_dir_raw else Path(os.getcwd())
-
-        # Parse comma-separated paths, strip whitespace
-        paths = [p.strip() for p in str(raw_requires).split(",") if p.strip()]
-        if not paths:
-            return None
-
-        missing = [p for p in paths if not (base_dir / p).exists()]
-        if not missing:
-            return None  # All required files are present — proceed normally
-
-        logger.warning(
-            "Node '%s' requires= validation failed: missing files %s (base_dir=%s)",
-            node.id,
-            missing,
-            base_dir,
-        )
-        return Outcome(
-            status=StageStatus.FAIL,
-            failure_reason=(
-                f"Node '{node.id}' requires inputs that don't exist: {missing} "
-                f"(resolved under {base_dir})"
-            ),
-            notes=(
-                f"Missing required files: {', '.join(missing)}. "
-                f"Ensure upstream nodes produced these artifacts before this "
-                f"node runs. Set requires= to declare file preconditions."
-            ),
-        )
 
     def _check_must_write(
         self, node: Node, outcome: Outcome, node_start_wall: float
