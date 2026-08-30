@@ -178,6 +178,56 @@ _PROVIDER_MODULE_SOURCES: dict[str, str] = {
     "gemini": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
 }
 
+#: Tool modules every synthesized named-worker bundle mounts.
+#:
+#: LIVE-GATE FINDING (amplifier-bundle-attractor run 33296437678). Issue #338
+#: fixed the PROVIDER half of this synthesis -- a spawned box-node worker can
+#: finally reach a model -- but the synthesis still emitted no ``tools:``
+#: section at all, so that worker reached the model with NO file, shell, or
+#: search tools mounted. The engine's own transcript is the proof
+#: (``logs/orient/response.md`` of that run, the model speaking for itself):
+#:
+#:     "My actual available tool set in this session is limited to
+#:      `spawn_agent`, `send_input`, `wait`, and `close_agent` -- there is no
+#:      `read_file`, `write_file`, `edit_file`, `shell`, `grep`, or `glob`
+#:      tool actually exposed to me, despite the system prompt describing
+#:      them as if available."
+#:
+#: Consequence: EVERY ``must_write=`` node contract is unsatisfiable by
+#: construction on the named-worker path. That run's first maker node
+#: (``orient``, ``must_write=".ai/brief.md"``) burned its whole retry budget
+#: across 210s of real Anthropic calls without writing one byte, and the
+#: pipeline died pre-loop at ``orient_fail``. A worker that can think but
+#: cannot act is not a worker -- and the failure is silent at mount time,
+#: surfacing only as an exhausted contract minutes later.
+#:
+#: THE SET IS NOT INVENTED. It is exactly what amplifier-bundle-attractor's
+#: own ``bundles/attractor-pipeline.yaml`` declared under its top-level
+#: ``tools:`` section -- the SAME proven reference #338's
+#: ``_PROVIDER_MODULE_SOURCES`` was derived from, and the composition that
+#: demonstrably drove these pipelines before 0.2.0 retired
+#: ``--bundle``/``DOT_RUNNER_BUNDLE``. Both halves of that bundle's mount plan
+#: (providers AND tools) are reproduced here; the synthesis had silently
+#: dropped both, and #338 restored only one.
+#:
+#: Mounted TOP-LEVEL (session-wide) rather than per-agent, mirroring the
+#: reference bundle: spawned child agents inherit the parent session's tool
+#: surface, so one declaration serves the orchestrator session and every
+#: ``profiles:``-routed agent alike.
+#:
+#: Resolved via runtime git+fetch (``ModuleActivator.activate_all``, keyed off
+#: the ``source:`` each entry carries) -- the same mechanism this synthesis
+#: already uses for the adapter, the providers, and context-simple. No config
+#: overrides are emitted: the reference bundle's ``timeout: 120`` on tool-bash
+#: was attractor-side policy, and the equivalent knob on this path is
+#: loop-agent's own ``default_command_timeout_ms``. The engine mounts the
+#: capability; policy stays with the caller.
+_TOOL_MODULE_SOURCES: dict[str, str] = {
+    "tool-filesystem": "git+https://github.com/microsoft/amplifier-module-tool-filesystem@main",
+    "tool-bash": "git+https://github.com/microsoft/amplifier-module-tool-bash@main",
+    "tool-search": "git+https://github.com/microsoft/amplifier-module-tool-search@main",
+}
+
 
 def _detect_configured_providers() -> list[str]:
     """Canonical provider names with a configured API key, in priority order.
@@ -289,6 +339,18 @@ def _synthesize_agent_bundle_yaml(worker_name: str) -> str:
         for name in configured
     )
 
+    # Live-gate fix (see _TOOL_MODULE_SOURCES): mount a REAL tool surface.
+    # #338 restored the providers half of this synthesis; without this half a
+    # box-node worker reaches the model with only the spawn tools and cannot
+    # read, write, or run anything -- so every `must_write=` contract is
+    # unsatisfiable by construction. Unconditional (unlike providers, which
+    # are keyed off configured API keys): there is no environment in which a
+    # pipeline worker is better off unable to touch the tree it was pointed at.
+    tool_lines = "\n".join(
+        f"  - module: {name}\n    source: {source}"
+        for name, source in _TOOL_MODULE_SOURCES.items()
+    )
+
     return f"""\
 bundle:
   name: dot-runner-{worker_name}-bundle
@@ -302,6 +364,8 @@ bundle:
     Purely internal machinery -- never exposed as a user-facing concept.
 providers:
 {provider_lines}
+tools:
+{tool_lines}
 session:
   context:
     # AmplifierSession construction requires SOME session.context to be
