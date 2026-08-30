@@ -46,7 +46,7 @@ async def test_cleanup_called_when_parse_fails_after_materialize(tmp_path, monke
     async def _fake_materialize(dot_source: str):
         return entry_path, _cleanup
 
-    def _raising_parse_dot(_source: str):
+    def _raising_parse_dot(_source: str, params: dict[str, str] | None = None):
         raise ValueError("boom: simulated parse failure after materialize")
 
     # materialize_remote_dot and parse_dot are both referenced as module-level
@@ -57,7 +57,9 @@ async def test_cleanup_called_when_parse_fails_after_materialize(tmp_path, monke
     monkeypatch.setattr(remote_dot_mod, "parse_dot", _raising_parse_dot)
 
     orchestrator = PipelineOrchestrator(
-        config={"dot_source": "git+https://github.com/acme/samples@main#pipelines/main.dot"}
+        config={
+            "dot_source": "git+https://github.com/acme/samples@main#pipelines/main.dot"
+        }
     )
 
     with pytest.raises(ValueError, match="boom"):
