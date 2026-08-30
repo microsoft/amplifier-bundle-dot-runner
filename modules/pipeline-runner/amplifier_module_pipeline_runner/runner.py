@@ -439,7 +439,7 @@ async def drive_engine(
         # `AmplifierBackend`'s OWN `provider=` truthy gate is satisfied
         # (`backend.py`'s `elif self._provider is not None`, pre-existing
         # loop-pipeline contract, untouched here). Without this, a
-        # `default_worker="direct"` node would fail with the engine-internal
+        # `default_worker="llm-direct"` node would fail with the engine-internal
         # "Neither session.spawn nor a direct provider is available" message
         # regardless of what API key the user had set.
         #
@@ -951,7 +951,7 @@ async def run_pipeline(
             DESIGN-worker-registry-core-split.md P1 item 3, P3 item 2).
             Explicit callers win outright; otherwise defaults to ``bundle``'s
             own declared ``worker`` (if any); with no ``bundle`` and no
-            explicit ``worker``, resolves to ``"direct"``. Precedence is
+            explicit ``worker``, resolves to ``"llm-direct"``. Precedence is
             always: per-node ``worker=`` attribute > this value > the
             engine's own spawn-if-available-else-direct fallback chain.
         hooks: Optional hooks object forwarded to the engine.
@@ -1025,7 +1025,7 @@ async def run_pipeline(
     elif bundle:
         resolved_worker = declared_worker  # may be None -- fallback chain decides
     else:
-        resolved_worker = "direct"
+        resolved_worker = "llm-direct"
     resolved_profiles = (
         dict(profiles) if profiles is not None else dict(declared_profiles)
     )
@@ -1199,7 +1199,7 @@ async def resume_pipeline(
     elif bundle:
         resolved_worker = declared_worker
     else:
-        resolved_worker = "direct"
+        resolved_worker = "llm-direct"
     resolved_profiles = (
         dict(profiles) if profiles is not None else dict(declared_profiles)
     )

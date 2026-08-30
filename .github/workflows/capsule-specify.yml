@@ -124,7 +124,7 @@ jobs:
         # layer and does not exist in this repo. The CLI's `--bundle` flag
         # and any bundles/-relative default-bundle lookup were removed in
         # the 0.2.0 repair release (see `cli.py`'s module docstring and
-        # `default_worker.py`) -- `--worker loop-agent` (used below) is the
+        # `default_worker.py`) -- `--worker coding-agent` (used below) is the
         # complete worker-selection mechanism now.
         run: |
           set -euo pipefail
@@ -297,9 +297,9 @@ jobs:
         # capsule.dot's ONE judgment node, `critique`, hard-declares
         # llm_provider="openai" -- a second model family, deliberately: the
         # judge must not share the maker's family. With `--worker
-        # loop-agent`, that attribute flows straight through the
+        # coding-agent`, that attribute flows straight through the
         # named-worker path (loop-pipeline's backend passes it via
-        # per-spawn orchestrator_config, honored by loop-agent directly --
+        # per-spawn orchestrator_config, honored by coding-agent's adapter directly --
         # no dual-provider bundle mount needed). Check the one precondition
         # that makes it serviceable BEFORE spending any of the run's
         # multi-hour budget.
@@ -335,7 +335,7 @@ jobs:
           # be the live one.
           uv run --project "$RUNNER_TEMP/engine-src" dot-runner run \
             .github/capsule-pipeline/capsule.dot \
-            --worker loop-agent \
+            --worker coding-agent \
             --cwd "$GITHUB_WORKSPACE" \
             --logs-root "$RUNNER_TEMP/capsule-run/logs" \
             --param issue_file="${{ steps.issue.outputs.file }}" \

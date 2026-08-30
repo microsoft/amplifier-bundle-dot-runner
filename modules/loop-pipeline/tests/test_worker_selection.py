@@ -53,7 +53,7 @@ class _NoSpawnCoordinator:
 
 class TestSelectionPrecedence:
     def test_node_attr_overrides_run_level_default(self):
-        """Node attr `worker="direct"` wins even when the run-level default
+        """Node attr `worker="llm-direct"` wins even when the run-level default
         is `"spawn"` AND spawn is actually available -- proving node attr
         is the HIGHEST-precedence selector, not merely "checked first when
         nothing else applies"."""
@@ -65,23 +65,23 @@ class TestSelectionPrecedence:
         )
         backend.ensure_spawn_resolved()
 
-        node = _make_node(worker="direct")
-        assert backend._resolve_worker_name(node) == "direct"
+        node = _make_node(worker="llm-direct")
+        assert backend._resolve_worker_name(node) == "llm-direct"
 
     def test_run_level_default_overrides_fallback_chain(self):
-        """No node attr, but a run-level default of `"direct"` wins over
+        """No node attr, but a run-level default of `"llm-direct"` wins over
         the fallback chain even though spawn IS available (which the
         fallback chain would otherwise select)."""
         backend = AmplifierBackend(
             coordinator=_SpawnCoordinator(),
             profiles={"test": "some-agent"},
             provider=object(),
-            default_worker="direct",
+            default_worker="llm-direct",
         )
         backend.ensure_spawn_resolved()
 
         node = _make_node()
-        assert backend._resolve_worker_name(node) == "direct"
+        assert backend._resolve_worker_name(node) == "llm-direct"
 
     def test_no_override_falls_back_to_spawn_when_available(self):
         backend = AmplifierBackend(
@@ -97,7 +97,7 @@ class TestSelectionPrecedence:
         )
         backend.ensure_spawn_resolved()
 
-        assert backend._resolve_worker_name(_make_node()) == "direct"
+        assert backend._resolve_worker_name(_make_node()) == "llm-direct"
 
     def test_unknown_node_worker_attr_raises_loud_error(self):
         backend = AmplifierBackend(provider=object())
@@ -150,7 +150,7 @@ class TestDefaultBehaviorUnchanged:
 
         assert isinstance(backend, AmplifierBackend)
         backend.ensure_spawn_resolved()
-        assert backend._resolve_worker_name(_make_node()) == "direct"
+        assert backend._resolve_worker_name(_make_node()) == "llm-direct"
 
     def test_zero_config_no_provider_no_spawn_returns_none(self):
         """Simulation-mode fallback (no providers, no spawn) is unchanged."""

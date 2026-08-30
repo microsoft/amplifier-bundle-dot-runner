@@ -120,7 +120,7 @@ def test_no_spawn_falls_back_to_direct_provider():
     assert backend is not None
     assert isinstance(backend, AmplifierBackend)
     node = Node(id="n1", shape="box", prompt="do work")
-    assert backend._resolve_worker_name(node) == "direct"
+    assert backend._resolve_worker_name(node) == "llm-direct"
 
 
 def test_orchestrator_config_threaded_from_execute():

@@ -92,6 +92,19 @@ _MAX_TOOL_LOOP_ROUNDS = 20
 _SPAWN_WORKER_SENTINEL = "spawn"
 
 
+def _renamed_hint(name: str) -> str:
+    """" (renamed: <old> -> <new>)" clause for an old, pre-rename worker
+    name -- empty string otherwise. See ``workers.registry.RENAMED_WORKER_NAMES``
+    (WAVE 7, feat/fail-loud-worker-names): ``direct``->``llm-direct``,
+    ``loop-agent``->``coding-agent``. The unknown-worker error IS the
+    migration hint; no alias is registered for the old name.
+    """
+    from .workers.registry import RENAMED_WORKER_NAMES
+
+    renamed_to = RENAMED_WORKER_NAMES.get(name)
+    return f" (renamed: {name!r} -> {renamed_to!r})" if renamed_to else ""
+
+
 def _safe_get_spawn_fn(coordinator: Any) -> Any | None:
     """Resolve ``session.spawn`` off *coordinator*, tolerating a missing or
     ``None`` coordinator.
@@ -195,12 +208,12 @@ class AmplifierBackend:
             hooks=hooks,
             unified_client=unified_client,
         )
-        self._registry.register("direct", self._direct_worker)
+        self._registry.register("llm-direct", self._direct_worker)
         known_workers = frozenset({_SPAWN_WORKER_SENTINEL}) | self._registry.names()
         if default_worker is not None and default_worker not in known_workers:
             raise ValueError(
-                f"Unknown default_worker={default_worker!r}. Known workers: "
-                f"{sorted(known_workers)}."
+                f"Unknown default_worker={default_worker!r}{_renamed_hint(default_worker)}. "
+                f"Known workers: {sorted(known_workers)}."
             )
         self._default_worker = default_worker
 
@@ -251,7 +264,7 @@ class AmplifierBackend:
         # backward-compat property above return the right (shared-by-
         # reference) object for the clone too.
         new._registry = self._registry.clone()
-        new._direct_worker = new._registry.resolve("direct")
+        new._direct_worker = new._registry.resolve("llm-direct")
 
         # Copy tools: stateless tools are shared across clones (safe); stateful tools
         # (those exposing last_outcome) get an independent shallow copy with last_outcome
@@ -324,13 +337,13 @@ class AmplifierBackend:
             if node_worker not in known_workers:
                 raise ValueError(
                     f"Node '{node.id}' declared worker={node_worker!r}, which "
-                    f"is not a known worker. Known workers: "
-                    f"{sorted(known_workers)}."
+                    f"is not a known worker{_renamed_hint(node_worker)}. Known "
+                    f"workers: {sorted(known_workers)}."
                 )
             return node_worker
         if self._default_worker is not None:
             return self._default_worker
-        return _SPAWN_WORKER_SENTINEL if self._spawn_fn is not None else "direct"
+        return _SPAWN_WORKER_SENTINEL if self._spawn_fn is not None else "llm-direct"
 
     async def run(
         self,

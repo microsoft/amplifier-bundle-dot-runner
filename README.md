@@ -16,7 +16,7 @@ releases (maintainer ruling, 2026-08-29/30):
   channel for every worker, spawned or direct.
 - **`--bundle`/`DOT_RUNNER_BUNDLE` REMOVED from the CLI.** Bundles are
   under the hood now, never a user-facing concept. The whole user-facing
-  worker-selection story is `--worker direct|loop-agent|amplifier-agent`
+  worker-selection story is `--worker llm-direct|coding-agent|amplifier-agent`
   (or a node's own `worker=` attribute, EXTENSIONS.md Sec40).
 
 This repo implements the vendored **strongdm/attractor** nlspec faithfully
@@ -34,7 +34,7 @@ docs) lives in the repos that consume this one.
 | `modules/pipeline-runner` | The `dot-runner` CLI (`run` / `resume` / `doctor` / `trace` / `lint`) plus the `drive_engine` / `run_pipeline` library surface. The `attractor` command has been removed entirely -- see "Getting started" below. |
 | `modules/unified-llm-client` | Provider-agnostic LLM client — a faithful implementation of the Attractor Unified LLM Client spec. |
 | `modules/remote-source` | Content-addressed `git+https://` fetcher (Layer A), used by `loop-pipeline[remote]` to materialize remote `.dot` graphs. |
-| `modules/loop-agent` | The `coding-agent-loop` nlspec implementation — a general worker (registerable in the worker registry), not attractor-specific. |
+| `modules/loop-agent` | The `coding-agent-loop` nlspec implementation — a general worker (registerable in the worker registry as `coding-agent`), not attractor-specific. The module directory keeps its historical name; the user-facing worker name is `coding-agent` (renamed from `loop-agent`, WAVE 7). |
 | `modules/loop-amplifier-agent` | Adapter orchestrator: hosts [microsoft/amplifier-agent](https://github.com/microsoft/amplifier-agent)'s `Engine` as a pipeline node's worker via `session.spawn`. ALWAYS INSTALLED (WAVE 6): a real, unconditional dependency of the root package, along with its heavy peer library (`amplifier_agent_lib`, Python >=3.12). See "Default worker" below. |
 | `modules/hooks-pipeline-observability` | State aggregator, status bar, and event persistence hooks for pipeline runs. |
 | `modules/hooks-pipeline-progress` | Progress display hook. |
@@ -151,7 +151,10 @@ engine/lib, so it's always installed? ... YES, that's the intent.").
 
 `run`/`resume` also accept `--worker <name>` (EXTENSIONS.md §40 — feeds the
 worker registry's run-level `default_worker`; a node's own `worker=`
-attribute still wins), one of `direct`, `loop-agent`, `amplifier-agent`.
+attribute still wins), one of `llm-direct` (bare loop, unified-llm-spec),
+`coding-agent` (implements the coding-agent-loop spec), `amplifier-agent`.
+`direct`/`loop-agent` are RETIRED names -- no alias; using one fails loud
+naming its replacement.
 **An explicit `--worker` always wins** over everything below. There is no
 `--bundle` flag or `DOT_RUNNER_BUNDLE` env var on this CLI -- any bundle
 machinery a named worker needs is internal, private implementation detail.
@@ -182,7 +185,7 @@ degrades to `direct` but prints ONE loud stderr line diagnosing the broken
 install and naming the reinstall command:
 
 ```
-dot-runner: no --worker given -- falling back to worker=direct. amplifier-agent
+dot-runner: amplifier-agent ships as an unconditional dependency of this install
 ships as an unconditional dependency of this install and could not be imported
 -- this environment is broken (stale cache, partial install, or a hand-edited
 venv); reinstall: `uv tool install --reinstall
@@ -200,8 +203,8 @@ same as before, just a different diagnostic story for why.
 dot-runner run path/to/pipeline.dot
 
 # explicit choice always wins
-dot-runner run path/to/pipeline.dot --worker direct
-dot-runner run path/to/pipeline.dot --worker loop-agent
+dot-runner run path/to/pipeline.dot --worker llm-direct
+dot-runner run path/to/pipeline.dot --worker coding-agent
 dot-runner run path/to/pipeline.dot --worker amplifier-agent
 ```
 

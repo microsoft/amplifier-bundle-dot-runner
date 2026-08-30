@@ -148,7 +148,7 @@ def test_build_prepared_bare_never_loads_a_named_bundle(monkeypatch, tmp_path):
             tmp_path,
             params=None,
             profiles=None,
-            worker="direct",
+            worker="llm-direct",
         )
     )
 
@@ -196,8 +196,8 @@ def test_run_pipeline_bare_registers_no_spawn_capability(monkeypatch, tmp_path):
     assert "session.spawn" not in captured["coordinator"].registered
     # Zero implicit profile fallback.
     assert captured["profiles"] == {}
-    # Bare default worker resolves to "direct" when unspecified.
-    assert captured["default_worker"] == "direct"
+    # Bare default worker resolves to "llm-direct" when unspecified.
+    assert captured["default_worker"] == "llm-direct"
 
 
 # ---------------------------------------------------------------------------
@@ -302,11 +302,11 @@ def test_run_pipeline_bundle_explicit_worker_overrides_declared(monkeypatch, tmp
             cwd=tmp_path / "work",
             logs_root=tmp_path / "logs",
             bundle="git+https://example.invalid/some-bundle.yaml",
-            worker="direct",
+            worker="llm-direct",
         )
     )
 
-    assert captured["default_worker"] == "direct"
+    assert captured["default_worker"] == "llm-direct"
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +358,7 @@ def test_cli_dot_runner_bundle_env_var_has_no_effect(monkeypatch, tmp_path):
 
     parser = cli.build_parser(prog="dot-runner")
     args = parser.parse_args(
-        ["run", dot_path, "--worker", "direct", "--cwd", str(tmp_path)]
+        ["run", dot_path, "--worker", "llm-direct", "--cwd", str(tmp_path)]
     )
     args.prog_name = "dot-runner"
 
@@ -368,7 +368,7 @@ def test_cli_dot_runner_bundle_env_var_has_no_effect(monkeypatch, tmp_path):
         "DOT_RUNNER_BUNDLE must not reach run_pipeline as a bundle= arg -- "
         f"got {captured['bundle']!r}"
     )
-    assert captured["worker"] == "direct"
+    assert captured["worker"] == "llm-direct"
 
 
 def test_help_text_has_zero_bundle_vocabulary(capsys):
@@ -392,10 +392,10 @@ def test_help_text_has_zero_bundle_vocabulary(capsys):
 
 def test_worker_flag_accepted_by_argparse():
     parser = cli.build_parser(prog="dot-runner")
-    args = parser.parse_args(["run", "dummy.dot", "--worker", "direct"])
-    assert args.worker == "direct"
-    args2 = parser.parse_args(["resume", "some-dir", "--worker", "direct"])
-    assert args2.worker == "direct"
+    args = parser.parse_args(["run", "dummy.dot", "--worker", "llm-direct"])
+    assert args.worker == "llm-direct"
+    args2 = parser.parse_args(["resume", "some-dir", "--worker", "llm-direct"])
+    assert args2.worker == "llm-direct"
 
 
 def test_worker_flag_defaults_to_none():
@@ -419,13 +419,13 @@ def test_worker_flag_reaches_run_pipeline(monkeypatch, tmp_path):
 
     parser = cli.build_parser(prog="dot-runner")
     args = parser.parse_args(
-        ["run", dot_path, "--worker", "direct", "--cwd", str(tmp_path)]
+        ["run", dot_path, "--worker", "llm-direct", "--cwd", str(tmp_path)]
     )
     args.prog_name = "dot-runner"
 
     rc = cli.cmd_run(args)
     assert rc == 0
-    assert captured["worker"] == "direct"
+    assert captured["worker"] == "llm-direct"
 
 
 def test_unknown_worker_name_fails_clean_not_a_traceback(monkeypatch, tmp_path, capsys):

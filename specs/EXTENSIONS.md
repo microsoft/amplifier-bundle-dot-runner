@@ -3159,6 +3159,27 @@ exercises unless its author opts in.
 - `modules/loop-pipeline/tests/test_worker_parity.py` — this repo's own worker-parity-kit
   admission for the `direct` worker (see `modules/worker-parity-kit/README.md`)
 
+
+> **Dated rename note (2026-08-30, maintainer ruling, branch `feat/fail-loud-worker-names`):**
+> the user-facing worker NAMES this section documents are renamed, band-aid-rip style, NO
+> alias for the old name: `direct` -> `llm-direct` (it is the bare loop on the
+> unified-llm-spec client, `specs/unified-llm-spec.md`) and `loop-agent` -> `coding-agent`
+> (it implements the coding-agent-loop nlspec, `specs/coding-agent-loop-spec.md` -- one of
+> the three StrongDM specs this bundle vendors). `amplifier-agent` is unchanged. The
+> `WorkerRegistry` registration key, the CLI `--worker` choices/help, every "Unknown worker"
+> error's listed names, the default-worker synthesis, README/docs, and the node `worker=`
+> attribute's accepted values all use the NEW names as of this note. The MODULE directory
+> `modules/loop-agent` and its Python package `amplifier_module_loop_agent` are internal and
+> UNCHANGED -- only the worker NAME moved. For one release, an old name fails loud with a
+> `renamed: '<old>' -> '<new>'` clause in its Unknown-worker error
+> (`workers.registry.RENAMED_WORKER_NAMES`) -- this is an error-message migration hint, not a
+> functioning alias, and is expected to be deleted outright after that window. The same PR
+> made the default-worker ladder's broken-install case FAIL LOUD instead of silently
+> degrading to `llm-direct` (formerly `direct`) with a stderr notice -- see this file's own
+> Sec1 (`AmplifierBackend`) and `amplifier_module_pipeline_runner.default_worker.resolve()`;
+> that degraded-fallback code path and its dedicated test coverage are deleted, not merely
+> reworded.
+
 ---
 
 ## 41. Status-File Contract Read Side: `status.json` as a Spec-Native Verdict Channel (Conformance Restoration)

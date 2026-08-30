@@ -101,7 +101,7 @@ async def test_construction_emits_deprecation_warning_naming_the_replacement():
     message = str(deprecation_warnings_first[0].message)
     assert "deprecated" in message.lower()
     assert "AmplifierBackend" in message
-    assert "direct" in message
+    assert "llm-direct" in message
     assert "Sec40" in message or "EXTENSIONS" in message
 
     # A SECOND construction fires its OWN warning too -- fires once PER
@@ -165,10 +165,10 @@ def test_shim_is_not_registered_as_a_worker():
     assert "DirectProviderBackend" not in workers_pkg.__all__
     assert not hasattr(workers_pkg, "DirectProviderBackend")
 
-    # A freshly constructed AmplifierBackend registers only "direct" --
+    # A freshly constructed AmplifierBackend registers only "llm-direct" --
     # never a "DirectProviderBackend" (or any other shim-derived) name.
     backend = AmplifierBackend(provider=object())
-    assert backend._registry.names() == frozenset({"direct"})
+    assert backend._registry.names() == frozenset({"llm-direct"})
 
     # Sanity: the real DirectWorker/WorkerRegistry/Worker symbols this test
     # imports are unaffected by the shim's existence.

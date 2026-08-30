@@ -23,6 +23,19 @@ if TYPE_CHECKING:
 
 _REQUIRED_MEMBERS = ("run", "clone", "close")
 
+#: WAVE 7 (feat/fail-loud-worker-names, 2026-08-30, maintainer ruling): the
+#: user-facing worker NAMES were renamed -- ``direct`` -> ``llm-direct`` (the
+#: bare loop on the unified-llm-spec client) and ``loop-agent`` ->
+#: ``coding-agent`` (it implements the coding-agent-loop spec). NO aliases
+#: for the old names -- this is a band-aid rip, not a compat shim. This map
+#: exists ONLY so an old name's "Unknown worker" error can name its
+#: replacement as a migration hint, kept for a release or two (see
+#: specs/EXTENSIONS.md Sec40's dated rename note) then deleted outright.
+RENAMED_WORKER_NAMES: dict[str, str] = {
+    "direct": "llm-direct",
+    "loop-agent": "coding-agent",
+}
+
 
 class WorkerRegistry:
     """Holds constructed ``Worker`` instances, keyed by name."""
@@ -59,13 +72,21 @@ class WorkerRegistry:
         """Return the worker registered under *name*.
 
         Raises ``ValueError`` naming every registered worker when *name* is
-        unknown -- never a silent fallback (P1 test discipline item 1).
+        unknown -- never a silent fallback (P1 test discipline item 1). A
+        renamed old name (see :data:`RENAMED_WORKER_NAMES`) gets an extra
+        ``renamed:`` clause naming its replacement -- the error message IS
+        the migration hint, not an alias that would keep the old name
+        working.
         """
         try:
             return self._workers[name]
         except KeyError:
+            hint = ""
+            renamed_to = RENAMED_WORKER_NAMES.get(name)
+            if renamed_to is not None:
+                hint = f" (renamed: {name!r} -> {renamed_to!r})"
             raise ValueError(
-                f"Unknown worker {name!r}. Registered workers: {sorted(self._workers)}."
+                f"Unknown worker {name!r}{hint}. Registered workers: {sorted(self._workers)}."
             ) from None
 
     def names(self) -> frozenset[str]:

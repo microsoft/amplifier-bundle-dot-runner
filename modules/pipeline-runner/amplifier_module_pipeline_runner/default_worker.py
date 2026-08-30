@@ -1,14 +1,26 @@
-"""Named-worker resolution: ``direct`` | ``loop-agent`` | ``amplifier-agent``.
+"""Named-worker resolution: ``llm-direct`` | ``coding-agent`` | ``amplifier-agent``.
 
 Maintainer policy (2026-08-29/30, WAVE 5 repair): worker NAMES are the whole
 user concept (ruling: "bundles are under the hood -- never exposed to
-runner users"). ``--worker direct|loop-agent|amplifier-agent`` (or a node's
-own ``worker=`` attribute, EXTENSIONS.md Sec40) is the complete user-facing
-story; ``--bundle``/``DOT_RUNNER_BUNDLE`` are REMOVED from the CLI surface
-entirely (no flag, no env var, no help text, no README mention) -- see
-``cli.py``'s module docstring. Any bundle machinery a named worker needs
-under the hood stays exactly that: internal, private, never bundle
+runner users"). ``--worker llm-direct|coding-agent|amplifier-agent`` (or a
+node's own ``worker=`` attribute, EXTENSIONS.md Sec40) is the complete
+user-facing story; ``--bundle``/``DOT_RUNNER_BUNDLE`` are REMOVED from the
+CLI surface entirely (no flag, no env var, no help text, no README mention)
+-- see ``cli.py``'s module docstring. Any bundle machinery a named worker
+needs under the hood stays exactly that: internal, private, never bundle
 vocabulary in a signature, an error message, or a doc.
+
+WAVE 7 (feat/fail-loud-worker-names, 2026-08-30, maintainer ruling): the
+worker NAMES themselves changed -- ``direct`` -> ``llm-direct`` (the bare
+loop on the unified-llm-spec client) and ``loop-agent`` -> ``coding-agent``
+(it implements the coding-agent-loop spec, one of the three StrongDM
+specs this bundle vendors). ``amplifier-agent`` is unchanged. NO aliases
+for the old names -- a band-aid rip, not a compat shim; the old name's
+"Unknown worker" error names its replacement (see
+``workers.registry.RENAMED_WORKER_NAMES``) as the migration hint. The
+MODULE directory ``modules/loop-agent`` and its Python package
+``amplifier_module_loop_agent`` are internal implementation detail and are
+UNCHANGED by this rename -- only the user-facing WORKER NAME moved.
 
 WAVE 6 (feat/agent-always-installed) ruling: amplifier-agent is no longer an
 optional, probed-for peer -- the root ``amplifier-dot-runner`` package now
@@ -53,11 +65,20 @@ There is no third rung. :func:`resolve` still does the wiring:
    import despite being an unconditional dependency of this install -- an
    ABNORMAL, broken-environment state (a stale/partial venv, a corrupted
    cache, a hand-edited site-packages), not a legitimate "not installed by
-   choice" state anymore. :func:`resolve` degrades to ``direct`` in that
-   case, but prints a LOUD stderr line diagnosing the broken install and
-   naming the reinstall command (:data:`BROKEN_INSTALL_HINT`) -- reworded
-   from the old upgrade pitch, which no longer applies now that there is
-   nothing left to "upgrade" into.
+   choice" state anymore.
+
+   WAVE 7 (feat/fail-loud-worker-names) ruling: :func:`resolve` FAILS LOUD
+   in that case -- ``SystemExit(1)`` with a stderr line diagnosing the
+   broken install and naming the reinstall command
+   (:data:`BROKEN_INSTALL_HINT`) -- it NEVER degrades to ``llm-direct`` on
+   its own. A broken default-worker probe is an install problem, not a
+   reason to silently run a different execution mechanism than the one the
+   caller (implicitly) asked for. The former "prints one loud notice, then
+   falls back to worker=llm-direct" behavior, and its own test coverage,
+   are DELETED -- there is no more degraded path here to fall back to.
+   ``--worker llm-direct`` remains fully available as the user's own,
+   deliberate way to run the light loop -- it just never happens as an
+   automatic substitution for a broken default.
 
 Explicit choices always win: :func:`resolve` is a no-op the moment the
 caller already made ANY choice -- an explicit ``--worker``, or a bundle
@@ -73,14 +94,23 @@ import tempfile
 from pathlib import Path
 
 from . import runner
+from amplifier_module_loop_pipeline.workers.registry import RENAMED_WORKER_NAMES
 
 #: Registered worker NAMES this module knows how to wire under the hood --
 #: the whole user-facing vocabulary (``--worker <name>`` / node ``worker=``).
 #: Each maps to an adapter module living in this same repo, wired internally
 #: via a synthesized single-agent bundle (:func:`_synthesize_agent_bundle_yaml`)
 #: -- bundle vocabulary never reaches the CLI surface (help/errors/docs).
-LOOP_AGENT_NAME = "loop-agent"
+CODING_AGENT_NAME = "coding-agent"
 AMPLIFIER_AGENT_NAME = "amplifier-agent"
+
+#: Back-compat alias for the pre-rename identifier -- code that imported
+#: ``LOOP_AGENT_NAME`` directly (none in this repo after this branch; kept
+#: one release as a Python-level courtesy for out-of-tree importers). This
+#: is a CODE-IDENTIFIER alias, not a worker-NAME alias -- its *value* is the
+#: new name, so anything reading it gets ``"coding-agent"``, never the
+#: retired ``"loop-agent"`` worker name.
+LOOP_AGENT_NAME = CODING_AGENT_NAME
 
 #: name -> (adapter module, its probe module for availability, its published
 #: git-ref source). ``probe_module`` is what :func:`_worker_available` runs
@@ -101,13 +131,20 @@ AMPLIFIER_AGENT_NAME = "amplifier-agent"
 #: worker name happens to equal its module name; that coincidence must not
 #: be baked in as an assumption for future registry entries.
 _ADAPTER_REGISTRY: dict[str, tuple[str, str, str, str]] = {
-    LOOP_AGENT_NAME: (
+    CODING_AGENT_NAME: (
         "amplifier_module_loop_agent",
         "amplifier_module_loop_agent",
         (
             "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
             "#subdirectory=modules/loop-agent"
         ),
+        # 4th element: the adapter's own REGISTERED entry-point module name
+        # (modules/loop-agent/pyproject.toml's
+        # [project.entry-points."amplifier.modules"] table) -- INTERNAL,
+        # unaffected by the worker-name rename above (WAVE 7). The module
+        # directory `modules/loop-agent` and this registration name stay
+        # `loop-agent` under the hood; only the user-facing worker name
+        # (the dict key) became `coding-agent`.
         "loop-agent",
     ),
     AMPLIFIER_AGENT_NAME: (
@@ -433,9 +470,13 @@ def resolve(
 
     Selection, in priority order:
 
-    1. ``worker == "direct"`` -> returned as-is; the registry resolves it
-       directly, no bundle involved.
-    2. ``worker`` is a known named adapter (currently ``"loop-agent"`` or
+    0. ``worker`` is a RETIRED name (``"direct"`` or ``"loop-agent"``,
+       :data:`RENAMED_WORKER_NAMES`) -> fails loud immediately naming the
+       replacement -- WAVE 7 (feat/fail-loud-worker-names): no alias, the
+       error message itself is the migration hint.
+    1. ``worker == "llm-direct"`` -> returned as-is; the registry resolves
+       it directly, no bundle involved.
+    2. ``worker`` is a known named adapter (currently ``"coding-agent"`` or
        ``"amplifier-agent"``) -> the runtime import guard
        (:func:`_worker_available`) checks it resolves. Available: synthesize
        + wire its minimal bundle (:func:`_synthesize_agent_bundle_yaml`) and
@@ -443,24 +484,34 @@ def resolve(
        ``run_pipeline``'s own ``elif bundle: resolved_worker =
        declared_worker`` branch reads ``"spawn"`` back from the synthesized
        bundle's own declared config). Unavailable: an EXPLICIT choice for a
-       named worker fails loud rather than silently degrading to ``direct``
-       -- the caller asked for something specific. For ``loop-agent`` (a
-       genuinely optional worker, never embedded at the root) this means
-       "install its dependencies"; for ``amplifier-agent`` (WAVE 6: an
-       unconditional dependency of the root install) this means the
-       environment's install is broken -- see :data:`BROKEN_INSTALL_HINT`.
+       named worker fails loud rather than silently degrading to
+       ``llm-direct`` -- the caller asked for something specific. For
+       ``coding-agent`` (a genuinely optional worker, never embedded at the
+       root) this means "install its dependencies"; for ``amplifier-agent``
+       (WAVE 6: an unconditional dependency of the root install) this means
+       the environment's install is broken -- see
+       :data:`BROKEN_INSTALL_HINT`.
     3. ``worker`` is anything else (unknown name, or ``None``/absent) -> if
        ``None``: no explicit choice was made, so the ONLY rung left is
        amplifier-agent, PERIOD (available -> synthesize + wire, same as
-       case 2; unavailable -> print ONE loud stderr line diagnosing the
-       broken install and return unchanged, letting the pre-existing
-       bare-engine fallback chain resolve to ``direct`` exactly as it did
-       before). If ``worker`` is a non-empty, unrecognized name: returned
-       unchanged, letting the registry's own loud "Unknown worker" error
-       fire downstream (existing behavior, now covering the two new names
-       too).
+       case 2; unavailable -> **FAIL LOUD**, WAVE 7: ``SystemExit(1)``
+       naming the broken install and the reinstall command -- there is no
+       longer a degraded fallback to ``llm-direct`` to land on). If
+       ``worker`` is a non-empty, unrecognized name (and not a retired
+       name handled by case 0): returned unchanged, letting the registry's
+       own loud "Unknown worker" error fire downstream (existing behavior).
     """
-    if worker == "direct":
+    if worker is not None and worker in RENAMED_WORKER_NAMES:
+        new_name = RENAMED_WORKER_NAMES[worker]
+        print(
+            f"{prog}: --worker {worker!r} was renamed: {worker!r} -> "
+            f"{new_name!r}. Use --worker {new_name!r} instead -- there is "
+            "no alias for the old name.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    if worker == "llm-direct":
         return worker, None
 
     if worker is not None and worker in _ADAPTER_REGISTRY:
@@ -481,7 +532,7 @@ def resolve(
             f"{prog}: --worker {worker!r} was requested but is not "
             f"installed (missing {adapter_module!r} and/or "
             f"{probe_module!r}). Install its dependencies, or choose "
-            f"--worker direct / --worker {AMPLIFIER_AGENT_NAME!r}.",
+            f"--worker llm-direct / --worker {AMPLIFIER_AGENT_NAME!r}.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -500,9 +551,14 @@ def resolve(
     if _worker_available(AMPLIFIER_AGENT_NAME):
         return worker, str(write_agent_bundle(AMPLIFIER_AGENT_NAME))
 
-    print(
-        f"{prog}: no --worker given -- falling back to worker=direct. "
-        f"{BROKEN_INSTALL_HINT}",
-        file=sys.stderr,
-    )
-    return worker, None
+    # WAVE 7 (feat/fail-loud-worker-names): FAIL LOUD, never degrade. A
+    # broken default-worker probe used to fall back to worker=direct
+    # (now llm-direct) with one stderr notice -- that silent-degrade path
+    # (and its dedicated test coverage) is DELETED. amplifier-agent is a
+    # shipped, unconditional dependency; failing to resolve it is always an
+    # environment bug, and running a *different* execution mechanism than
+    # the one that was (implicitly) requested is never the right response
+    # to that bug. `--worker llm-direct` remains available -- deliberately,
+    # explicitly -- as the user's own way to run the light loop.
+    print(f"{prog}: {BROKEN_INSTALL_HINT}", file=sys.stderr)
+    raise SystemExit(1)
