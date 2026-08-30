@@ -39,8 +39,24 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = true
 
+# issue #338 point 2: amplifier-module-loop-agent is now a root path-
+# dependency of amplifier-dot-runner (see root pyproject.toml). loop-agent's
+# own [project.dependencies] declares amplifier-unified-llm-client via a
+# direct, unmodified git+ URL (deliberately -- see that module's own
+# [tool.uv.sources] comment: a local-path redirect there conflicts with its
+# OWN dev-only worker-parity-kit chain, which needs the unmodified git+ URL
+# shape). Keeping THIS module's own redirect to a local path then gave uv
+# two different SHAPES for the same package identity the moment both
+# modules were pulled into ONE root resolution ("Requirements contain
+# conflicting URLs for package amplifier-unified-llm-client"). Removing this
+# module's own override (rather than touching loop-agent's own, already-
+# reasoned-about dev/test convention) resolves it: this module's OWN edge
+# now resolves via its already-declared git+ URL too, matching loop-agent's
+# shape exactly. Nothing in this module's OWN test suite exercises
+# unified-llm-client's newly-added detect_configured_providers() (that is
+# covered by pipeline-runner's hermetic test_synthesized_bundle_providers.py
+# instead, via that module's own pytest `pythonpath` entry).
 [tool.uv.sources]
-amplifier-unified-llm-client = { path = "../unified-llm-client" }
 amplifier-module-remote-source = { path = "../remote-source" }
 # Test-only, same-repo path source: tests/test_worker_parity.py wires the
 # `direct` worker into worker-parity-kit's shared M1-M3 + TARGET suite (see

@@ -44,8 +44,10 @@ dependencies = [
     # a fresh install without an extra --with; loop-agent has no heavy peer
     # library or Python-floor conflict (unlike amplifier-agent's WAVE 6
     # story above) -- unlike amplifier-agent, this is a plain, low-risk
-    # addition.
-    "amplifier-module-loop-agent",
+    # addition. Sourced via a direct git+ URL (see [tool.uv.sources] note
+    # below for why this -- not a local path override like this file's other
+    # same-repo entries -- is the deliberate choice here).
+    "amplifier-module-loop-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-agent",
 ]
 
 [project.urls]
@@ -134,7 +136,6 @@ amplifier-module-loop-amplifier-agent = { path = "modules/loop-amplifier-agent" 
 # root install can always resolve the `--worker loop-agent` name. modules/
 # loop-agent keeps its own name, pyproject.toml, and its existing
 # `#subdirectory=modules/loop-agent` install form fully intact.
-amplifier-module-loop-agent = { path = "modules/loop-agent" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_dot_runner"]
