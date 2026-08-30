@@ -44,10 +44,8 @@ dependencies = [
     # a fresh install without an extra --with; loop-agent has no heavy peer
     # library or Python-floor conflict (unlike amplifier-agent's WAVE 6
     # story above) -- unlike amplifier-agent, this is a plain, low-risk
-    # addition. Sourced via a direct git+ URL (see [tool.uv.sources] note
-    # below for why this -- not a local path override like this file's other
-    # same-repo entries -- is the deliberate choice here).
-    "amplifier-module-loop-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-agent",
+    # addition.
+    "amplifier-module-loop-agent",
 ]
 
 [project.urls]
@@ -132,6 +130,13 @@ amplifier-module-pipeline-runner = { path = "modules/pipeline-runner" }
 # (WAVE 6). modules/loop-amplifier-agent keeps its own name, pyproject.toml,
 # and `#subdirectory=modules/loop-amplifier-agent` install form fully intact.
 amplifier-module-loop-amplifier-agent = { path = "modules/loop-amplifier-agent" }
+# issue #338 point 2: same relative-path pattern for loop-agent, so a fresh
+# root install can always resolve the --worker loop-agent name AND so this
+# checkout's own local edits (e.g. this module's own [tool.uv.sources]
+# overrides, see modules/loop-agent/pyproject.toml) are what actually gets
+# used -- a plain git+ URL here would instead fetch loop-agent fresh from
+# published upstream, bypassing any local branch changes entirely.
+amplifier-module-loop-agent = { path = "modules/loop-agent" }
 # issue #338 point 2: same relative-path pattern for loop-agent, so a fresh
 # root install can always resolve the `--worker loop-agent` name. modules/
 # loop-agent keeps its own name, pyproject.toml, and its existing
