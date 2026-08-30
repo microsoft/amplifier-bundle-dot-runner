@@ -1,6 +1,6 @@
 [project]
 name = "amplifier-module-loop-pipeline"
-version = "0.1.0"
+version = "0.3.0"
 description = "Attractor pipeline orchestrator - DOT graph-driven multi-stage AI workflows"
 license = "MIT"
 requires-python = ">=3.11"

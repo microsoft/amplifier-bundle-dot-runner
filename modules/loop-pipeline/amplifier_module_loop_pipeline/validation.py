@@ -173,6 +173,7 @@ def lint(graph: Graph) -> list[Diagnostic]:
     _check_pipe_masked_exit_code(graph, diags)
     _check_always_true_sentinel(graph, diags)
     _check_inert_prompt_vocabulary(graph, diags)
+    _check_removed_extension_attrs(graph, diags)
     _check_unescaped_inner_quote(graph, diags)
     _check_dotted_bare_identifier(graph, diags)
     return diags
@@ -3418,3 +3419,72 @@ def _check_dotted_bare_identifier(graph: Graph, diags: list[Diagnostic]) -> None
                 ),
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Removed-extension attractor lint (2026-08-30, feat/extensions-rip-3)
+# ---------------------------------------------------------------------------
+
+#: attr name -> one-line migration pattern named in the ERROR message.
+#: EXTENSIONS.md Sec16/Sec17/Sec29: these attrs were DELETED mechanisms, not
+#: merely deprecated -- they now fall to the engine's standard unknown-attr
+#: (silently ignored) behavior. This lint rule is the one-release LOUD
+#: attractor-lint tripwire so an author who kept old vocabulary in a graph
+#: is TOLD, not silently ignored; see MIGRATION.md for full before/after.
+_REMOVED_EXTENSION_ATTRS: dict[str, str] = {
+    "runs_on": (
+        'add an explicit condition="outcome=fail" edge from the failing '
+        "node to the intended successor (canonical Sec3.7)"
+    ),
+    "continue_on_fail": (
+        'add an explicit condition="outcome=fail" edge instead of masking '
+        "the failure (canonical Sec3.7)"
+    ),
+    "requires": (
+        "route with condition=context.<key> and/or a shape=tool "
+        "file-existence probe instead of requires="
+    ),
+    "outputs": (
+        "route with condition=context.<key> and/or a shape=tool "
+        "file-existence probe instead of outputs="
+    ),
+    "feedback_from": (
+        "have the critique node write .ai/feedback/<name>.md and have the "
+        "generator's own prompt read it back (file-mediated feedback)"
+    ),
+}
+
+
+def _check_removed_extension_attrs(graph: Graph, diags: list[Diagnostic]) -> None:
+    """ATTR-LINT-001: a node still declares a REMOVED-extension attribute.
+
+    ``runs_on=``/``continue_on_fail=`` (EXTENSIONS.md Sec16), ``requires=``/
+    ``outputs=`` (Sec17), and ``feedback_from=`` (Sec29) are DELETED
+    mechanisms as of 2026-08-30 (branch feat/extensions-rip-3) -- the engine
+    no longer reads any of them; they fall to the engine's standard
+    unknown-attr (silently-ignored) behavior at run time. This ERROR-severity
+    lint rule is the one-release LOUD tripwire so an author who kept old
+    vocabulary in a graph is told plainly, with the spec-intended migration
+    pattern, rather than discovering the silent no-op the hard way. Retire
+    this rule after the one-release migration window closes.
+    """
+    for node in graph.nodes.values():
+        if not node.attrs:
+            continue
+        for attr_name, pattern in _REMOVED_EXTENSION_ATTRS.items():
+            if attr_name in node.attrs:
+                diags.append(
+                    Diagnostic(
+                        rule="ATTR-LINT-001",
+                        severity="ERROR",
+                        message=(
+                            f"Node '{node.id}' declares removed extension "
+                            f"attribute {attr_name}= -- this attribute is "
+                            "DELETED (EXTENSIONS.md, 2026-08-30) and is no "
+                            "longer read by the engine at all. Migrate: "
+                            f"{pattern}. See MIGRATION.md."
+                        ),
+                        node_id=node.id,
+                        fix=pattern,
+                    )
+                )

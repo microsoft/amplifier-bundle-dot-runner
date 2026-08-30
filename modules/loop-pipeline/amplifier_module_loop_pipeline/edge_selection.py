@@ -79,50 +79,25 @@ def select_edge(
 
     # Step 4 & 5: Weight with lexical tiebreak (unconditional edges only)
     #
-    # Spec §3.7 fail-fast intent: a FAIL outcome does NOT traverse unconditional
-    # edges to default-routing nodes.  The engine will then check retry_target /
-    # fallback_retry_target and terminate if neither is configured.
-    #
-    # Pipeline authors who want fail-forward have three explicit opt-in paths
-    # (all remain fully supported):
-    #   - continue_on_fail="true" on the node  → engine converts FAIL→SUCCESS
-    #     before calling select_edge, so unconditional edges work normally
-    #   - runs_on=always / runs_on=failure on a DOWNSTREAM node  → the
-    #     downstream node's attribute opts that edge in for FAIL routing;
-    #     select_edge routes there and the engine's skip-gate decides execution
-    #   - condition="outcome=fail" edge  → matched in Step 1 above
-    if outcome.status != StageStatus.FAIL:
-        unconditional = [e for e in edges if not e.condition]
-        if unconditional:
-            return _best_by_weight_then_lexical(unconditional)
-    else:
-        # FAIL: only follow unconditional edges to nodes that explicitly opt in
-        # to failure routing (runs_on=always or runs_on=failure).  Default nodes
-        # (runs_on=success) are NOT reached — that is the fail-fast behavior.
-        fail_forward = [
-            e
-            for e in edges
-            if not e.condition
-            and _target_runs_on(e.to_node, graph) in ("always", "failure")
-        ]
-        if fail_forward:
-            return _best_by_weight_then_lexical(fail_forward)
+    # EXTENSIONS.md Sec16 REMOVED (2026-08-30, maintainer ruling, branch
+    # feat/extensions-rip-3): the runs_on=/continue_on_fail= fail-fast gate
+    # that used to live here (blocking unconditional-edge traversal on a
+    # FAIL outcome unless the target declared runs_on=always/failure) is
+    # deleted -- canonical Sec3.3 step 4 behavior is restored verbatim: the
+    # best unconditional edge is followed regardless of outcome status. A
+    # pipeline author who wants fail-fast routing uses the spec-intended
+    # pattern instead: an explicit `condition="outcome=fail"` edge (matched
+    # in Step 1 above), plus canonical Sec3.7's own no-matching-edge
+    # terminal failure when a FAIL node has no matching edge at all
+    # (ATX-11, unaffected by this removal). See MIGRATION.md.
+    unconditional = [e for e in edges if not e.condition]
+    if unconditional:
+        return _best_by_weight_then_lexical(unconditional)
 
-    # Spec §3.3 final step: RETURN NONE.
-    # Reached when:
-    #   (a) outcome is FAIL and no downstream node opts in via runs_on, or
-    #   (b) no unconditional edges exist and no conditional edge matched.
-    # The engine halts this branch with a FAIL outcome.
+    # Spec §3.3 final step: RETURN NONE (no unconditional edges exist and
+    # no conditional edge matched). The engine halts this branch with a
+    # FAIL outcome (or ATX-11's no_matching_edge terminal failure).
     return None
-
-
-def _target_runs_on(node_id: str, graph: Graph) -> str:
-    """Return the runs_on value of the target node (default 'success')."""
-    node = graph.nodes.get(node_id)
-    if node is None:
-        return "success"
-    raw = node.attrs.get("runs_on", "success") or "success"
-    return str(raw).strip().lower()
 
 
 def select_all_matching_edges(

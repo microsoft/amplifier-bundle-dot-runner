@@ -3,7 +3,11 @@ digraph parent_with_child {
 
     start     [shape=Mdiamond]
     pre_work  [shape=box, prompt="Do pre-work"]
-    review    [shape=folder, dot_file="child_pipeline.dot", runs_on=always]
+    // EXTENSIONS.md Sec16 REMOVED (2026-08-30): runs_on=always deleted --
+    // unconditional edges are now always followed regardless of outcome
+    // status (canonical Sec3.3 step 4), so this node needs no attribute
+    // to keep running after a possible pre_work failure.
+    review    [shape=folder, dot_file="child_pipeline.dot"]
     post_work [shape=box, prompt="Do post-work"]
     done      [shape=Msquare]
 
