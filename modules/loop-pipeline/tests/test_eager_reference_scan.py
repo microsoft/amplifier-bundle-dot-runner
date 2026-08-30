@@ -104,29 +104,29 @@ def test_extract_refs_double_dollar_ignored():
 
 @pytest.mark.asyncio
 async def test_failed_predecessor_causes_skipped_successor(tmp_path):
-    """Design assertion #1: when a predecessor fails, its successors are not reached.
+    """Design assertion #1: when a predecessor fails, its successor is SKIPPED.
 
     Fixture pipeline (placeholder names, no production names):
-      start → producer_a [outputs="resource.handle"] → consumer_b [tool_command="use ${resource.handle}"] → exit
+      start → producer_a → consumer_b [tool_command="use ${tool.output}"] → exit
 
-    producer_a fails (exit 1).  Under fail-fast semantics (spec §3.7), the engine
-    does not traverse the unconditional edge to consumer_b — consumer_b is absent
-    from node_outcomes, not merely SKIPPED.
-
-    Pipeline authors who want consumer_b to run on failure should use one of the
-    explicit opt-in mechanisms: runs_on=always / runs_on=failure on consumer_b,
-    or a condition="outcome=fail" edge from producer_a.
+    EXTENSIONS.md Sec16 REMOVED (feat/extensions-rip-3): the unconditional
+    producer_a -> consumer_b edge is now ALWAYS followed regardless of outcome
+    status (canonical Sec3.3 step 4 restored) — consumer_b IS reached, unlike
+    the former fail-fast-halts-here behavior this test used to assert. But the
+    engine's own inferred-output skip-propagation substrate (node_outputs.py's
+    HANDLER_INFERRED_OUTPUTS, unaffected by the Sec16/Sec17 removals) still
+    applies: consumer_b references ${tool.output}, a key a tool node
+    contributes on success and which is now in failed_outputs because
+    producer_a failed — so consumer_b is SKIPPED, not executed.
     """
     hooks = EventCapture()
     engine = _make_engine(
         """
         digraph {
             start [shape=Mdiamond]
-            producer_a [shape=parallelogram,
-                        tool_command="exit 1",
-                        outputs="resource.handle"]
+            producer_a [shape=parallelogram, tool_command="exit 1"]
             consumer_b [shape=parallelogram,
-                        tool_command="echo using ${resource.handle}"]
+                        tool_command="echo using ${tool.output}"]
             exit [shape=Msquare]
             start -> producer_a
             producer_a -> consumer_b
@@ -141,40 +141,39 @@ async def test_failed_predecessor_causes_skipped_successor(tmp_path):
     # producer_a must have failed
     assert engine.node_outcomes["producer_a"].status == StageStatus.FAIL
 
-    # consumer_b must NOT be in node_outcomes — fail-fast halts at producer_a
-    assert "consumer_b" not in engine.node_outcomes, (
-        "Under fail-fast semantics, consumer_b must not be reached "
-        f"(got status={engine.node_outcomes.get('consumer_b')})"
+    # consumer_b IS now reached (unconditional edges always followed) but
+    # SKIPPED by the still-kept inferred-output skip-propagation substrate.
+    assert "consumer_b" in engine.node_outcomes, (
+        "consumer_b must be reached -- unconditional edges are always "
+        "followed regardless of outcome status (Sec16 removal)"
+    )
+    assert engine.node_outcomes["consumer_b"].status == StageStatus.SKIPPED, (
+        "consumer_b must be SKIPPED -- it references producer_a's failed "
+        f"tool.output, got {engine.node_outcomes['consumer_b']}"
     )
 
-    # resource.handle must be in failed_outputs (populated when producer_a fails)
-    assert "resource.handle" in engine.failed_outputs
-    assert engine.failed_outputs["resource.handle"] == "producer_a"
+    # tool.output must be in failed_outputs (populated when producer_a fails)
+    assert "tool.output" in engine.failed_outputs
+    assert engine.failed_outputs["tool.output"] == "producer_a"
 
 
 @pytest.mark.asyncio
 async def test_skipped_node_emits_pipeline_node_skipped_event(tmp_path):
-    """Fail-fast behavior: FAIL halts the pipeline; downstream nodes are NOT reached.
+    """A predecessor's failure that causes a skip emits exactly one event.
 
-    Under fail-fast semantics (spec §3.7), after producer_a fails the engine does
-    not traverse the unconditional edge to consumer_b.  No PIPELINE_NODE_SKIPPED
-    events are emitted — consumer_b is absent from node_outcomes entirely.
-
-    Pipeline authors who need cleanup to run after failure should use
-    runs_on=always or runs_on=failure on the cleanup node, or add an explicit
-    condition="outcome=fail" edge from producer_a.
+    EXTENSIONS.md Sec16 REMOVED (feat/extensions-rip-3): the unconditional
+    producer_a -> consumer_b edge is now always followed, so consumer_b IS
+    visited. The still-kept inferred-output skip-propagation substrate then
+    skips it (it references producer_a's failed ${tool.output}), emitting
+    exactly one PIPELINE_NODE_SKIPPED event.
     """
     hooks = EventCapture()
     engine = _make_engine(
         """
         digraph {
             start [shape=Mdiamond]
-            producer_a [shape=parallelogram,
-                        tool_command="exit 1",
-                        outputs="resource.handle"]
-            consumer_b [shape=parallelogram,
-                        tool_command="echo ${resource.handle}",
-                        outputs="consumer.result"]
+            producer_a [shape=parallelogram, tool_command="exit 1"]
+            consumer_b [shape=parallelogram, tool_command="echo ${tool.output}"]
             exit [shape=Msquare]
             start -> producer_a -> consumer_b -> exit
         }
@@ -187,41 +186,40 @@ async def test_skipped_node_emits_pipeline_node_skipped_event(tmp_path):
     # producer_a failed
     assert engine.node_outcomes["producer_a"].status == StageStatus.FAIL
 
-    # consumer_b is NOT in node_outcomes — the engine halted at producer_a
-    assert "consumer_b" not in engine.node_outcomes, (
-        "Under fail-fast semantics consumer_b must not be reached; "
-        f"got {engine.node_outcomes.get('consumer_b')}"
+    # consumer_b IS reached and SKIPPED (not absent)
+    assert "consumer_b" in engine.node_outcomes
+    assert engine.node_outcomes["consumer_b"].status == StageStatus.SKIPPED, (
+        f"got {engine.node_outcomes['consumer_b']}"
     )
 
-    # No PIPELINE_NODE_SKIPPED events — consumer_b was never visited
+    # Exactly one PIPELINE_NODE_SKIPPED event, for consumer_b
     skipped_events = hooks.events_of_type(PIPELINE_NODE_SKIPPED)
-    assert len(skipped_events) == 0, (
-        f"Expected 0 PIPELINE_NODE_SKIPPED events under fail-fast, "
+    assert len(skipped_events) == 1, (
+        f"Expected exactly 1 PIPELINE_NODE_SKIPPED event, "
         f"got {len(skipped_events)}: {skipped_events}"
     )
+    assert skipped_events[0]["node_id"] == "consumer_b"
 
 
 @pytest.mark.asyncio
 async def test_skip_propagates_transitively(tmp_path):
-    """Fail-fast: A→B→C where A fails; the engine halts at A (not B or C).
+    """A→B→C where A fails: skip propagates transitively to B and C.
 
-    Under fail-fast semantics (spec §3.7), FAIL does not traverse unconditional
-    edges to default runs_on=success nodes.  The pipeline halts at node_a.
-    Neither node_b nor node_c is visited (both absent from node_outcomes).
-
-    To propagate execution past node_a failure, use condition="outcome=fail"
-    edges or runs_on=always / runs_on=failure on node_b.
+    EXTENSIONS.md Sec16 REMOVED (feat/extensions-rip-3): unconditional edges
+    are now always followed, so node_b and node_c ARE visited (not absent
+    from node_outcomes as this test used to assert). Both reference
+    ${tool.output} -- a key node_a (a tool node) would have produced on
+    success -- so both are SKIPPED by the still-kept inferred-output
+    skip-propagation substrate, transitively.
     """
     hooks = EventCapture()
     engine = _make_engine(
         """
         digraph {
             start [shape=Mdiamond]
-            node_a [shape=parallelogram, tool_command="exit 1",
-                    outputs="a.result"]
-            node_b [shape=parallelogram, tool_command="echo ${a.result}",
-                    outputs="b.result"]
-            node_c [shape=parallelogram, tool_command="echo ${b.result}"]
+            node_a [shape=parallelogram, tool_command="exit 1"]
+            node_b [shape=parallelogram, tool_command="echo ${tool.output}"]
+            node_c [shape=parallelogram, tool_command="echo ${tool.output}"]
             exit [shape=Msquare]
             start -> node_a -> node_b -> node_c -> exit
         }
@@ -233,24 +231,26 @@ async def test_skip_propagates_transitively(tmp_path):
 
     assert engine.node_outcomes["node_a"].status == StageStatus.FAIL
 
-    # Pipeline halted at node_a — node_b and node_c are NOT in node_outcomes
-    assert "node_b" not in engine.node_outcomes, (
-        f"node_b should not be reached under fail-fast, "
-        f"got {engine.node_outcomes.get('node_b')}"
+    # node_b and node_c are now reached AND skipped, transitively.
+    assert "node_b" in engine.node_outcomes
+    assert engine.node_outcomes["node_b"].status == StageStatus.SKIPPED, (
+        f"got {engine.node_outcomes['node_b']}"
     )
-    assert "node_c" not in engine.node_outcomes, (
-        f"node_c should not be reached under fail-fast, "
-        f"got {engine.node_outcomes.get('node_c')}"
+    assert "node_c" in engine.node_outcomes
+    assert engine.node_outcomes["node_c"].status == StageStatus.SKIPPED, (
+        f"got {engine.node_outcomes['node_c']}"
     )
 
-    # a.result is still in failed_outputs (populated when node_a fails)
-    assert "a.result" in engine.failed_outputs
+    # tool.output is in failed_outputs, attributed to the original producer
+    assert "tool.output" in engine.failed_outputs
+    assert engine.failed_outputs["tool.output"] == "node_a"
 
-    # No PIPELINE_NODE_SKIPPED events — no nodes were visited after node_a
+    # One PIPELINE_NODE_SKIPPED event per skipped node.
     skipped_events = hooks.events_of_type(PIPELINE_NODE_SKIPPED)
-    assert len(skipped_events) == 0, (
-        f"Expected 0 PIPELINE_NODE_SKIPPED events, got {len(skipped_events)}"
+    assert len(skipped_events) == 2, (
+        f"Expected 2 PIPELINE_NODE_SKIPPED events, got {len(skipped_events)}"
     )
+    assert {e["node_id"] for e in skipped_events} == {"node_b", "node_c"}
 
 
 @pytest.mark.asyncio
@@ -286,26 +286,26 @@ async def test_skip_not_triggered_for_unrelated_references(tmp_path):
 
 @pytest.mark.asyncio
 async def test_handler_not_invoked_on_skip(tmp_path):
-    """Fail-fast: when a predecessor fails, its successor's handler is NOT invoked.
+    """When a node is skipped (predecessor-failed reference), its handler is NOT invoked.
 
-    consumer_b references ${resource.handle} (from producer_a which fails).
-    Under fail-fast semantics (spec §3.7), the engine halts at producer_a and
-    never visits consumer_b.  consumer_b's handler is therefore NOT invoked —
-    tool.last_line will NOT be "ran_marker".
+    consumer_b references ${tool.output} (which producer_a, a failed tool
+    node, would have produced). EXTENSIONS.md Sec16 REMOVED
+    (feat/extensions-rip-3): consumer_b IS now reached (unconditional edges
+    always followed) but the still-kept inferred-output skip-propagation
+    substrate marks it SKIPPED before its handler ever runs -- "ran_marker"
+    is never written.
 
-    This verifies the behavioral guarantee: handlers of unreachable successors
-    are never invoked, regardless of whether the engine halts (fail-fast) or
-    skips (legacy behavior).
+    This verifies the behavioral guarantee: a SKIPPED node's handler is
+    never invoked.
     """
     hooks = EventCapture()
     engine = _make_engine(
         """
         digraph {
             start [shape=Mdiamond]
-            producer_a [shape=parallelogram, tool_command="exit 1",
-                        outputs="resource.handle"]
+            producer_a [shape=parallelogram, tool_command="exit 1"]
             consumer_b [shape=parallelogram,
-                        tool_command="echo using ${resource.handle}; echo ran_marker"]
+                        tool_command="echo using ${tool.output}; echo ran_marker"]
             exit [shape=Msquare]
             start -> producer_a -> consumer_b -> exit
         }
@@ -315,10 +315,10 @@ async def test_handler_not_invoked_on_skip(tmp_path):
     )
     await engine.run()
 
-    # Under fail-fast, consumer_b is never reached — not in node_outcomes
-    assert "consumer_b" not in engine.node_outcomes, (
-        f"consumer_b should not be in node_outcomes under fail-fast, "
-        f"got {engine.node_outcomes.get('consumer_b')}"
+    # consumer_b IS reached and SKIPPED (not absent).
+    assert "consumer_b" in engine.node_outcomes
+    assert engine.node_outcomes["consumer_b"].status == StageStatus.SKIPPED, (
+        f"got {engine.node_outcomes['consumer_b']}"
     )
     # Core guarantee: handler was NOT invoked — "ran_marker" was not written
     assert engine.context.get("tool.last_line") != "ran_marker", (

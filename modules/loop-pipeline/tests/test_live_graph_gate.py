@@ -48,8 +48,13 @@ PROVENANCE
 ----------
 Adapted from the harness used to produce the live-run evidence for the
 epic#371 observability-trio PR (historical verification artifact, not
-re-derived from memory). Five claims are covered, each pinned to a specific,
-previously-regressed behavior at the engine/handler-dispatch boundary:
+re-derived from memory). Originally five claims; claims 3 and 5 covered the
+``continue_on_fail=`` FAIL->SUCCESS override, deleted outright by
+EXTENSIONS.md Sec16 REMOVED (2026-08-30, feat/extensions-rip-3, see
+MIGRATION.md) -- there is no replacement behavior left to pin, so those two
+claims and their fixtures are removed rather than reworded. The three
+claims below remain, each still pinned to a specific, previously-regressed
+behavior at the engine/handler-dispatch boundary:
 
   1. A ``shape=component`` parallel fan-out emits each branch node exactly
      once (not twice) as ``pipeline:node_start`` / ``pipeline:node_complete``,
@@ -57,18 +62,9 @@ previously-regressed behavior at the engine/handler-dispatch boundary:
   2. A retrying node's real attempt count (consumed by the real retry
      ladder in ``retry.py``) survives the ``auto_status`` SKIPPED->SUCCESS
      override.
-  3. A retrying node's real attempt count AND its structured
-     ``failed_step`` diagnostic both survive the ``continue_on_fail``
-     FAIL->SUCCESS override, simultaneously, on the same event.
   4. A manager-loop child engine's events (a second, independently
      constructed ``PipelineEngine`` instance) reach the PARENT hooks event
      stream, rather than being silently dropped.
-  5. A bare, unquoted ``continue_on_fail=true`` (coerced to Python ``bool``
-     by the DOT parser, not the string ``"true"``) still overrides a FAIL
-     outcome to SUCCESS end-to-end. Regression coverage for the
-     resolve_bool_attr() consolidation (issue #389): prior to that fix,
-     the engine's strict ``== "true"`` string comparison silently never
-     matched a bare/unquoted boolean attribute.
 """
 
 from __future__ import annotations
@@ -139,52 +135,6 @@ digraph Claim2AutoStatus {
     exit      [shape=Msquare, label="Exit"]
 
     start -> auto_node -> exit
-}
-"""
-
-CLAIM3_CONTINUE_ON_FAIL_DOT = """
-// Proves attempt_count AND failed_step survive continue_on_fail.
-// fail_node has continue_on_fail=true (bare, unquoted -- the DOT parser
-// coerces this to Python bool True; see resolve_bool_attr() in graph.py,
-// issue #389) and max_retries=2 (3 max attempts). The deterministic
-// backend returns RETRY on attempts 1-2 and a genuine FAIL with a
-// structured failed_step payload on attempt 3. continue_on_fail then
-// overrides FAIL->SUCCESS for routing, but must NOT erase the real
-// attempt count (3) or the failed_step diagnostic.
-digraph Claim3ContinueOnFail {
-    graph [goal="Prove attempt_count and failed_step survive continue_on_fail"]
-    rankdir=TB
-
-    start     [shape=Mdiamond, label="Start"]
-    fail_node [shape=box, label="Fail Node", prompt="do work",
-               continue_on_fail=true, max_retries=2]
-    exit      [shape=Msquare, label="Exit"]
-
-    start -> fail_node -> exit
-}
-"""
-
-CLAIM5_CONTINUE_ON_FAIL_UNQUOTED_DOT = """
-// Proves a bare, unquoted continue_on_fail=true overrides FAIL->SUCCESS
-// end-to-end (issue #389 regression coverage). continue_on_fail=true
-// (unquoted) is coerced by the DOT parser to Python bool True, not the
-// string "true". Prior to the resolve_bool_attr() consolidation, the
-// engine's fail-closed comparison was `== "true"` (a strict string
-// compare), so this exact bare form silently never overrode the failure --
-// the node's FAIL would have surfaced unchanged and the pipeline would
-// have failed overall. single_attempt_node has no max_retries, so this is
-// a minimal, single-call reproduction of the reported bug (distinct from
-// Claim 3's multi-retry attempt_count/failed_step scenario above).
-digraph Claim5ContinueOnFailUnquoted {
-    graph [goal="Prove unquoted continue_on_fail=true overrides FAIL to SUCCESS"]
-    rankdir=TB
-
-    start               [shape=Mdiamond, label="Start"]
-    single_attempt_node [shape=box, label="Single Attempt Node", prompt="do work",
-                         continue_on_fail=true]
-    exit                [shape=Msquare, label="Exit"]
-
-    start -> single_attempt_node -> exit
 }
 """
 
@@ -384,58 +334,6 @@ async def test_attempt_count_survives_auto_status_promotion(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Claim 3: attempt_count AND failed_step survive continue_on_fail
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_attempt_count_and_failed_step_survive_continue_on_fail(tmp_path):
-    expected_failed_step = {
-        "command": "false",
-        "exit_code": 1,
-        "duration_s": 0.01,
-        "stdout_tail": "",
-        "stderr_tail": "simulated deterministic tool failure (live-graph gate)",
-    }
-
-    def _final():
-        return Outcome(
-            status=StageStatus.FAIL,
-            failure_reason="tool exited non-zero (simulated, deterministic)",
-            failed_step=dict(expected_failed_step),
-        )
-
-    backend = StatefulRetryBackend(retries_before_final=2, final_outcome_factory=_final)
-
-    outcome, engine, hooks = await _run_graph(
-        CLAIM3_CONTINUE_ON_FAIL_DOT, str(tmp_path / "claim3"), backend=backend
-    )
-
-    # continue_on_fail overrides FAIL -> SUCCESS for routing; the pipeline
-    # completes overall (routing proceeds past fail_node to exit normally).
-    assert outcome.status == StageStatus.SUCCESS
-    assert backend.calls == 3
-
-    node_outcome = engine.node_outcomes["fail_node"]
-    assert node_outcome.attempt_count == 3
-    assert node_outcome.failed_step == expected_failed_step
-
-    completes = [
-        e
-        for e in hooks.of_type("pipeline:node_complete")
-        if e["data"]["node_id"] == "fail_node"
-    ]
-    # Exactly one node_complete for fail_node: status success (override
-    # took effect), attempt 3 (survived), and the full failed_step dict
-    # intact (survived) -- all simultaneously, on the same event.
-    assert len(completes) == 1
-    data = completes[0]["data"]
-    assert data.get("status") == "success"
-    assert data.get("attempt") == 3
-    assert data.get("failed_step") == expected_failed_step
-
-
-# ---------------------------------------------------------------------------
 # Claim 4: manager-loop child engine is observable
 # ---------------------------------------------------------------------------
 
@@ -482,33 +380,3 @@ async def test_manager_loop_child_engine_events_reach_parent_stream(tmp_path):
     ]
     assert len(manager_completes) == 1
     assert manager_completes[0]["data"].get("status") == "success"
-
-
-# ---------------------------------------------------------------------------
-# Claim 5: bare, unquoted continue_on_fail=true overrides FAIL to SUCCESS
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_unquoted_continue_on_fail_overrides_fail_to_success(tmp_path):
-    class AlwaysFailBackend:
-        async def run(self, node, prompt, context, incoming_edge=None, graph=None):
-            return Outcome(status=StageStatus.FAIL, failure_reason="simulated failure")
-
-    outcome, engine, _hooks = await _run_graph(
-        CLAIM5_CONTINUE_ON_FAIL_UNQUOTED_DOT,
-        str(tmp_path / "claim5"),
-        backend=AlwaysFailBackend(),
-    )
-
-    # continue_on_fail=true (bare/unquoted, coerced to Python bool by the
-    # real parser) must override FAIL -> SUCCESS just like the quoted form
-    # in Claim 3 -- this is the exact scenario reported in issue #389.
-    assert engine.node_outcomes["single_attempt_node"].status == StageStatus.SUCCESS, (
-        f"Expected single_attempt_node outcome to be SUCCESS after unquoted "
-        f"continue_on_fail=true override, got "
-        f"{engine.node_outcomes['single_attempt_node'].status!r}"
-    )
-    assert outcome.status == StageStatus.SUCCESS, (
-        f"Expected overall pipeline SUCCESS, got {outcome.status!r}"
-    )
