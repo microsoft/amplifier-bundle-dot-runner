@@ -3471,7 +3471,26 @@ def _check_removed_extension_attrs(graph: Graph, diags: list[Diagnostic]) -> Non
     for node in graph.nodes.values():
         if not node.attrs:
             continue
+        # FOLDER-EXPORT SCOPE (consumer census, amplifier-resolver-dot-graph
+        # PR #140): `outputs=` on a `shape=folder` / `type="pipeline"`
+        # sub-pipeline node is NOT the removed Sec17 node-I/O contract at
+        # all -- it is a separate, still-fully-supported mechanism
+        # (handlers/pipeline.py's "(11b2) Merge declared outputs from child
+        # context back to parent") that reads the SAME attribute NAME for an
+        # unrelated purpose, and the engine never stopped reading it there.
+        # Keying on the attribute name alone (the pre-fix behavior) made
+        # every legitimate folder-export node a false positive. This
+        # exclusion is scoped to `outputs=` ONLY, and ONLY for folder/
+        # pipeline-shaped nodes -- `requires=`/`runs_on=`/`continue_on_fail=`/
+        # `feedback_from=` remain ERRORs on every node shape, including
+        # folder/pipeline ones (those really are gone everywhere), and a
+        # `outputs=` on any OTHER node shape (the actual removed Sec17
+        # usage) still ERRORs exactly as before. Same shape test already
+        # used by TOPO-010 for the analogous folder/pipeline distinction.
+        is_folder_export = node.shape == "folder" or node.type == "pipeline"
         for attr_name, pattern in _REMOVED_EXTENSION_ATTRS.items():
+            if attr_name == "outputs" and is_folder_export:
+                continue
             if attr_name in node.attrs:
                 diags.append(
                     Diagnostic(

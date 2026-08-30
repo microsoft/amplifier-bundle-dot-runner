@@ -1,8 +1,8 @@
 // ==============================================================================
 // RE-VENDORED INTO amplifier-bundle-dot-runner (Lane 3 -- issue -> attractor
 // -> PR pipeline graduated onto the engine's own repo). Source:
-// github.com/microsoft/amplifier-bundle-attractor @ e82a0572f5fb8c510ed64ba4270719256f8cb13e
-// (path: .github/capsule-pipeline/feature-capsule.dot), that repo's main tip at re-sync time (2026-08-30).
+// github.com/microsoft/amplifier-bundle-attractor @ 26d6b2c (PR #343)
+// (path: .github/capsule-pipeline/feature-capsule.dot), that repo's PR #343 head at re-sync time (2026-08-30, ba9 lane-honesty wave -- pending merge; re-sync again after merge if the SHA moves).
 // Everything below this box -- INCLUDING that source file's own
 // provenance header, if it carries one -- is byte-identical to the
 // source; do not hand-edit it. Re-sync by re-copying the source file
@@ -343,10 +343,10 @@
 digraph FeatureCapsulePipeline {
     graph [
         goal="Given a small feature request whose maintainer-authored acceptance criteria arrive authenticated WITH the issue, produce a work capsule (DEFINITION.md + DEFINITION.verify.sh) that faithfully hardens those criteria into an executable gate writing a complete per-criterion census, machine-proven articulate-RED at the pinned base SHA (a harness proof, not the epistemic anchor), non-vacuous in the feature sense (no stub greens it and no probe is inert), judged criteria-faithful by one critic, and authored in upstream-legal vocabulary -- a definition of done a human can approve in minutes.",
-        params="issue_file, criteria_file, target_dir, base_sha, later_commit, uplift_dir, capsule_out, max_iterations, gate_time_ceiling",
+        params="issue_file, criteria_file, target_dir, base_sha, later_commit, uplift_dir, capsule_out, max_iterations, gate_time_ceiling, max_duration",
         default_max_retries=2,
         default_fidelity="compact",
-        max_pipeline_duration="12000s",
+        max_pipeline_duration="$max_duration",
         retry_target="author"
     ]
 

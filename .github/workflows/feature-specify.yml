@@ -548,6 +548,7 @@ jobs:
           COMMENT="$RUNNER_TEMP/capsule-run/comment.md"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           KIND="${{ steps.classify.outputs.kind }}"
+          DURATION_HINT="${{ steps.classify.outputs.duration_hint }}"
 
           if [ "$KIND" = "capsule" ] && [ -z "${PR_URL:-}" ]; then
             KIND="capsule_blocked"
