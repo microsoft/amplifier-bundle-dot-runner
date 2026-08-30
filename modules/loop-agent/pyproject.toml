@@ -30,22 +30,27 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.uv.sources]
-# NOTE: no local `path` override for amplifier-unified-llm-client here
-# (there used to be one). worker-parity-kit (below) transitively depends on
-# amplifier-module-loop-pipeline -> amplifier-unified-llm-client, both
-# declared (in amplifier-bundle-dot-runner, the kit's home repo) via git+
-# URLs pointing at that same repo. `[tool.uv.sources]` entries are honored
-# only for a package's OWN direct dependency edge, not for a same-named
-# package required transitively by a different project -- so a local path
-# override here would only redirect loop-agent's own edge, leaving the
-# kit's transitive edge on the git+ URL, and uv refuses to resolve one
-# package name to two different sources. Letting loop-agent's own
-# unified-llm-client dependency resolve via its already-declared git+ URL
-# (unmodified, no override) makes it match the kit's transitive chain
-# exactly. This has no effect on what code loop-agent's OWN tests actually
-# import: `pythonpath` below still points `../unified-llm-client` first, so
-# the in-repo source tree is what's imported regardless of which copy `uv
-# sync` resolves/installs into this module's own venv.
+# issue #338 point 2: loop-agent is now a root path-dependency of
+# amplifier-dot-runner (see root pyproject.toml). The root graph ALSO
+# reaches amplifier-unified-llm-client via amplifier-module-pipeline-runner
+# -> amplifier-module-loop-pipeline, whose own [tool.uv.sources] redirects
+# that edge to a local path. Leaving loop-agent's own edge on its
+# previously-unmodified git+ URL gave uv two different SHAPES for the same
+# package identity within the ROOT resolution ("Requirements contain
+# conflicting URLs for package amplifier-unified-llm-client"). Redirecting
+# it here too resolves the root graph.
+#
+# Trade-off (accepted -- see issue #338 fix notes): this module's OWN
+# dev-inclusive `uv sync`/`uv run pytest` resolution has historically relied
+# on this edge staying UNMODIFIED so it matches worker-parity-kit's (a
+# dev-only dependency, below) own separately-fetched transitive chain onto
+# the same package. `uv tool install` -- the root production path this
+# unblocks -- never resolves dev dependency-groups, so that historical
+# constraint does not apply there. For THIS module's own dev-group
+# resolution, `pythonpath` below still points `../unified-llm-client` first
+# regardless of which copy `uv sync` installs, so what loop-agent's own
+# tests actually IMPORT is unaffected either way.
+amplifier-unified-llm-client = { path = "../unified-llm-client" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_module_loop_agent"]
