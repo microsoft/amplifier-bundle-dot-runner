@@ -138,7 +138,7 @@ def interrupted_run(workspace):
     dot, work, logs = workspace("interrupted", blocked=True)
 
     proc = subprocess.Popen(
-        [*CLI, "run", str(dot), "--logs-root", str(logs), "--cwd", str(work)],
+        [*CLI, "run", str(dot), "--logs-root", str(logs), "--cwd", str(work), "--worker", "llm-direct"],
         env=_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -170,7 +170,7 @@ def interrupted_run(workspace):
 def control_run(workspace):
     """An uninterrupted run of the same graph bytes, executed at gate runtime."""
     dot, work, logs = workspace("control", blocked=False)
-    result = _cli("run", str(dot), "--logs-root", str(logs), "--cwd", str(work))
+    result = _cli("run", str(dot), "--logs-root", str(logs), "--cwd", str(work), "--worker", "llm-direct")
     assert result.returncode == 0, result.stderr
     return dot, work, logs
 
@@ -181,7 +181,7 @@ def test_ac1_resumed_run_completes_and_matches_the_control(
     dot, work, logs, interrupted_trace, pre_checkpoint = interrupted_run
     _, control_work, control_logs = control_run
 
-    resumed = _cli("resume", str(logs), "--cwd", str(work))
+    resumed = _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct")
     assert resumed.returncode == 0, f"{resumed.stdout}\n{resumed.stderr}"
     assert '"status": "success"' in resumed.stdout
 
@@ -241,7 +241,7 @@ def test_ac2_completed_nodes_are_not_re_executed(interrupted_run):
     assert len(a_before) == 1
     assert len(b_before) == 2, "b consumed one retry before succeeding"
 
-    resumed = _cli("resume", str(logs), "--cwd", str(work))
+    resumed = _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct")
     assert resumed.returncode == 0, resumed.stderr
 
     # The handlers' own side effects are the oracle: they did not run again.
@@ -267,7 +267,7 @@ def test_ac2_restored_context_reaches_and_affects_a_post_resume_node(
     assert pre_checkpoint["context"]["context.b_value"] == "beta-42"
     assert not (work / "d_out.txt").exists()
 
-    resumed = _cli("resume", str(logs), "--cwd", str(work))
+    resumed = _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct")
     assert resumed.returncode == 0, resumed.stderr
 
     # d ran only in the resumed process, and its output is the restored value —
@@ -282,7 +282,7 @@ def test_ac2_retry_counters_restore_rather_than_reset(interrupted_run):
     assert pre_checkpoint["node_retries"]["b"] == 1
     pre_counts = pre_checkpoint["engine_state"]["node_execution_counts"]
 
-    resumed = _cli("resume", str(logs), "--cwd", str(work))
+    resumed = _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct")
     assert resumed.returncode == 0, resumed.stderr
 
     post = json.loads((logs / "checkpoint.json").read_text())
@@ -300,7 +300,7 @@ def test_resume_records_itself_and_finishes_the_run(interrupted_run):
     dot, work, logs, _, _ = interrupted_run
     manifest_before = json.loads((logs / "manifest.json").read_text())
 
-    assert _cli("resume", str(logs), "--cwd", str(work)).returncode == 0
+    assert _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct").returncode == 0
 
     manifest = json.loads((logs / "manifest.json").read_text())
     assert manifest["start_time"] == manifest_before["start_time"]
@@ -313,10 +313,10 @@ def test_resume_records_itself_and_finishes_the_run(interrupted_run):
 def test_ac6_resuming_a_finished_run_is_refused(interrupted_run):
     """The liveness rung, proven against a genuinely finished run."""
     dot, work, logs, _, _ = interrupted_run
-    assert _cli("resume", str(logs), "--cwd", str(work)).returncode == 0
+    assert _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct").returncode == 0
 
     a_before = _lines(work / "a_runs.log")
-    again = _cli("resume", str(logs), "--cwd", str(work))
+    again = _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct")
     assert again.returncode != 0
     assert "already completed" in again.stderr
     # Nothing re-ran: not a silent restart from the start node.

@@ -112,7 +112,23 @@ def _run_cmd_run(monkeypatch, tmp_path, on_human_gate: str, *, patch_run_pipelin
 
     parser = cli.build_parser()
     args = parser.parse_args(
-        ["run", dot_path, "--on-human-gate", on_human_gate, "--cwd", str(tmp_path)]
+        [
+            "run",
+            dot_path,
+            "--on-human-gate",
+            on_human_gate,
+            "--cwd",
+            str(tmp_path),
+            # WAVE 7 (feat/fail-loud-worker-names): default-worker resolution
+            # now fails loud (SystemExit) rather than silently degrading to
+            # llm-direct when amplifier-agent isn't importable -- this test
+            # venv (modules/pipeline-runner's own) never installs the agent
+            # adapter. These tests care about interviewer wiring, not worker
+            # selection, so pin the worker explicitly instead of relying on
+            # the now-removed implicit fallback.
+            "--worker",
+            "llm-direct",
+        ]
     )
     rc = cli.cmd_run(args)
     return rc, captured

@@ -107,7 +107,7 @@ def test_cmd_run_passes_the_dot_files_own_directory(monkeypatch, tmp_path):
     captured = _capture_run_pipeline(monkeypatch, tmp_path)
 
     args = cli.build_parser().parse_args(
-        ["run", str(dot_file), "--cwd", str(workspace)]
+        ["run", str(dot_file), "--cwd", str(workspace), "--worker", "llm-direct"]
     )
     assert cli.cmd_run(args) == 0
 
@@ -126,7 +126,7 @@ def test_cmd_run_resolves_a_relative_dot_path(monkeypatch, tmp_path):
 
     monkeypatch.chdir(tmp_path)
     args = cli.build_parser().parse_args(
-        ["run", "package/pipeline.dot", "--cwd", str(tmp_path)]
+        ["run", "package/pipeline.dot", "--cwd", str(tmp_path), "--worker", "llm-direct"]
     )
     assert cli.cmd_run(args) == 0
 
@@ -139,7 +139,7 @@ def test_dot_source_passes_no_source_dir(monkeypatch, tmp_path):
     captured = _capture_run_pipeline(monkeypatch, tmp_path)
 
     args = cli.build_parser().parse_args(
-        ["run", "--dot-source", _DOT, "--cwd", str(tmp_path)]
+        ["run", "--dot-source", _DOT, "--cwd", str(tmp_path), "--worker", "llm-direct"]
     )
     assert cli.cmd_run(args) == 0
 
@@ -228,7 +228,7 @@ def test_cmd_run_e2e_resolves_and_executes_relative_child(monkeypatch, tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
 
     args = cli.build_parser().parse_args(
-        ["run", str(parent_dot), "--cwd", str(workspace)]
+        ["run", str(parent_dot), "--cwd", str(workspace), "--worker", "llm-direct"]
     )
     assert cli.cmd_run(args) == 0
 

@@ -87,14 +87,14 @@ def test_resume_is_a_documented_subcommand():
 
 
 def test_missing_run_directory(tmp_path, capsys):
-    rc = cli.main(["resume", str(tmp_path / "nope")])
+    rc = cli.main(["resume", str(tmp_path / "nope"), "--worker", "llm-direct"])
     assert rc == 1
     assert "run directory not found" in capsys.readouterr().err
 
 
 def test_missing_checkpoint(tmp_path, capsys):
     run_dir = _run_dir(tmp_path)
-    rc = cli.main(["resume", str(run_dir)])
+    rc = cli.main(["resume", str(run_dir), "--worker", "llm-direct"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "nothing to resume" in err
@@ -106,7 +106,7 @@ def test_missing_checkpoint(tmp_path, capsys):
 def test_corrupted_checkpoint(tmp_path, capsys):
     run_dir = _run_dir(tmp_path)
     (run_dir / "checkpoint.json").write_text('{"current_node": "a", "compl')
-    rc = cli.main(["resume", str(run_dir)])
+    rc = cli.main(["resume", str(run_dir), "--worker", "llm-direct"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "corrupted checkpoint" in err
@@ -117,7 +117,7 @@ def test_v1_checkpoint_is_refused(tmp_path, capsys):
     payload = _checkpoint()
     del payload["schema_version"]
     run_dir = _run_dir(tmp_path, payload)
-    rc = cli.main(["resume", str(run_dir)])
+    rc = cli.main(["resume", str(run_dir), "--worker", "llm-direct"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "not resumable" in err
@@ -126,7 +126,7 @@ def test_v1_checkpoint_is_refused(tmp_path, capsys):
 
 def test_already_completed_run_is_refused(tmp_path, capsys):
     run_dir = _run_dir(tmp_path, _checkpoint(run_state="completed"))
-    rc = cli.main(["resume", str(run_dir)])
+    rc = cli.main(["resume", str(run_dir), "--worker", "llm-direct"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "already completed" in err
@@ -140,7 +140,7 @@ def test_graph_mismatch_is_refused(tmp_path, capsys):
     run_dir = _run_dir(tmp_path, _checkpoint())
     other = tmp_path / "other.dot"
     other.write_text(DOT.replace("echo a", "echo CHANGED"))
-    rc = cli.main(["resume", str(run_dir), "--dot-file", str(other)])
+    rc = cli.main(["resume", str(run_dir), "--dot-file", str(other), "--worker", "llm-direct"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "different graph" in err
@@ -150,7 +150,7 @@ def test_graph_mismatch_is_refused(tmp_path, capsys):
 def test_current_node_not_in_graph_is_refused(tmp_path, capsys):
     """AC-6's named case, through the CLI."""
     run_dir = _run_dir(tmp_path, _checkpoint(current_node="ghost"))
-    rc = cli.main(["resume", str(run_dir)])
+    rc = cli.main(["resume", str(run_dir), "--worker", "llm-direct"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "'ghost'" in err
@@ -161,7 +161,7 @@ def test_current_node_not_in_graph_is_refused(tmp_path, capsys):
 
 def test_param_colliding_with_restored_context_is_refused(tmp_path, capsys):
     run_dir = _run_dir(tmp_path, _checkpoint())
-    rc = cli.main(["resume", str(run_dir), "--param", "outcome=fail"])
+    rc = cli.main(["resume", str(run_dir), "--param", "outcome=fail", "--worker", "llm-direct"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "collide with context restored from the checkpoint" in err

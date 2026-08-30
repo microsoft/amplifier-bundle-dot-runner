@@ -1,5 +1,5 @@
 """Attack #2 (spec-repair verification): per-node ``llm_provider``/``llm_model``
-flow through the ``--worker loop-agent`` synthesis path, end to end.
+flow through the ``--worker coding-agent`` synthesis path, end to end.
 
 THE HISTORICAL BUG THIS GUARDS (documented across the codebase as "Bug B" /
 the "multi-lens silent-single-provider bug", see ``amplifier_module_loop_
@@ -13,7 +13,7 @@ provider regardless of what it declared -- defeating dual-family critique
 without any visible error.
 
 This test proves the FULL, REAL chain survives WAVE 5's worker-names-not-
-bundles repair (Part 2), where the bundle a ``--worker loop-agent`` run
+bundles repair (Part 2), where the bundle a ``--worker coding-agent`` run
 spawns into is no longer authored by a human -- it is SYNTHESIZED by
 ``default_worker._synthesize_agent_bundle_yaml``, and that synthesized
 bundle bakes in a STATIC ``llm_provider: anthropic`` default on the agent
@@ -23,7 +23,7 @@ override that static default, this exact regression would silently return
 
 Chain proven, using REAL production code at every link except the actual
 network call:
-  1. ``default_worker._synthesize_agent_bundle_yaml("loop-agent")`` -- the
+  1. ``default_worker._synthesize_agent_bundle_yaml("coding-agent")`` -- the
      REAL synthesis, parsed by REAL ``amplifier_foundation.load_bundle``.
   2. ``amplifier_module_loop_pipeline.backend.AmplifierBackend.run()`` --
      the REAL node -> ``orchestrator_config`` construction (reads
@@ -78,8 +78,8 @@ class _RealMergeSpawnCoordinator:
     lenient. Records the FINAL merged orchestrator config per call for
     assertion -- this is the exact value that would reach the spawned
     child's ``mount_plan["orchestrator"]["config"]``, which is what
-    ``loop-agent``'s own ``mount()`` hands to ``AgentOrchestrator.__init__``
-    as ``config`` (proven by loop-agent's own
+    ``coding-agent``'s own ``mount()`` hands to ``AgentOrchestrator.__init__``
+    as ``config`` (proven by coding-agent's own
     ``test_node_llm_provider_selects_completion_and_base``).
     """
 
@@ -142,7 +142,7 @@ def _make_context():
 @pytest.mark.asyncio
 async def test_per_node_llm_provider_survives_synthesized_bundle_static_default():
     """THE regression proof: two sibling nodes on the SAME synthesized
-    ``--worker loop-agent`` bundle, declaring DIFFERENT ``llm_provider``
+    ``--worker coding-agent`` bundle, declaring DIFFERENT ``llm_provider``
     values, must reach the spawn boundary with THEIR OWN provider -- never
     both collapsing onto the bundle's static ``llm_provider: anthropic``
     default (the historical multi-lens silent-single-provider bug, now via
@@ -150,7 +150,7 @@ async def test_per_node_llm_provider_survives_synthesized_bundle_static_default(
     """
     from amplifier_module_loop_pipeline.backend import AmplifierBackend
 
-    agent_entry = await _load_synthesized_agent_bundle("loop-agent")
+    agent_entry = await _load_synthesized_agent_bundle("coding-agent")
     # Sanity: the synthesized bundle really does bake in a static default
     # that differs from at least one of the two nodes below -- otherwise
     # this test could pass vacuously.
@@ -197,7 +197,7 @@ async def test_per_node_llm_model_flows_as_provider_preference_not_orchestrator_
     """
     from amplifier_module_loop_pipeline.backend import AmplifierBackend
 
-    agent_entry = await _load_synthesized_agent_bundle("loop-agent")
+    agent_entry = await _load_synthesized_agent_bundle("coding-agent")
     coordinator = _RealMergeSpawnCoordinator(agent_entry)
     backend = AmplifierBackend(
         coordinator=coordinator,
