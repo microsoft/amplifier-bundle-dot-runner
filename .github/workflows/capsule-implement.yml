@@ -46,6 +46,18 @@ on:
       capsule_path:
         description: "Repo-relative path to a capsule .md file to implement (e.g. .github/capsule-pipeline/proposals/issue-144/some-defect.md)"
         required: true
+      max_duration:
+        description: >-
+          Graph-level wall-clock fuse passed to task-runner.dot as
+          --param max_duration=<value> (e.g. "14400s"). Declarative-only --
+          no shell default, so this input always carries one (14400s, this
+          graph's historical fuse) and the workflow always forwards it.
+          HONESTY: GitHub-hosted runners hard-cap a job at 6h (360min) -- a
+          fuse much above 19800s is UNREACHABLE there regardless of this
+          input; raising it meaningfully requires a self-hosted runner.
+          Seeding is the real convergence lever, not a bigger fuse.
+        required: false
+        default: "14400s"
 
 permissions:
   contents: write
@@ -62,6 +74,8 @@ concurrency:
 
 jobs:
   implement:
+    env:
+      MAX_DURATION: ${{ inputs.max_duration || '14400s' }}
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     name: "Run task-runner.dot (implement stage)"
     runs-on: ubuntu-latest
@@ -323,7 +337,9 @@ jobs:
             --on-human-gate auto-approve \
             --param task_file="$GITHUB_WORKSPACE/${{ steps.locate.outputs.capsule_md }}" \
             --param target_dir="$GITHUB_WORKSPACE" \
-            --param max_iterations=6
+            --param max_iterations=6 \
+            --param max_duration="$MAX_DURATION" \
+            2>&1 | tee "$RUNNER_TEMP/capsule-implement/logs/engine-stdout.log"
           echo "attractor_exit=$?" >> "$GITHUB_OUTPUT"
 
       - name: "Classify the run: exit code AND the pipeline's own recorded outcome"
@@ -361,11 +377,31 @@ jobs:
             echo "::warning::ENGINE MISREPORT (exit code vs the pipeline's own recorded outcome): the run reported exit 0 while its checkpoint.json recorded outcome='fail' ($CHECKPOINT). The exit code is NOT trusted here -- this run is classified NON-CONVERGED and routed to the work-in-progress path."
           fi
 
+          DURATION_CEILING=false
+          DURATION_HINT="no further detail available"
+          if [ "$CONVERGED" != "true" ] && \
+             grep -q "exceeded max duration" "$RUNNER_TEMP/capsule-implement/logs/engine-stdout.log" 2>/dev/null; then
+            # CLASSIFICATION HONESTY (ba9): the engine's own wall-clock fuse
+            # tripped mid-work -- never "did not converge within its
+            # iteration budget"; no postmortem is possible on this path (the
+            # fuse-exit bypasses the engine's recover/postmortem wall -- a
+            # known, separate engine gap, not fixed here).
+            DURATION_CEILING=true
+            iters="$(python3 -c \"import json,sys\nd=json.load(open(sys.argv[1])) if __import__('os').path.exists(sys.argv[1]) else {}\nprint((d.get('engine_state') or {}).get('iteration_count',''))\" \"$CHECKPOINT\" 2>/dev/null || true)"
+            if [ -n "$iters" ]; then
+              DURATION_HINT="${iters} iteration(s) completed against a starting budget of 6 (max_iterations=6) when the wall-clock fuse (--param max_duration=\"${MAX_DURATION:-14400s}\") tripped mid-work."
+            else
+              DURATION_HINT="the wall-clock fuse (--param max_duration=\"${MAX_DURATION:-14400s}\") tripped mid-work; the per-iteration count was not cheaply readable from checkpoint.json for this run, see the uploaded evidence."
+            fi
+          fi
+
           {
             echo "recorded_outcome=$RECORDED"
             echo "converged=$CONVERGED"
+            echo "duration_ceiling=$DURATION_CEILING"
+            echo "duration_hint=$DURATION_HINT"
           } >> "$GITHUB_OUTPUT"
-          echo "classification: attractor_exit='$EXIT' recorded_outcome='$RECORDED' converged=$CONVERGED"
+          echo "classification: attractor_exit='$EXIT' recorded_outcome='$RECORDED' converged=$CONVERGED duration_ceiling=$DURATION_CEILING"
 
       - name: Scrub secrets from run evidence
         if: always() && steps.locate.outputs.skip != 'true'
@@ -585,6 +621,10 @@ jobs:
         if: always() && steps.locate.outputs.skip != 'true'
         run: |
           set -euo pipefail
+          if [ "${{ steps.classify.outputs.duration_ceiling }}" = "true" ]; then
+            echo "::error::task-runner.dot hit its wall-clock ceiling mid-work (${{ steps.classify.outputs.duration_hint }}) -- this is NOT 'did not converge within its iteration budget', and no postmortem is possible on this path."
+            exit 1
+          fi
           if [ "${{ steps.classify.outputs.converged }}" != "true" ]; then
             echo "::error::task-runner.dot did not converge -- see the issue comment and the uploaded run evidence (a work-in-progress PR may still have been opened)."
             exit 1
