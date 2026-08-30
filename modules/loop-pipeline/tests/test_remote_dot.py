@@ -67,15 +67,21 @@ ENTRY = "git+https://github.com/acme/samples#subdirectory=pipelines/main.dot"
 @respx.mock
 async def test_recursive_walk_in_origin(tmp_path):
     # main.dot -> child.dot (same repo, relative), child -> leaf.dot
-    _contents("acme", "samples", "pipelines/main.dot",
-              'digraph G { a [dot_file="child.dot"]; }')
-    _contents("acme", "samples", "pipelines/child.dot",
-              'digraph G { b [dot_file="leaf.dot"]; }')
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/main.dot",
+        'digraph G { a [dot_file="child.dot"]; }',
+    )
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/child.dot",
+        'digraph G { b [dot_file="leaf.dot"]; }',
+    )
     _contents("acme", "samples", "pipelines/leaf.dot", "digraph G { c; }")
 
-    entry_path, cleanup = await materialize_remote_dot(
-        ENTRY, cache=BlobCache(tmp_path)
-    )
+    entry_path, cleanup = await materialize_remote_dot(ENTRY, cache=BlobCache(tmp_path))
     try:
         assert entry_path.exists()
         text = entry_path.read_text()
@@ -92,8 +98,12 @@ async def test_recursive_walk_in_origin(tmp_path):
 @respx.mock
 async def test_cross_repo_rewrite(tmp_path):
     other = "git+https://github.com/acme/lib#subdirectory=shared/util.dot"
-    _contents("acme", "samples", "pipelines/main.dot",
-              f'digraph G {{ a [dot_file="{other}"]; }}')
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/main.dot",
+        f'digraph G {{ a [dot_file="{other}"]; }}',
+    )
     _contents("acme", "lib", "shared/util.dot", "digraph G { u; }")
 
     entry_path, cleanup = await materialize_remote_dot(ENTRY, cache=BlobCache(tmp_path))
@@ -137,8 +147,12 @@ async def test_cross_repo_rewrite(tmp_path):
 @pytest.mark.asyncio
 @respx.mock
 async def test_variable_ref_skipped(tmp_path):
-    _contents("acme", "samples", "pipelines/main.dot",
-              'digraph G { a [dot_file="$dynamic.dot"]; }')
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/main.dot",
+        'digraph G { a [dot_file="$dynamic.dot"]; }',
+    )
     entry_path, cleanup = await materialize_remote_dot(ENTRY, cache=BlobCache(tmp_path))
     try:
         assert 'dot_file="$dynamic.dot"' in entry_path.read_text()  # left untouched
@@ -149,8 +163,12 @@ async def test_variable_ref_skipped(tmp_path):
 @pytest.mark.asyncio
 @respx.mock
 async def test_escape_rejected(tmp_path):
-    _contents("acme", "samples", "pipelines/main.dot",
-              'digraph G { a [dot_file="../../etc/passwd"]; }')
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/main.dot",
+        'digraph G { a [dot_file="../../etc/passwd"]; }',
+    )
     with pytest.raises(RemoteFetchPathError):
         await materialize_remote_dot(ENTRY, cache=BlobCache(tmp_path))
 
@@ -158,8 +176,12 @@ async def test_escape_rejected(tmp_path):
 @pytest.mark.asyncio
 @respx.mock
 async def test_depth_limit_fail_fast(tmp_path):
-    _contents("acme", "samples", "pipelines/main.dot",
-              'digraph G { a [dot_file="child.dot"]; }')
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/main.dot",
+        'digraph G { a [dot_file="child.dot"]; }',
+    )
     _contents("acme", "samples", "pipelines/child.dot", "digraph G { c; }")
     from amplifier_module_remote_source import RemoteFetchLimitError
 
@@ -177,15 +199,21 @@ async def test_diamond_dependency_fetched_once(tmp_path):
     rewritten dot_file= refs must resolve to the identical materialized path.
     """
     main_route = _contents(
-        "acme", "samples", "pipelines/main.dot",
+        "acme",
+        "samples",
+        "pipelines/main.dot",
         'digraph G { a [dot_file="a.dot"]; b [dot_file="b.dot"]; }',
     )
     a_route = _contents(
-        "acme", "samples", "pipelines/a.dot",
+        "acme",
+        "samples",
+        "pipelines/a.dot",
         'digraph G { s [dot_file="shared.dot"]; }',
     )
     b_route = _contents(
-        "acme", "samples", "pipelines/b.dot",
+        "acme",
+        "samples",
+        "pipelines/b.dot",
         'digraph G { s [dot_file="shared.dot"]; }',
     )
     shared_route = _contents(
@@ -269,8 +297,12 @@ async def test_load_remote_sets_source_dir(tmp_path, monkeypatch):
     # explicit cache override (matching both production call sites), so
     # point the default cache root at tmp_path to keep this hermetic.
     monkeypatch.setenv("ATTRACTOR_CACHE_DIR", str(tmp_path / "cache"))
-    _contents("acme", "samples", "pipelines/main.dot",
-              "digraph G { s [shape=Mdiamond]; d [shape=Msquare]; s -> d }")
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/main.dot",
+        "digraph G { s [shape=Mdiamond]; d [shape=Msquare]; s -> d }",
+    )
     graph, cleanup = await load_remote_or_local_graph(ENTRY)
     try:
         assert graph.source_dir is not None
@@ -303,7 +335,7 @@ async def test_load_remote_cleanup_called_when_parse_fails(tmp_path, monkeypatch
     async def _fake_materialize(_source: str):
         return entry_path, _cleanup
 
-    def _raising_parse_dot(_text: str):
+    def _raising_parse_dot(_text: str, params: dict[str, str] | None = None):
         raise ValueError("boom: simulated parse failure after materialize")
 
     monkeypatch.setattr(remote_dot_mod, "materialize_remote_dot", _fake_materialize)

@@ -1738,13 +1738,24 @@ class TestGateRetryBudgetDead:
         from amplifier_module_loop_pipeline.dot_parser import parse_dot as _parse
 
         repo_root = _Path(__file__).resolve().parents[3]
-        sweep_dirs = [repo_root / "examples", repo_root / ".github" / "capsule-pipeline"]
-        dot_files = [p for d in sweep_dirs if d.is_dir() for p in sorted(d.rglob("*.dot"))]
+        sweep_dirs = [
+            repo_root / "examples",
+            repo_root / ".github" / "capsule-pipeline",
+        ]
+        dot_files = [
+            p for d in sweep_dirs if d.is_dir() for p in sorted(d.rglob("*.dot"))
+        ]
         if not dot_files:
             _pytest.skip("shipped corpus not present (installed-package run)")
+        # A graph-level duration attribute may carry a bare `$name` token (ba9,
+        # lane-honesty wave) that only resolves via `--param`. This sweep is
+        # about lint findings on the shipped corpus, not a specific run
+        # configuration, so it supplies a placeholder for every param name
+        # currently used graph-side.
+        _CORPUS_PARAMS = {"max_duration": "19800s"}
         fired: list[str] = []
         for dot_path in dot_files:
-            graph = _parse(dot_path.read_text(encoding="utf-8"))
+            graph = _parse(dot_path.read_text(encoding="utf-8"), params=_CORPUS_PARAMS)
             for d in _diag(lint(graph), "gate_retry_budget_dead"):
                 fired.append(f"{dot_path.relative_to(repo_root)}: {d.message}")
         assert not fired, (

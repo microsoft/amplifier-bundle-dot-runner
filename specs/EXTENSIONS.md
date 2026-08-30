@@ -3437,3 +3437,60 @@ and in `backend.py`'s own docstrings/comments instead.
   `DirectWorker.run()` RED-proofs: provider-alone per provider, full precedence ladder
   (explicit node model / stylesheet model both beat the rung-4 default), unknown-provider
   loud
+
+---
+
+## 43. Ledger Entry for PR #32: Graph-Level `$name` Param Resolution at Parse Time (`max_pipeline_duration`)
+
+> **depends-on:** §21 (`$param`/`${key}` variable expansion) — this entry adds a second,
+> deliberately narrower substitution surface alongside it, not a replacement.
+>
+> **upstream action:** not applicable — canonical spec is silent on both a `--param` CLI
+> mechanism and graph-level duration attributes generally; this is a pure addition in a
+> spec-silent area, not a divergence.
+
+**What:** `dot_parser.parse_dot()` now accepts an optional `params: dict[str, str]` argument.
+When a **graph-level DURATION attribute** (today, only `max_pipeline_duration`) holds a value
+that is a bare `"$name"` token (the entire stripped attribute value, not a substring or an
+embedded reference), the parser substitutes `params[name]` for it and then parses the result
+exactly as if that value had been written literally. Any other value (already an int, or a
+plain duration/int string) parses unchanged — this is a strict superset of the prior coercion.
+
+**How this differs from §21's `$param`:** §21's substitution is node-level (prompts /
+`tool_command`), resolves at **execution time** from `context.get("graph.params_values")`
+(`transforms.expand_variables`), and — consistent with "simple string replacement, not a
+templating engine" — has no documented fail-loud contract for a missing key. This entry's
+substitution is graph-level only, resolves at **parse time** (before any model call), and is
+declarative-only by design: a `$name` token whose name is absent from the supplied `params`
+raises `ValueError` immediately, naming the missing `--param`. There is no shell-style default
+for a missing param and none is planned — an absent fuse value must never silently become "no
+fuse" or a surprising built-in constant. The two mechanisms are intentionally independent:
+node-level `$param` expansion is completely unaffected by this argument.
+
+**Why:** The lane workflows' `.dot` graphs (`capsule.dot`, `feature-capsule.dot`,
+`task-runner.dot`) need their wall-clock fuse (`max_pipeline_duration`) to vary by invocation
+(`workflow_dispatch`'s `max_duration` input, honoring the GitHub-hosted 6h job cap) without
+hand-editing the graph file per run, while still failing loudly — before any model call burns
+budget — if the caller forgets to supply the param.
+
+**Compatibility:** Fully backward-compatible. A graph whose `max_pipeline_duration` is already
+a literal int or a plain duration/int string is unaffected whether or not `params` is passed
+(RED/GREEN-proofed both directions: a graph without a `$`-token parses unchanged with an empty
+or absent `params`; a graph with a `$name` token requires the matching `--param` or fails loud
+pre-model-call). Callers that never pass `params` see identical behavior to before this PR,
+**except** for a graph that already carries a bare `$name` token in this attribute — such a
+graph now requires `params` to resolve it (previously `int("$name")` raised `ValueError` too,
+just with a less specific message naming the coercion, not the missing `--param`).
+
+**Implementation locations:**
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/dot_parser.py` — `parse_dot()`,
+  `_ParseContext.params`, `_resolve_graph_duration_attr()`, `_GRAPH_PARAM_TOKEN_RE`
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/remote_dot.py` —
+  `load_remote_or_local_graph()` threads `params` through to `parse_dot()`
+- `modules/pipeline-runner/amplifier_module_pipeline_runner/runner.py` — `_load_graph()` /
+  `drive_engine()` thread `params` through from the CLI's `--param` mapping
+- `.github/capsule-pipeline/{capsule,feature-capsule,task-runner}.dot` — first consumers,
+  `max_pipeline_duration="$max_duration"`
+- Tests: `modules/loop-pipeline/tests/test_dot_render_compliance.py`,
+  `test_topological_lint.py` (corpus sweeps updated to supply a placeholder `max_duration`
+  param so the shipped `$`-token graphs still parse for lint-only purposes)

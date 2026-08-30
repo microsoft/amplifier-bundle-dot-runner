@@ -481,8 +481,16 @@ def test_render_sweep_detects_a_planted_broken_file(tmp_path: Path) -> None:
 )
 def test_render_findings_across_corpus_are_never_errors() -> None:
     """Whatever the rules find in the shipped corpus, it must stay advisory."""
+    # A graph-level duration attribute may carry a bare `$name` token (ba9,
+    # lane-honesty wave -- see dot_parser._resolve_graph_duration_attr) that
+    # only resolves via `--param`. This sweep parses the raw shipped corpus
+    # for lint findings, not a specific run configuration, so it supplies a
+    # placeholder for every param name currently used graph-side.
+    _CORPUS_PARAMS = {"max_duration": "19800s"}
     for dot_path in _TRACKED_DOT_FILES:
-        for d in lint(parse_dot(dot_path.read_text(encoding="utf-8"))):
+        for d in lint(
+            parse_dot(dot_path.read_text(encoding="utf-8"), params=_CORPUS_PARAMS)
+        ):
             if d.rule.startswith("RENDER-"):
                 assert d.severity == "WARNING", (
                     f"{dot_path.relative_to(_REPO_ROOT)}: {d.rule} is "
