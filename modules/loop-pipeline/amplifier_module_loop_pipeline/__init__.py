@@ -75,7 +75,7 @@ class DirectProviderBackend:
             "future release. Use the worker registry's `direct` worker via "
             "AmplifierBackend instead (see specs/EXTENSIONS.md Sec40 for "
             "the worker-selection policy that replaces this class). This "
-            'shim delegates to AmplifierBackend(default_worker="direct") '
+            'shim delegates to AmplifierBackend(default_worker="llm-direct") '
             "and will keep working, unchanged, through the deprecation "
             "window.",
             DeprecationWarning,
@@ -97,7 +97,7 @@ class DirectProviderBackend:
             tools=tools,
             hooks=hooks,
             unified_client=unified_client,
-            default_worker="direct",
+            default_worker="llm-direct",
         )
 
     async def run(

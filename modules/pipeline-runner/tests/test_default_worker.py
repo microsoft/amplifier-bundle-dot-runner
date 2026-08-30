@@ -99,13 +99,13 @@ def _api_key(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_probe_true_when_both_present(monkeypatch, worker_name):
     _patch_find_spec(monkeypatch, worker_name, adapter=True, probe=True)
     assert default_worker._worker_available(worker_name) is True
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_probe_false_when_adapter_absent(monkeypatch, worker_name):
     _patch_find_spec(monkeypatch, worker_name, adapter=False, probe=True)
     assert default_worker._worker_available(worker_name) is False
@@ -123,8 +123,8 @@ def test_probe_true_when_adapter_doubles_as_its_own_probe(monkeypatch):
     """loop-agent has no heavy peer library distinct from its adapter -- the
     adapter module doubles as its own probe (registry: probe_module ==
     adapter_module), so adapter-present alone is sufficient."""
-    _patch_find_spec(monkeypatch, "loop-agent", adapter=True, probe=True)
-    assert default_worker._worker_available("loop-agent") is True
+    _patch_find_spec(monkeypatch, "coding-agent", adapter=True, probe=True)
+    assert default_worker._worker_available("coding-agent") is True
 
 
 def test_probe_short_circuits_before_checking_agent_lib(monkeypatch):
@@ -164,22 +164,22 @@ def test_amplifier_agent_available_is_the_worker_available_alias(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_explicit_direct_wins_even_when_available(monkeypatch, capsys):
+def test_resolve_explicit_llm_direct_wins_even_when_available(monkeypatch, capsys):
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: True)
-    worker, bundle = default_worker.resolve(worker="direct")
-    assert (worker, bundle) == ("direct", None)
+    worker, bundle = default_worker.resolve(worker="llm-direct")
+    assert (worker, bundle) == ("llm-direct", None)
     assert capsys.readouterr().err == ""
 
 
-def test_resolve_does_not_even_consult_the_probe_when_direct_given(monkeypatch):
+def test_resolve_does_not_even_consult_the_probe_when_llm_direct_given(monkeypatch):
     def _boom(name):
         raise AssertionError("probe must not run -- an explicit choice was made")
 
     monkeypatch.setattr(default_worker, "_worker_available", _boom)
-    assert default_worker.resolve(worker="direct") == ("direct", None)
+    assert default_worker.resolve(worker="llm-direct") == ("llm-direct", None)
 
 
-@pytest.mark.parametrize("worker_name", ["loop-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
 def test_resolve_explicit_named_worker_available_synthesizes_and_wires_bundle(
     monkeypatch, worker_name
 ):
@@ -204,15 +204,15 @@ def test_resolve_explicit_named_worker_available_synthesizes_and_wires_bundle(
 def test_resolve_explicit_named_worker_unavailable_fails_loud(monkeypatch, capsys):
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: False)
     with pytest.raises(SystemExit) as exc_info:
-        default_worker.resolve(worker="loop-agent", prog="dot-runner")
+        default_worker.resolve(worker="coding-agent", prog="dot-runner")
     assert exc_info.value.code == 1
     err = capsys.readouterr().err
-    assert "loop-agent" in err
+    assert "coding-agent" in err
     assert "not" in err and "installed" in err
     # Named-but-uninstalled: an explicit ask fails loud rather than
-    # silently degrading -- it does NOT fall back to direct on its own,
+    # silently degrading -- it does NOT fall back to llm-direct on its own,
     # but it DOES suggest the alternatives.
-    assert "--worker direct" in err
+    assert "--worker llm-direct" in err
     assert "amplifier-agent" in err
 
 
@@ -263,23 +263,57 @@ def test_resolve_no_choice_available_synthesizes_amplifier_agent_bundle(monkeypa
     assert "loop-amplifier-agent" in text  # the ADAPTER's real module name
 
 
-def test_resolve_no_choice_broken_env_prints_exactly_one_notice_and_falls_back(
+def test_resolve_no_choice_broken_env_fails_loud_never_degrades(
     monkeypatch, capsys
 ):
-    """WAVE 6: the runtime import guard tripping with NO explicit --worker is
-    now a broken-environment diagnostic (amplifier-agent is unconditionally
-    installed; this state means the install itself is broken), not an
-    "install the optional extra" upgrade pitch -- but the fallback behavior
-    (degrade to worker=direct, exactly one stderr line) is unchanged."""
+    """WAVE 7 (feat/fail-loud-worker-names): the runtime import guard
+    tripping with NO explicit --worker used to degrade to worker=direct
+    (now llm-direct) with one stderr notice. That degraded fallback path is
+    DELETED -- amplifier-agent is a shipped, unconditional dependency, so a
+    broken install is always an environment bug, never a legitimate reason
+    to silently substitute a different execution mechanism. This is now a
+    hard SystemExit(1), same as the explicit-named-worker-unavailable case."""
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: False)
-    worker, bundle = default_worker.resolve(worker=None, prog="dot-runner")
 
-    assert (worker, bundle) == (None, None)
+    with pytest.raises(SystemExit) as exc_info:
+        default_worker.resolve(worker=None, prog="dot-runner")
+    assert exc_info.value.code == 1
+
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if line.strip()]
     assert len(lines) == 1
     assert default_worker.BROKEN_INSTALL_HINT in lines[0]
     assert "dot-runner" in lines[0]
+
+
+def test_resolve_retired_direct_name_fails_loud_naming_replacement(monkeypatch, capsys):
+    """WAVE 7: `direct` was renamed to `llm-direct` -- no alias. The old
+    name fails loud immediately (the probe is never even consulted), and
+    the error message IS the migration hint."""
+    def _boom(name):
+        raise AssertionError("probe must not run for a retired name")
+
+    monkeypatch.setattr(default_worker, "_worker_available", _boom)
+    with pytest.raises(SystemExit) as exc_info:
+        default_worker.resolve(worker="direct", prog="dot-runner")
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "'direct'" in err
+    assert "'llm-direct'" in err
+
+
+def test_resolve_retired_loop_agent_name_fails_loud_naming_replacement(monkeypatch, capsys):
+    """WAVE 7: `loop-agent` was renamed to `coding-agent` -- no alias."""
+    def _boom(name):
+        raise AssertionError("probe must not run for a retired name")
+
+    monkeypatch.setattr(default_worker, "_worker_available", _boom)
+    with pytest.raises(SystemExit) as exc_info:
+        default_worker.resolve(worker="loop-agent", prog="dot-runner")
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "'loop-agent'" in err
+    assert "'coding-agent'" in err
 
 
 def test_broken_install_hint_names_reinstall_not_an_upgrade_pitch():
@@ -305,7 +339,7 @@ def test_broken_install_hint_names_reinstall_not_an_upgrade_pitch():
 @pytest.mark.parametrize(
     ("worker_name", "expected_orch_module"),
     [
-        ("loop-agent", "loop-agent"),
+        ("coding-agent", "loop-agent"),
         ("amplifier-agent", "loop-amplifier-agent"),
     ],
 )
@@ -384,18 +418,19 @@ def test_cmd_run_wires_synthesized_bundle_when_available(monkeypatch, tmp_path):
     assert default_worker.DEFAULT_AGENT_NAME in Path(captured["bundle"]).read_text()
 
 
-def test_cmd_run_falls_back_to_direct_with_one_notice_when_broken_env(
+def test_cmd_run_broken_env_fails_loud_never_falls_back(
     monkeypatch, tmp_path, capsys
 ):
+    """WAVE 7: no more degraded worker=direct/llm-direct fallback -- a
+    broken default-worker install now aborts the run entirely before
+    run_pipeline is ever called."""
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: False)
     dot_path = _make_dot_file(tmp_path)
 
-    captured: dict = {}
-
     async def fake_run_pipeline(dot_source, **kwargs):
-        captured["worker"] = kwargs.get("worker")
-        captured["bundle"] = kwargs.get("bundle")
-        return PipelineResult(status="success", notes="", logs_dir=tmp_path, raw="{}")
+        raise AssertionError(
+            "run_pipeline must never be reached on a broken-install fail-loud exit"
+        )
 
     monkeypatch.setattr(runner_mod, "run_pipeline", fake_run_pipeline)
 
@@ -403,10 +438,9 @@ def test_cmd_run_falls_back_to_direct_with_one_notice_when_broken_env(
     args = parser.parse_args(["run", dot_path, "--cwd", str(tmp_path)])
     args.prog_name = "dot-runner"
 
-    rc = cli.cmd_run(args)
-    assert rc == 0
-    assert captured["worker"] is None
-    assert captured["bundle"] is None
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_run(args)
+    assert exc_info.value.code == 1
 
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if line.strip()]
@@ -414,7 +448,7 @@ def test_cmd_run_falls_back_to_direct_with_one_notice_when_broken_env(
     assert default_worker.BROKEN_INSTALL_HINT in lines[0]
 
 
-def test_cmd_run_explicit_worker_direct_respected_even_when_available(
+def test_cmd_run_explicit_worker_llm_direct_respected_even_when_available(
     monkeypatch, tmp_path, capsys
 ):
     """The team's bet never overrides an explicit --worker."""
@@ -432,18 +466,18 @@ def test_cmd_run_explicit_worker_direct_respected_even_when_available(
 
     parser = cli.build_parser(prog="dot-runner")
     args = parser.parse_args(
-        ["run", dot_path, "--worker", "direct", "--cwd", str(tmp_path)]
+        ["run", dot_path, "--worker", "llm-direct", "--cwd", str(tmp_path)]
     )
     args.prog_name = "dot-runner"
 
     rc = cli.cmd_run(args)
     assert rc == 0
-    assert captured["worker"] == "direct"
+    assert captured["worker"] == "llm-direct"
     assert captured["bundle"] is None
     assert capsys.readouterr().err == ""
 
 
-def test_cmd_run_explicit_worker_loop_agent_wires_its_own_bundle(monkeypatch, tmp_path):
+def test_cmd_run_explicit_worker_coding_agent_wires_its_own_bundle(monkeypatch, tmp_path):
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: True)
     dot_path = _make_dot_file(tmp_path)
 
@@ -458,7 +492,7 @@ def test_cmd_run_explicit_worker_loop_agent_wires_its_own_bundle(monkeypatch, tm
 
     parser = cli.build_parser(prog="dot-runner")
     args = parser.parse_args(
-        ["run", dot_path, "--worker", "loop-agent", "--cwd", str(tmp_path)]
+        ["run", dot_path, "--worker", "coding-agent", "--cwd", str(tmp_path)]
     )
     args.prog_name = "dot-runner"
 
@@ -466,6 +500,8 @@ def test_cmd_run_explicit_worker_loop_agent_wires_its_own_bundle(monkeypatch, tm
     assert rc == 0
     assert captured["worker"] is None
     text = Path(captured["bundle"]).read_text(encoding="utf-8")
+    # Internal module registration name is UNCHANGED by the worker-name
+    # rename -- modules/loop-agent stays modules/loop-agent under the hood.
     assert "module: loop-agent" in text
 
 
@@ -540,18 +576,17 @@ def test_cmd_resume_wires_synthesized_bundle_when_available(monkeypatch, tmp_pat
     assert default_worker.DEFAULT_AGENT_NAME in Path(captured["bundle"]).read_text()
 
 
-def test_cmd_resume_falls_back_to_direct_with_one_notice_when_broken_env(
+def test_cmd_resume_broken_env_fails_loud_never_falls_back(
     monkeypatch, tmp_path, capsys
 ):
+    """WAVE 7: resume mirrors run -- no degraded fallback."""
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: False)
     run_dir = _resume_run_dir(tmp_path)
 
-    captured: dict = {}
-
     async def fake_resume_pipeline(run_dir_arg, **kwargs):
-        captured["worker"] = kwargs.get("worker")
-        captured["bundle"] = kwargs.get("bundle")
-        return PipelineResult(status="success", notes="", logs_dir=run_dir, raw="{}")
+        raise AssertionError(
+            "resume_pipeline must never be reached on a broken-install fail-loud exit"
+        )
 
     monkeypatch.setattr(runner_mod, "resume_pipeline", fake_resume_pipeline)
 
@@ -559,10 +594,9 @@ def test_cmd_resume_falls_back_to_direct_with_one_notice_when_broken_env(
     args = parser.parse_args(["resume", str(run_dir)])
     args.prog_name = "dot-runner"
 
-    rc = cli.cmd_resume(args)
-    assert rc == 0
-    assert captured["worker"] is None
-    assert captured["bundle"] is None
+    with pytest.raises(SystemExit) as exc_info:
+        cli.cmd_resume(args)
+    assert exc_info.value.code == 1
 
     err = capsys.readouterr().err
     lines = [line for line in err.splitlines() if line.strip()]
@@ -570,7 +604,7 @@ def test_cmd_resume_falls_back_to_direct_with_one_notice_when_broken_env(
     assert default_worker.BROKEN_INSTALL_HINT in lines[0]
 
 
-def test_cmd_resume_explicit_worker_direct_respected_even_when_available(
+def test_cmd_resume_explicit_worker_llm_direct_respected_even_when_available(
     monkeypatch, tmp_path
 ):
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: True)
@@ -586,10 +620,10 @@ def test_cmd_resume_explicit_worker_direct_respected_even_when_available(
     monkeypatch.setattr(runner_mod, "resume_pipeline", fake_resume_pipeline)
 
     parser = cli.build_parser(prog="dot-runner")
-    args = parser.parse_args(["resume", str(run_dir), "--worker", "direct"])
+    args = parser.parse_args(["resume", str(run_dir), "--worker", "llm-direct"])
     args.prog_name = "dot-runner"
 
     rc = cli.cmd_resume(args)
     assert rc == 0
-    assert captured["worker"] == "direct"
+    assert captured["worker"] == "llm-direct"
     assert captured["bundle"] is None

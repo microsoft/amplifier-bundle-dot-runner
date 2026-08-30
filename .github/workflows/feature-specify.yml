@@ -317,7 +317,7 @@ jobs:
         if: steps.idem.outputs.skip != 'true'
         # feature-capsule.dot's critique node (this pipeline's ONE judgment
         # node) declares llm_provider="openai" -- a second model family,
-        # deliberately. With `--worker loop-agent`, that attribute flows
+        # deliberately. With `--worker coding-agent`, that attribute flows
         # straight through the named-worker path -- no dual-provider bundle
         # mount needed.
         env:
@@ -346,7 +346,7 @@ jobs:
           # the WORKSPACE.
           uv run --project "$RUNNER_TEMP/engine-src" dot-runner run \
             .github/capsule-pipeline/feature-capsule.dot \
-            --worker loop-agent \
+            --worker coding-agent \
             --cwd "$GITHUB_WORKSPACE" \
             --logs-root "$RUNNER_TEMP/capsule-run/logs" \
             --on-human-gate auto-approve \

@@ -5,16 +5,26 @@ module's sole personality after removing the legacy ``attractor`` entry
 point entirely -- no alias, no shim, no deprecation window).
 
 WAVE 5 repair (2026-08-30, maintainer ruling): worker NAMES are the whole
-user-facing concept -- ``--worker direct|loop-agent|amplifier-agent`` (or a
-node's own ``worker=`` attribute, EXTENSIONS.md Sec40) is the complete
-story. ``--bundle``/``DOT_RUNNER_BUNDLE`` are REMOVED from this CLI's
-surface entirely -- no flag, no env var, help text never mentions either.
-Bundles are under the hood: a named worker other than ``direct`` may use
-bundle machinery internally to wire its adapter, but that is private
-implementation detail (``default_worker.py``), never something this CLI
-exposes, names in an error, or documents. Default worker ``direct``; zero
-runtime reach into any pattern repo unless a named worker's own internal
-wiring needs it.
+user-facing concept -- ``--worker llm-direct|coding-agent|amplifier-agent``
+(or a node's own ``worker=`` attribute, EXTENSIONS.md Sec40) is the
+complete story. ``--bundle``/``DOT_RUNNER_BUNDLE`` are REMOVED from this
+CLI's surface entirely -- no flag, no env var, help text never mentions
+either. Bundles are under the hood: a named worker other than
+``llm-direct`` may use bundle machinery internally to wire its adapter, but
+that is private implementation detail (``default_worker.py``), never
+something this CLI exposes, names in an error, or documents. Default
+worker: ``amplifier-agent`` unconditionally, FAIL LOUD (never a silent
+``llm-direct`` degrade) if that install is broken; zero runtime reach into
+any pattern repo unless a named worker's own internal wiring needs it.
+
+WAVE 7 (feat/fail-loud-worker-names, 2026-08-30, maintainer ruling): the
+worker NAMES ``direct`` and ``loop-agent`` are RENAMED to ``llm-direct``
+and ``coding-agent`` respectively -- ``coding-agent`` implements the
+coding-agent-loop nlspec (one of the three StrongDM specs this bundle
+vendors, see specs/coding-agent-loop-spec.md); ``llm-direct`` is the bare
+loop on the unified-llm-spec client (specs/unified-llm-spec.md). NO
+aliases for the old names -- an old name fails loud with a message naming
+its replacement.
 
 Fails loud: a missing provider API key, missing DOT source, unknown worker
 name, or a pipeline error all print a clear message and exit non-zero. No
@@ -48,8 +58,8 @@ def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
     description = (
         "Run an arbitrary DOT pipeline directly via the engine's worker "
         "registry -- engine-native defaults (default worker: "
-        "`amplifier-agent`, unconditionally; `direct` only if that install "
-        "is broken; see --worker)."
+        "`amplifier-agent`, unconditionally; fails loud -- never degrades "
+        "to `llm-direct` -- if that install is broken; see --worker)."
     )
     parser = argparse.ArgumentParser(prog=prog, description=description)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -85,13 +95,16 @@ def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
         help=(
             "run-level worker-selection default (EXTENSIONS.md Sec40 / "
             "DESIGN-worker-registry-core-split.md P1 item 3, P3 item 2). "
-            "One of `direct`, `loop-agent`, `amplifier-agent` (a node's own "
-            "`worker=` attribute still wins over this flag). Unknown names "
-            "fail loud, listing the registered names. Omitted (the "
+            "One of `llm-direct` (bare loop, unified-llm-spec), "
+            "`coding-agent` (implements the coding-agent-loop spec), "
+            "`amplifier-agent` (a node's own `worker=` attribute still wins "
+            "over this flag). Unknown names fail loud, listing the "
+            "registered names; `direct`/`loop-agent` (retired names) fail "
+            "loud naming their replacement -- no alias. Omitted (the "
             "default): `amplifier-agent`, unconditionally (it ships as a "
-            "real dependency of this install) -- `direct` only as a "
-            "broken-environment fallback, with a one-line stderr diagnostic "
-            "naming the reinstall command."
+            "real dependency of this install) -- FAILS LOUD (never "
+            "degrades to `llm-direct`) if that install is broken, naming "
+            "the reinstall command."
         ),
     )
     run.add_argument(

@@ -93,6 +93,32 @@ class TestCloneCloseParity:
         assert "direct" in registry.names()
 
 
+class TestRenamedWorkerNameHint:
+    """WAVE 7 (feat/fail-loud-worker-names, 2026-08-30): an old, pre-rename
+    worker name used as a lookup key gets an extra `renamed:` clause in its
+    Unknown-worker error -- the message itself is the migration hint; no
+    alias is ever registered for the old name."""
+
+    def test_resolve_old_direct_name_names_its_replacement(self):
+        registry = WorkerRegistry()
+        registry.register("llm-direct", _direct())
+
+        with pytest.raises(ValueError, match=r"renamed: 'direct' -> 'llm-direct'"):
+            registry.resolve("direct")
+
+    def test_resolve_old_loop_agent_name_names_its_replacement(self):
+        registry = WorkerRegistry()
+
+        with pytest.raises(ValueError, match=r"renamed: 'loop-agent' -> 'coding-agent'"):
+            registry.resolve("loop-agent")
+
+    def test_resolve_ordinary_unknown_name_has_no_renamed_clause(self):
+        registry = WorkerRegistry()
+        with pytest.raises(ValueError) as exc_info:
+            registry.resolve("bogus")
+        assert "renamed:" not in str(exc_info.value)
+
+
 class TestRegistryClone:
     @pytest.mark.asyncio
     async def test_clone_produces_a_new_registry_with_cloned_workers(self):

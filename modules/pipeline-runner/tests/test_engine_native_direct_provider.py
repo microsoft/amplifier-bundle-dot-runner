@@ -201,7 +201,7 @@ def test_box_node_without_fix_fails_with_misleading_message(monkeypatch, tmp_pat
     from amplifier_module_loop_pipeline.dot_parser import parse_dot
 
     graph = parse_dot(_make_box_dot())
-    backend = AmplifierBackend(coordinator=None, profiles={}, default_worker="direct")
+    backend = AmplifierBackend(coordinator=None, profiles={}, default_worker="llm-direct")
     node = graph.nodes["work"]
 
     outcome = asyncio.run(backend.run(node, "do the thing", PipelineContext()))
@@ -332,7 +332,9 @@ def test_cli_run_with_no_provider_key_is_clean_no_traceback(monkeypatch, tmp_pat
     dot_path.write_text(_make_box_dot(), encoding="utf-8")
 
     parser = cli.build_parser(prog="dot-runner")
-    args = parser.parse_args(["run", str(dot_path), "--cwd", str(tmp_path)])
+    args = parser.parse_args(
+        ["run", str(dot_path), "--cwd", str(tmp_path), "--worker", "llm-direct"]
+    )
     args.prog_name = "dot-runner"
 
     rc = cli.cmd_run(args)
@@ -340,5 +342,7 @@ def test_cli_run_with_no_provider_key_is_clean_no_traceback(monkeypatch, tmp_pat
     assert rc == 1
     # (capsys not used here to keep this test focused on the return code +
     # exception-class contract; message content is pinned by the unit test
-    # above.)
+    # above.) --worker llm-direct is explicit here (WAVE 7) so this test
+    # exercises the provider-key error path deliberately, independent of
+    # amplifier-agent's own availability in the test environment.
     del sys

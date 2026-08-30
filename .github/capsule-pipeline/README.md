@@ -64,7 +64,7 @@ re-copying the source file and re-applying only the outer box.
    (this repo — `default_worker.py` + `loop-pipeline/backend.py`'s per-spawn
    `orchestrator_config["llm_provider"]` injection, see "Bug B" in
    `modules/loop-pipeline/amplifier_module_loop_pipeline/backend.py`),
-   `--worker loop-agent` honors a node's declared `llm_provider` directly at
+   `--worker coding-agent` honors a node's declared `llm_provider` directly at
    spawn time, and `--bundle`/`DOT_RUNNER_BUNDLE` were removed from the CLI
    entirely (`cli.py` module docstring). The **source repo's own current
    workflows already dropped the `ATTRACTOR_PIPELINE_BUNDLE` mount** for this
@@ -101,7 +101,7 @@ re-copying the source file and re-applying only the outer box.
    is attractor's opinionated layer and does not exist in this repo, and the
    current CLI's default base bundle path never reads a local `bundles/` dir
    (dead code path in `runner.py`'s comments, superseded by `default_worker.py`).
-4. **`--worker loop-agent` is explicit on every run invocation** (source
+4. **`--worker coding-agent` is explicit on every run invocation** (source
    already does this too, but it is called out here because it is now the
    *entire* worker-selection mechanism — there is no bundle fallback path
    left to fall back to).

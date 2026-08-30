@@ -223,7 +223,7 @@ jobs:
         if: steps.locate.outputs.skip != 'true'
         # task-runner.dot's critique_b node hard-declares llm_provider="openai"
         # (dual-family critique -- an independent, cross-provider reviewer is
-        # the point). With `--worker loop-agent`, that attribute flows
+        # the point). With `--worker coding-agent`, that attribute flows
         # straight through the named-worker path (no dual-provider bundle
         # mount needed). Check the one precondition that makes it
         # serviceable BEFORE spending the run's 30-90+ minute budget.
@@ -317,7 +317,7 @@ jobs:
           # the WORKSPACE: the subject tree is supposed to be the live one.
           uv run --project "$RUNNER_TEMP/engine-src" dot-runner run \
             .github/capsule-pipeline/task-runner.dot \
-            --worker loop-agent \
+            --worker coding-agent \
             --cwd "$GITHUB_WORKSPACE" \
             --logs-root "$RUNNER_TEMP/capsule-implement/logs" \
             --on-human-gate auto-approve \
