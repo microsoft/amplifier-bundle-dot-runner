@@ -120,3 +120,13 @@ dev = [
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
+# issue #338 fix: default_worker.py now imports
+# unified_llm.client.detect_configured_providers (single source of truth for
+# provider-env-key detection, shared with runner._bootstrap_direct_provider).
+# This module's own dependency edge to amplifier-unified-llm-client still
+# resolves via loop-pipeline's published git+https source (unaffected -- see
+# that dependency's own comment), so a test run against a not-yet-published
+# unified-llm-client change needs the LOCAL sibling checked out first, same
+# as modules/loop-agent/pyproject.toml's own established `pythonpath`
+# convention for the exact same cross-module-in-one-PR situation.
+pythonpath = ["../unified-llm-client"]

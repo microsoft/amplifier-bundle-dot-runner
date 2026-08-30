@@ -152,6 +152,55 @@ _CONTEXT_SIMPLE_GIT = (
     "git+https://github.com/microsoft/amplifier-module-context-simple@main"
 )
 
+#: Canonical provider name (``unified_llm.client.PROVIDER_ENV_KEYS`` /
+#: ``runner.PROVIDER_KEY_ENV``) -> the reference provider MODULE's git source.
+#: This is the exact ``module:``/``source:`` shape amplifier-bundle-attractor's
+#: own ``bundles/attractor-pipeline.yaml`` declared under its top-level
+#: ``providers:`` section before 0.2.0 retired ``--bundle``/``DOT_RUNNER_BUNDLE``
+#: (issue #338) -- e.g. ``{module: provider-anthropic, source: git+https://
+#: github.com/microsoft/amplifier-module-provider-anthropic@main}``.
+#:
+#: Resolved via runtime git+fetch (``ModuleActivator.activate_all``, triggered
+#: because each entry below carries a ``source:`` key), the SAME mechanism
+#: this synthesis already uses for every other module it wires (the adapter
+#: itself, loop-agent/loop-amplifier-agent, and context-simple) -- not
+#: installed-package/entry-point resolution. Chosen deliberately over adding
+#: these three provider modules as unconditional root dependencies: none of
+#: them is a root dependency of amplifier-dot-runner today (unlike the
+#: worker adapters, which point 2 of issue #338 makes root deps because a
+#: NAMED WORKER must always resolve), a run typically configures only one of
+#: the three providers, and pinning ``@main`` here matches exactly what the
+#: old attractor bundle did -- deterministic, and proven by the live gate
+#: (see issue #338 report) rather than assumed.
+_PROVIDER_MODULE_SOURCES: dict[str, str] = {
+    "anthropic": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
+    "openai": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
+    "gemini": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
+}
+
+
+def _detect_configured_providers() -> list[str]:
+    """Canonical provider names with a configured API key, in priority order.
+
+    Delegates to ``unified_llm.client.detect_configured_providers`` -- the
+    SAME single source of truth ``runner._bootstrap_direct_provider`` uses
+    (via ``unified_llm.Client.from_env()``) for the ``direct`` worker's own
+    provider bootstrap (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY,
+    GOOGLE_API_KEY as a Gemini alias). One source of truth, imported here
+    rather than re-declared -- issue #338's root cause was exactly a bundle
+    author's list (``bundles/attractor-pipeline.yaml``) silently going stale
+    relative to the engine's own; a second hand-copied env-var list in this
+    module would reintroduce the same class of drift.
+
+    Imported lazily (inside this function, not at module top level) so that
+    importing ``default_worker`` never requires ``unified-llm-client`` to be
+    importable before it is actually needed -- mirrors
+    ``runner._bootstrap_direct_provider``'s own ``import unified_llm`` placement.
+    """
+    from unified_llm.client import detect_configured_providers
+
+    return detect_configured_providers()
+
 
 def _worker_available(name: str) -> bool:
     """Cheap, no-network availability probe for a named worker.
@@ -214,6 +263,32 @@ def _synthesize_agent_bundle_yaml(worker_name: str) -> str:
     profile_lines = "\n".join(
         f"        {provider}: {DEFAULT_AGENT_NAME}" for provider in providers
     )
+
+    # issue #338 fix: mount a REAL provider module for every provider the
+    # environment has a key for -- previously this synthesis emitted a
+    # `profiles:` routing map (above) but NO top-level `providers:` section
+    # at all, so a spawned loop-agent/loop-amplifier-agent child always saw
+    # `providers={}` and died on "Available providers: []" the instant any
+    # box node dispatched (issue #338), even with a valid API key present.
+    configured = _detect_configured_providers()
+    if not configured:
+        supported = ", ".join(
+            f"{k}={v}" for k, v in sorted(runner.PROVIDER_KEY_ENV.items())
+        )
+        raise runner.NoProviderConfiguredError(
+            f"--worker {worker_name!r} needs a mounted LLM provider, but no "
+            "supported API key is configured in the environment. Set one of "
+            f"the following environment variables and retry: {supported} "
+            "(gemini also accepts GOOGLE_API_KEY). This is the SAME "
+            "fail-loud check the `direct` worker's own provider bootstrap "
+            "uses (runner._bootstrap_direct_provider) -- never a silent "
+            "empty provider mount."
+        )
+    provider_lines = "\n".join(
+        f"  - module: provider-{name}\n    source: {_PROVIDER_MODULE_SOURCES[name]}"
+        for name in configured
+    )
+
     return f"""\
 bundle:
   name: dot-runner-{worker_name}-bundle
@@ -225,6 +300,8 @@ bundle:
     the availability-fallback default ladder when no explicit choice was made.
     Wires the in-repo {adapter_module} adapter as the run's spawn orchestrator.
     Purely internal machinery -- never exposed as a user-facing concept.
+providers:
+{provider_lines}
 session:
   context:
     # AmplifierSession construction requires SOME session.context to be

@@ -32,6 +32,20 @@ dependencies = [
     # historical `uv lock` "conflicting URLs for package amplifier-foundation"
     # break (the reason this was ever optional) is resolved.
     "amplifier-module-loop-amplifier-agent",
+    # issue #338 point 2: `loop-agent` is a first-class, documented worker
+    # NAME (`--worker loop-agent`, on par with `direct`/`amplifier-agent`),
+    # but until now it was never a root dependency -- a fresh `uv tool
+    # install git+<this repo>` (no #subdirectory) could not import
+    # `amplifier_module_loop_agent` at all, so `--worker loop-agent` failed
+    # with "was requested but is not installed" on every default install,
+    # before the run ever reached a single pipeline node (confirmed live:
+    # attractor's own lanes needed `--with modules/loop-agent`, PR #337, to
+    # work around exactly this). A name the CLI advertises must resolve on
+    # a fresh install without an extra --with; loop-agent has no heavy peer
+    # library or Python-floor conflict (unlike amplifier-agent's WAVE 6
+    # story above) -- unlike amplifier-agent, this is a plain, low-risk
+    # addition.
+    "amplifier-module-loop-agent",
 ]
 
 [project.urls]
@@ -116,6 +130,11 @@ amplifier-module-pipeline-runner = { path = "modules/pipeline-runner" }
 # (WAVE 6). modules/loop-amplifier-agent keeps its own name, pyproject.toml,
 # and `#subdirectory=modules/loop-amplifier-agent` install form fully intact.
 amplifier-module-loop-amplifier-agent = { path = "modules/loop-amplifier-agent" }
+# issue #338 point 2: same relative-path pattern for loop-agent, so a fresh
+# root install can always resolve the `--worker loop-agent` name. modules/
+# loop-agent keeps its own name, pyproject.toml, and its existing
+# `#subdirectory=modules/loop-agent` install form fully intact.
+amplifier-module-loop-agent = { path = "modules/loop-agent" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_dot_runner"]

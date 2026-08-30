@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 from unified_llm.adapters import ProviderAdapter
 from unified_llm.errors import ConfigurationError
@@ -16,6 +16,53 @@ from unified_llm.types import Request, Response, StreamEvent
 
 # Module-level default client (Spec §2.5)
 _default_client: Client | None = None
+
+#: Canonical provider name -> accepted env var name(s), in priority order.
+#: SINGLE SOURCE OF TRUTH for "which provider(s) does the environment have an
+#: API key for" -- shared by two consumers that must never drift apart:
+#:   1. ``Client.from_env()`` below (constructs a live adapter per detected key).
+#:   2. ``amplifier_module_pipeline_runner.default_worker`` (dot-runner), which
+#:      mounts provider MODULES onto a synthesized ``--worker loop-agent`` /
+#:      ``--worker amplifier-agent`` bundle -- see :func:`detect_configured_providers`.
+#:      That caller never wants the adapter/SDK imports ``from_env()`` performs,
+#:      only the env-var detection, so it is factored out as its own function
+#:      rather than duplicated (issue #338: two independent copies of this env
+#:      var list is exactly how a provider silently stopped being detected).
+#: Gemini accepts GOOGLE_API_KEY as an alias -- same precedence ``from_env()``
+#: has always used.
+PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+}
+
+
+def detect_configured_providers(env: Mapping[str, str] | None = None) -> list[str]:
+    """Return canonical provider names with a configured API key present.
+
+    Detection-only: never imports a provider SDK or constructs an adapter
+    (unlike :meth:`Client.from_env`, which does both). Order matches
+    :data:`PROVIDER_ENV_KEYS` (anthropic, openai, gemini) -- the same order
+    ``from_env()`` registers adapters in, so index 0 of a non-empty result is
+    the same provider ``from_env()`` would pick as its default.
+
+    Args:
+        env: Optional mapping to read keys from (defaults to ``os.environ``).
+            Exposed for hermetic tests that need to pass a synthetic mapping
+            without mutating the real process environment.
+
+    Returns:
+        Canonical provider names (e.g. ``["anthropic", "openai"]``) whose key
+        is present. Empty list if none are configured.
+    """
+    import os
+
+    source = env if env is not None else os.environ
+    return [
+        name
+        for name, keys in PROVIDER_ENV_KEYS.items()
+        if any(source.get(k) for k in keys)
+    ]
 
 
 class Client:
@@ -118,35 +165,33 @@ class Client:
 
         Registers adapters for providers whose keys are present.
         First registered becomes default.
-        """
-        import os
 
+        Detection itself is delegated to :func:`detect_configured_providers`
+        (this module) -- the single source of truth for the env-var list, also
+        used by dot-runner's synthesized-bundle provider mounting. Only the
+        per-provider adapter CONSTRUCTION (importing the provider SDK) stays
+        here, since that is this method's own job and not shared detection.
+        """
         providers: dict[str, ProviderAdapter] = {}
         default: str | None = None
 
-        # Anthropic
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            from unified_llm.adapters.anthropic import AnthropicAdapter
+        for name in detect_configured_providers():
+            if name == "anthropic":
+                from unified_llm.adapters.anthropic import AnthropicAdapter
 
-            providers["anthropic"] = AnthropicAdapter()
+                providers["anthropic"] = AnthropicAdapter()
+            elif name == "openai":
+                from unified_llm.adapters.openai import OpenAIAdapter
+
+                providers["openai"] = OpenAIAdapter()
+            elif name == "gemini":
+                from unified_llm.adapters.gemini import GeminiAdapter
+
+                providers["gemini"] = GeminiAdapter()
+            else:  # pragma: no cover - defensive; PROVIDER_ENV_KEYS is closed
+                continue
             if default is None:
-                default = "anthropic"
-
-        # OpenAI
-        if os.environ.get("OPENAI_API_KEY"):
-            from unified_llm.adapters.openai import OpenAIAdapter
-
-            providers["openai"] = OpenAIAdapter()
-            if default is None:
-                default = "openai"
-
-        # Gemini
-        if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-            from unified_llm.adapters.gemini import GeminiAdapter
-
-            providers["gemini"] = GeminiAdapter()
-            if default is None:
-                default = "gemini"
+                default = name
 
         if not providers:
             raise ConfigurationError(

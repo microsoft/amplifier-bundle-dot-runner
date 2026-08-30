@@ -48,6 +48,18 @@ from amplifier_module_pipeline_runner import default_worker
 amplifier_foundation = pytest.importorskip("amplifier_foundation")
 
 
+@pytest.fixture(autouse=True)
+def _api_key(monkeypatch):
+    """Hermetic provider-key presence, matching test_default_worker.py's own
+    ``_api_key`` fixture -- issue #338: ``_synthesize_agent_bundle_yaml`` now
+    fails loud (``NoProviderConfiguredError``) when no provider API key is
+    configured, rather than silently emitting a bundle with no mounted
+    providers. Every test in this file synthesizes a bundle, so it must not
+    depend on the ambient environment happening to export a real key.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+
+
 async def _load_synthesized_agent_bundle(worker_name: str) -> dict[str, Any]:
     """Real synthesis + real parse -> plain dict of the agent's own config
     (mirrors what ``coordinator.config["agents"][name]`` holds in production:
