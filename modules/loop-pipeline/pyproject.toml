@@ -57,6 +57,7 @@ package = true
 # covered by pipeline-runner's hermetic test_synthesized_bundle_providers.py
 # instead, via that module's own pytest `pythonpath` entry).
 [tool.uv.sources]
+amplifier-unified-llm-client = { path = "../unified-llm-client" }
 amplifier-module-remote-source = { path = "../remote-source" }
 # Test-only, same-repo path source: tests/test_worker_parity.py wires the
 # `direct` worker into worker-parity-kit's shared M1-M3 + TARGET suite (see
