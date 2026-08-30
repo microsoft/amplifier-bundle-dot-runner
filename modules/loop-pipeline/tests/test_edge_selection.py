@@ -270,23 +270,23 @@ def test_fail_node_all_conditional_edges_no_match_returns_none():
     assert result is None
 
 
-def test_fail_outcome_does_not_traverse_unconditional_edges():
-    """Spec §3.7 fail-fast intent: FAIL outcomes do NOT traverse unconditional edges.
+def test_fail_outcome_traverses_unconditional_edges():
+    """EXTENSIONS.md Sec16 REMOVED (feat/extensions-rip-3): canonical Sec3.3
+    step 4 is restored verbatim -- an unconditional edge is followed
+    regardless of outcome status, including FAIL.
 
-    Previously this test was named test_fail_node_with_unconditional_edge_routes
-    and asserted that unconditional edges were followed on FAIL.  That encoded
-    §3.3's pseudocode literally, but violated §3.7's stated fail-fast intent.
-
-    The corrected behavior: FAIL + unconditional edge → None.  The engine then
-    checks retry_target / fallback_retry_target and terminates if neither is set.
-
-    Pipeline authors who want fail-forward have three opt-in mechanisms:
-    - continue_on_fail="true"          → engine flips FAIL→SUCCESS before select_edge
-    - runs_on=always / runs_on=failure → downstream skip-gate override
-    - condition="outcome=fail" edge    → matched in Step 1 (unaffected by this change)
+    This test used to be named test_fail_outcome_does_not_traverse_
+    unconditional_edges and asserted the now-deleted runs_on=/continue_on_fail=
+    fail-fast gate (FAIL + unconditional edge -> None). Per the 2026-08-30
+    maintainer ruling ("rip those band-aids off"), that gate is gone: a
+    pipeline author who wants fail-fast routing instead uses an explicit
+    condition="outcome=fail" edge (matched in Step 1, unaffected by this
+    change) -- see MIGRATION.md.
     """
     # Graph: N1 → N2 [condition="outcome=success"]  (won't match FAIL)
-    #        N1 → N3                                  (unconditional — MUST NOT be followed on FAIL)
+    #        N1 → N3                                  (unconditional — now
+    #                                                   followed regardless
+    #                                                   of outcome status)
     edges = [
         Edge("N1", "N2", condition="outcome=success"),
         Edge("N1", "N3"),  # unconditional
@@ -294,9 +294,10 @@ def test_fail_outcome_does_not_traverse_unconditional_edges():
     graph = _make_graph(edges)
     outcome = Outcome(status=StageStatus.FAIL)
     result = select_edge("N1", outcome, PipelineContext(), graph)
-    assert result is None, (
-        "FAIL outcome must NOT traverse unconditional edges (spec §3.7 fail-fast). "
-        f"Expected None, got edge to '{result.to_node if result else None}'"
+    assert result is not None and result.to_node == "N3", (
+        "FAIL outcome must traverse the unconditional edge (canonical Sec3.3 "
+        f"step 4 restored). Expected edge to 'N3', got "
+        f"{result.to_node if result else None}"
     )
 
 

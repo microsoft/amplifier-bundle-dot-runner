@@ -56,7 +56,7 @@ check_extracted -> skip_note  [condition="context.tool.last_line=absent"]
 Before:
 
 ```dot
-critique [shape=box, prompt="Review the draft.", ...]
+critique [shape=box, prompt="Review the draft."]
 generate [shape=box, prompt="Address feedback.", feedback_from="critique"]
 critique -> generate [label="loop_restart", condition="outcome=fail"]
 ```
