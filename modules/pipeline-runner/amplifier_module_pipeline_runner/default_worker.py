@@ -93,8 +93,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import runner
 from amplifier_module_loop_pipeline.workers.registry import RENAMED_WORKER_NAMES
+
+from . import provider_detection, runner
 
 #: Registered worker NAMES this module knows how to wire under the hood --
 #: the whole user-facing vocabulary (``--worker <name>`` / node ``worker=``).
@@ -209,11 +210,13 @@ _CONTEXT_SIMPLE_GIT = (
 #: the three providers, and pinning ``@main`` here matches exactly what the
 #: old attractor bundle did -- deterministic, and proven by the live gate
 #: (see issue #338 report) rather than assumed.
-_PROVIDER_MODULE_SOURCES: dict[str, str] = {
-    "anthropic": "git+https://github.com/microsoft/amplifier-module-provider-anthropic@main",
-    "openai": "git+https://github.com/microsoft/amplifier-module-provider-openai@main",
-    "gemini": "git+https://github.com/microsoft/amplifier-module-provider-gemini@main",
-}
+# THREE-TABLE SYNC GUARD (issue idea-transfer from amplifier-bundle-
+# attractor#322 / this feature's own #338-shaped drift class): derived
+# from provider_detection.PROVIDER_SPECS -- THE ONE table detection,
+# module-sourcing, and profile-routing all read from now -- rather than
+# a fourth hand-maintained copy of the same 5 provider names. See
+# tests/test_provider_detection.py::test_three_tables_derive_from_one_registry.
+_PROVIDER_MODULE_SOURCES: dict[str, str] = provider_detection.module_source_map()
 
 #: Tool modules every synthesized named-worker bundle mounts.
 #:
@@ -266,27 +269,29 @@ _TOOL_MODULE_SOURCES: dict[str, str] = {
 }
 
 
-def _detect_configured_providers() -> list[str]:
-    """Canonical provider names with a configured API key, in priority order.
+def _detect_configured_providers(dot_source: str | None = None) -> list[str]:
+    """Provider names servable by a spawn worker, in registry order.
 
-    Delegates to ``unified_llm.client.detect_configured_providers`` -- the
-    SAME single source of truth ``runner._bootstrap_direct_provider`` uses
-    (via ``unified_llm.Client.from_env()``) for the ``direct`` worker's own
-    provider bootstrap (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY,
-    GOOGLE_API_KEY as a Gemini alias). One source of truth, imported here
-    rather than re-declared -- issue #338's root cause was exactly a bundle
-    author's list (``bundles/attractor-pipeline.yaml``) silently going stale
-    relative to the engine's own; a second hand-copied env-var list in this
-    module would reintroduce the same class of drift.
+    SUBSCRIPTION-PROVIDER EXPANSION (idea-transfer from microsoft/amplifier-
+    bundle-attractor#322): delegates to
+    ``provider_detection.detect_configured_providers`` -- the superset table
+    (native three, still sourced from ``unified_llm.client`` -- the SAME
+    single source of truth ``runner._bootstrap_direct_provider`` uses --
+    PLUS github-copilot/openai-chatgpt's own probes). One source of truth,
+    imported here rather than re-declared -- issue #338's root cause was
+    exactly a bundle author's list (``bundles/attractor-pipeline.yaml``)
+    silently going stale relative to the engine's own; a second hand-copied
+    env-var list in this module would reintroduce the same class of drift.
 
-    Imported lazily (inside this function, not at module top level) so that
-    importing ``default_worker`` never requires ``unified-llm-client`` to be
-    importable before it is actually needed -- mirrors
-    ``runner._bootstrap_direct_provider``'s own ``import unified_llm`` placement.
+    ``dot_source`` (optional) is the run's raw DOT text, forwarded so the
+    github-copilot probe's INTENT RULE can see whether some node explicitly
+    declares ``llm_provider="github-copilot"`` (see
+    ``provider_detection.explicitly_requested_providers``) -- ``None`` when
+    not available yet (e.g. a caller resolving a worker before any DOT
+    source is known), which simply means the generic GH_TOKEN/GITHUB_TOKEN
+    env vars never count on their own.
     """
-    from unified_llm.client import detect_configured_providers
-
-    return detect_configured_providers()
+    return provider_detection.detect_configured_providers(dot_source=dot_source)
 
 
 def _worker_available(name: str) -> bool:
@@ -328,7 +333,9 @@ def amplifier_agent_available() -> bool:
     return _worker_available(AMPLIFIER_AGENT_NAME)
 
 
-def _synthesize_agent_bundle_yaml(worker_name: str) -> str:
+def _synthesize_agent_bundle_yaml(
+    worker_name: str, *, dot_source: str | None = None
+) -> str:
     """Return the minimal bundle YAML text wiring *worker_name*'s adapter as
     the run's spawn orchestrator.
 
@@ -342,11 +349,24 @@ def _synthesize_agent_bundle_yaml(worker_name: str) -> str:
     This bundle text -- and the fact that a bundle is involved at all -- is
     entirely INTERNAL: it is never surfaced in the CLI, its help text, or
     any user-facing error (maintainer ruling: "bundles are under the hood").
+
+    ``dot_source`` (optional) is this run's raw DOT text -- forwarded only
+    to the github-copilot probe's intent-rule scan (see
+    ``provider_detection.explicitly_requested_providers``); never parsed as
+    a graph here (the graph is not parsed yet at synthesis time -- see
+    ``cli.py``'s call order).
     """
     adapter_module, _probe_module, adapter_source, orch_module = _ADAPTER_REGISTRY[
         worker_name
     ]
-    providers = sorted(runner.PROVIDER_KEY_ENV)
+    # THREE-TABLE SYNC GUARD: the profiles routing map's key set is the
+    # SAME registry _PROVIDER_MODULE_SOURCES and detection derive from --
+    # every KNOWN provider (not just the configured subset) is routed to
+    # the one synthesized agent, so a node declaring e.g. llm_provider=
+    # "openai-chatgpt" gets a clear "not mounted" failure at preflight/spawn
+    # time (naming the actual gap) rather than an opaque "no profile"
+    # failure for a name this synthesis never learned about.
+    providers = sorted(provider_detection.PROVIDER_SPECS)
     profile_lines = "\n".join(
         f"        {provider}: {DEFAULT_AGENT_NAME}" for provider in providers
     )
@@ -357,19 +377,24 @@ def _synthesize_agent_bundle_yaml(worker_name: str) -> str:
     # at all, so a spawned loop-agent/loop-amplifier-agent child always saw
     # `providers={}` and died on "Available providers: []" the instant any
     # box node dispatched (issue #338), even with a valid API key present.
-    configured = _detect_configured_providers()
+    #
+    # Subscription-provider expansion (idea-transfer from microsoft/
+    # amplifier-bundle-attractor#322): `configured` is now the SUPERSET
+    # (native three + github-copilot/openai-chatgpt, per their own probes --
+    # see provider_detection.py) rather than just the native three.
+    configured = _detect_configured_providers(dot_source=dot_source)
     if not configured:
-        supported = ", ".join(
-            f"{k}={v}" for k, v in sorted(runner.PROVIDER_KEY_ENV.items())
+        supported = "; ".join(
+            f"{name} ({provider_detection.credential_hint(name)})"
+            for name in provider_detection.PROVIDER_SPECS
         )
         raise runner.NoProviderConfiguredError(
             f"--worker {worker_name!r} needs a mounted LLM provider, but no "
-            "supported API key is configured in the environment. Set one of "
-            f"the following environment variables and retry: {supported} "
-            "(gemini also accepts GOOGLE_API_KEY). This is the SAME "
-            "fail-loud check the `direct` worker's own provider bootstrap "
-            "uses (runner._bootstrap_direct_provider) -- never a silent "
-            "empty provider mount."
+            "supported credential is configured in the environment. "
+            f"Configure one of: {supported}. This is the SAME fail-loud "
+            "check the `direct` worker's own provider bootstrap uses "
+            "(runner._bootstrap_direct_provider) for the native three -- "
+            "never a silent empty provider mount."
         )
     provider_lines = "\n".join(
         f"  - module: provider-{name}\n    source: {_PROVIDER_MODULE_SOURCES[name]}"
@@ -437,7 +462,7 @@ def synthesize_default_agent_bundle_yaml() -> str:
     return _synthesize_agent_bundle_yaml(AMPLIFIER_AGENT_NAME)
 
 
-def write_agent_bundle(worker_name: str) -> Path:
+def write_agent_bundle(worker_name: str, *, dot_source: str | None = None) -> Path:
     """Write *worker_name*'s synthesized bundle YAML to a fresh temp file.
 
     A dedicated temp directory (mirrors ``cli.py``'s own
@@ -445,10 +470,16 @@ def write_agent_bundle(worker_name: str) -> Path:
     ``--logs-root``) -- independent of this run's own ``--logs-root``/
     ``--cwd`` so writing it never races their creation, and safe to call
     before either is resolved.
+
+    ``dot_source`` (optional) is forwarded to
+    :func:`_synthesize_agent_bundle_yaml` -- see that function's docstring.
     """
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"dot-runner-{worker_name}-"))
     bundle_path = tmp_dir / "bundle.yaml"
-    bundle_path.write_text(_synthesize_agent_bundle_yaml(worker_name), encoding="utf-8")
+    bundle_path.write_text(
+        _synthesize_agent_bundle_yaml(worker_name, dot_source=dot_source),
+        encoding="utf-8",
+    )
     return bundle_path
 
 
@@ -458,7 +489,7 @@ def write_default_agent_bundle() -> Path:
 
 
 def resolve(
-    *, worker: str | None, prog: str = "dot-runner"
+    *, worker: str | None, prog: str = "dot-runner", dot_source: str | None = None
 ) -> tuple[str | None, str | None]:
     """Resolve this run's effective ``(worker, bundle)`` pair.
 
@@ -516,7 +547,7 @@ def resolve(
 
     if worker is not None and worker in _ADAPTER_REGISTRY:
         if _worker_available(worker):
-            return None, str(write_agent_bundle(worker))
+            return None, str(write_agent_bundle(worker, dot_source=dot_source))
         adapter_module, probe_module, _source, _orch_module = _ADAPTER_REGISTRY[worker]
         if worker == AMPLIFIER_AGENT_NAME:
             # WAVE 6: amplifier-agent is an unconditional dependency of the
@@ -549,7 +580,9 @@ def resolve(
     # abnormal, broken-install state, not a legitimate "not installed by
     # choice" state.
     if _worker_available(AMPLIFIER_AGENT_NAME):
-        return worker, str(write_agent_bundle(AMPLIFIER_AGENT_NAME))
+        return worker, str(
+            write_agent_bundle(AMPLIFIER_AGENT_NAME, dot_source=dot_source)
+        )
 
     # WAVE 7 (feat/fail-loud-worker-names): FAIL LOUD, never degrade. A
     # broken default-worker probe used to fall back to worker=direct

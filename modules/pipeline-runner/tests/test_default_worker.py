@@ -263,9 +263,7 @@ def test_resolve_no_choice_available_synthesizes_amplifier_agent_bundle(monkeypa
     assert "loop-amplifier-agent" in text  # the ADAPTER's real module name
 
 
-def test_resolve_no_choice_broken_env_fails_loud_never_degrades(
-    monkeypatch, capsys
-):
+def test_resolve_no_choice_broken_env_fails_loud_never_degrades(monkeypatch, capsys):
     """WAVE 7 (feat/fail-loud-worker-names): the runtime import guard
     tripping with NO explicit --worker used to degrade to worker=direct
     (now llm-direct) with one stderr notice. That degraded fallback path is
@@ -290,6 +288,7 @@ def test_resolve_retired_direct_name_fails_loud_naming_replacement(monkeypatch, 
     """WAVE 7: `direct` was renamed to `llm-direct` -- no alias. The old
     name fails loud immediately (the probe is never even consulted), and
     the error message IS the migration hint."""
+
     def _boom(name):
         raise AssertionError("probe must not run for a retired name")
 
@@ -302,8 +301,11 @@ def test_resolve_retired_direct_name_fails_loud_naming_replacement(monkeypatch, 
     assert "'llm-direct'" in err
 
 
-def test_resolve_retired_loop_agent_name_fails_loud_naming_replacement(monkeypatch, capsys):
+def test_resolve_retired_loop_agent_name_fails_loud_naming_replacement(
+    monkeypatch, capsys
+):
     """WAVE 7: `loop-agent` was renamed to `coding-agent` -- no alias."""
+
     def _boom(name):
         raise AssertionError("probe must not run for a retired name")
 
@@ -365,9 +367,18 @@ def test_synthesized_bundle_parses_via_real_amplifier_foundation(
         loaded
     )
     assert declared_worker == "spawn"
+    # Subscription-provider expansion (idea-transfer from microsoft/
+    # amplifier-bundle-attractor#322): the profiles map now routes every
+    # KNOWN provider (provider_detection.PROVIDER_SPECS -- native three PLUS
+    # github-copilot/openai-chatgpt), not just runner_mod.PROVIDER_KEY_ENV's
+    # native-3 (which stays the PURE llm-direct/CLI --provider table and is
+    # deliberately not grown -- see provider_detection.py's module
+    # docstring).
+    from amplifier_module_pipeline_runner import provider_detection
+
     assert declared_profiles == {
         provider: default_worker.DEFAULT_AGENT_NAME
-        for provider in runner_mod.PROVIDER_KEY_ENV
+        for provider in provider_detection.PROVIDER_SPECS
     }
 
     agent_entry = loaded.agents[default_worker.DEFAULT_AGENT_NAME]
@@ -418,9 +429,7 @@ def test_cmd_run_wires_synthesized_bundle_when_available(monkeypatch, tmp_path):
     assert default_worker.DEFAULT_AGENT_NAME in Path(captured["bundle"]).read_text()
 
 
-def test_cmd_run_broken_env_fails_loud_never_falls_back(
-    monkeypatch, tmp_path, capsys
-):
+def test_cmd_run_broken_env_fails_loud_never_falls_back(monkeypatch, tmp_path, capsys):
     """WAVE 7: no more degraded worker=direct/llm-direct fallback -- a
     broken default-worker install now aborts the run entirely before
     run_pipeline is ever called."""
@@ -477,7 +486,9 @@ def test_cmd_run_explicit_worker_llm_direct_respected_even_when_available(
     assert capsys.readouterr().err == ""
 
 
-def test_cmd_run_explicit_worker_coding_agent_wires_its_own_bundle(monkeypatch, tmp_path):
+def test_cmd_run_explicit_worker_coding_agent_wires_its_own_bundle(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: True)
     dot_path = _make_dot_file(tmp_path)
 

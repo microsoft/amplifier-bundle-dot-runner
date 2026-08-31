@@ -1,6 +1,6 @@
 [project]
 name = "amplifier-module-loop-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Attractor coding agent loop orchestrator for Amplifier"
 license = "MIT"
 requires-python = ">=3.11"

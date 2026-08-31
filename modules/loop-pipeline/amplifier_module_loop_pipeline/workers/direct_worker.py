@@ -52,6 +52,7 @@ from typing import Any
 
 from ..backend import (
     _MAX_TOOL_LOOP_ROUNDS,
+    SUBSCRIPTION_ONLY_PROVIDERS,
     _build_unified_tools,
     _default_model_stable_only,
     _parse_outcome,
@@ -171,6 +172,24 @@ class DirectWorker:
         import unified_llm
 
         provider_name = node.llm_provider or node.attrs.get("llm_provider", "anthropic")
+
+        # llm-direct is the PURE unified-llm-spec client (SDK-direct
+        # anthropic/openai/gemini only, by maintainer ruling) -- it is
+        # architecturally incapable of serving a subscription provider
+        # (github-copilot/openai-chatgpt), which has no unified_llm SDK
+        # adapter at all. Fail loud immediately, naming the actual fix,
+        # rather than letting this fall through to a confusing generic
+        # "no adapter found for provider" error several calls later.
+        if provider_name in SUBSCRIPTION_ONLY_PROVIDERS:
+            raise ValueError(
+                f"Node '{node.id}' set llm_provider={provider_name!r}, but "
+                "the `llm-direct` worker is a pure unified-llm-spec client "
+                "(SDK-direct anthropic/openai/gemini only) and cannot serve "
+                f"it. {provider_name} is available via the coding-agent and "
+                "amplifier-agent workers -- add --worker coding-agent (or "
+                "--worker amplifier-agent), or set llm_provider to one of: "
+                "anthropic, openai, gemini."
+            )
         model_token = _resolve_model(node)
         # Rung 4 (per-provider default model, spec Sec8.5 item 4) may need
         # stable_only=False when a provider's own current flagship is itself

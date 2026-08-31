@@ -368,7 +368,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     # bet for new dot-runner surfaces). A no-op the moment the caller made
     # an explicit --worker choice. Bundle machinery (if any) is synthesized
     # internally by default_worker.resolve -- never surfaced here.
-    worker, bundle = default_worker.resolve(worker=args.worker, prog=prog)
+    worker, bundle = default_worker.resolve(
+        worker=args.worker, prog=prog, dot_source=dot_source
+    )
 
     print(f"{prog}: running pipeline cwd={cwd} logs={logs_root}")
 
@@ -495,7 +497,14 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
     # Same named-worker resolution as 'run' -- consistent on resume (a
     # no-op the moment the caller made an explicit --worker choice).
-    worker, bundle = default_worker.resolve(worker=args.worker, prog=prog)
+    # dot_source here is only what --dot-file supplied above (may be None --
+    # the common resume case relies on the checkpoint's own embedded source,
+    # which is not read until runner.resume_pipeline runs); the
+    # github-copilot intent-rule scan simply sees no explicit-ask signal in
+    # that case (the safe direction -- see provider_detection.py).
+    worker, bundle = default_worker.resolve(
+        worker=args.worker, prog=prog, dot_source=dot_source
+    )
 
     print(f"{prog}: resuming run cwd={cwd} logs={run_dir}")
 

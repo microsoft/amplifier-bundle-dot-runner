@@ -34,6 +34,7 @@ import copy
 import json
 import logging
 import re
+from collections.abc import Mapping
 from typing import Any, overload
 
 try:
@@ -93,7 +94,7 @@ _SPAWN_WORKER_SENTINEL = "spawn"
 
 
 def _renamed_hint(name: str) -> str:
-    """" (renamed: <old> -> <new>)" clause for an old, pre-rename worker
+    """ " (renamed: <old> -> <new>)" clause for an old, pre-rename worker
     name -- empty string otherwise. See ``workers.registry.RENAMED_WORKER_NAMES``
     (WAVE 7, feat/fail-loud-worker-names): ``direct``->``llm-direct``,
     ``loop-agent``->``coding-agent``. The unknown-worker error IS the
@@ -373,8 +374,28 @@ class AmplifierBackend:
             self._spawn_fn = _safe_get_spawn_fn(self._coordinator)
             self._spawn_checked = True
 
-        # 2. Resolve provider and profile from node attributes
-        provider = node.attrs.get("llm_provider", "anthropic")
+        # 2. Resolve provider and profile from node attributes.
+        #
+        # Sole-mounted default (idea-transfer from microsoft/amplifier-
+        # bundle-attractor#322, credited in this feature's commit): a node
+        # that declares NO llm_provider at all used to fall back to a
+        # LITERAL "anthropic" unconditionally -- wrong the instant a run
+        # mounts some other single provider (e.g. a subscription-only
+        # environment with just github-copilot configured), since profile
+        # lookup below would then look up "anthropic" in `self._profiles`
+        # and either silently ride an unrelated agent or fail deep inside
+        # the spawned child with a confusing message that never mentions
+        # the node actually asked for nothing. When exactly one provider is
+        # mounted (`self._profiles` has exactly one key -- profiles route
+        # every DECLARED provider to an agent, so its key set IS this run's
+        # mounted set) there is no ambiguity to guess through: default to
+        # it. Zero or multiple mounted preserves the pre-existing literal
+        # "anthropic" fallback BYTE-FOR-BYTE (verified today's behavior,
+        # deliberately unchanged here -- see
+        # tests/test_sole_mounted_provider_default.py for both proofs).
+        provider = node.attrs.get("llm_provider") or _implicit_default_provider(
+            self._profiles
+        )
         model = node.attrs.get("llm_model")
         model = await _resolve_concrete_model(provider, model, emit=self._emit)
         reasoning_effort = node.attrs.get("reasoning_effort")
@@ -1007,6 +1028,70 @@ class AmplifierBackend:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Subscription providers (idea-transfer from microsoft/amplifier-bundle-
+# attractor#322, credited in this feature's commit): github-copilot and
+# openai-chatgpt are servable ONLY through a spawn worker (coding-agent /
+# amplifier-agent) -- never through the in-process `direct`/`llm-direct`
+# worker's own unified-llm-spec client (architectural ruling: llm-direct is
+# the PURE unified-llm-spec client, SDK-direct anthropic/openai/gemini
+# only). Declared here, NOT imported from pipeline-runner -- a HIGHER layer
+# this module must never depend on -- mirrors preflight.py's own
+# PROVIDER_KEY_ENV copy, kept in sync by convention/guard test rather than
+# import (see pipeline-runner's tests/test_provider_detection.py).
+SUBSCRIPTION_ONLY_PROVIDERS: frozenset[str] = frozenset(
+    {"github-copilot", "openai-chatgpt"}
+)
+
+#: Per-provider hint appended to the "cannot live-resolve llm_model" error
+#: below -- both providers proxy MULTIPLE model families through one
+#: mounted adapter, so unified_llm.resolve_latest_for (adapters only for
+#: the pure anthropic/openai/gemini triad) can never resolve a family-
+#: token/glob llm_model (e.g. "sonnet") for them. An explicit CONCRETE
+#: llm_model always works (passed straight through below, no resolution);
+#: omitting llm_model entirely also works, since both mounted provider
+#: modules document their own sensible default_model (see
+#: specs/EXTENSIONS.md's dated addendum on this boundary).
+_SUBSCRIPTION_MODEL_HINTS: dict[str, str] = {
+    "github-copilot": (
+        "github-copilot serves multiple model families -- set llm_model to "
+        'an explicit id, e.g. llm_model="claude-sonnet-4.6" (a family '
+        'token/glob like "sonnet" cannot be live-resolved for this '
+        "provider). Omitting llm_model entirely also works: the mounted "
+        "module defaults to its own configured default_model "
+        '("claude-opus-4.5" unless overridden).'
+    ),
+    "openai-chatgpt": (
+        "openai-chatgpt serves multiple model families -- set llm_model to "
+        'an explicit id, e.g. llm_model="gpt-5.5" (a family token/glob '
+        'like "sonnet" cannot be live-resolved for this provider). '
+        "Omitting llm_model entirely also works: the mounted module "
+        'resolves its own default_model="latest" dynamically.'
+    ),
+}
+
+
+def _implicit_default_provider(profiles: Mapping[str, str]) -> str:
+    """Fallback ``llm_provider`` for a node that declares none at all.
+
+    Sole-mounted default (idea-transfer from microsoft/amplifier-bundle-
+    attractor#322): when exactly ONE provider is mounted (``profiles`` --
+    the provider -> agent routing map -- has exactly one key), an implicit
+    node defaults to it: there is no ambiguity to guess through, and the
+    pre-existing literal "anthropic" default broke the instant a run
+    mounted some other single provider (e.g. a subscription-only
+    environment with just github-copilot configured).
+
+    Zero or MULTIPLE mounted preserves the pre-existing literal "anthropic"
+    fallback byte-for-byte -- deliberately UNCHANGED (verified today's
+    behavior; see this feature's report for the "keep existing behavior"
+    scope decision) so no existing caller relying on it regresses.
+    """
+    if len(profiles) == 1:
+        return next(iter(profiles))
+    return "anthropic"
+
+
 def _resolve_model(node: Node) -> str:
     """Resolve the LLM model identifier from a pipeline node.
 
@@ -1192,6 +1277,25 @@ async def _resolve_concrete_model(
     """
     if not model or not _is_model_pattern(model):
         return model
+
+    # Subscription providers (idea-transfer from microsoft/amplifier-bundle-
+    # attractor#322): both proxy MULTIPLE model families through one
+    # mounted adapter, and unified_llm.resolve_latest_for below has SDK
+    # adapters only for the pure anthropic/openai/gemini triad -- it can
+    # never resolve a family-token/glob llm_model (e.g. "sonnet") for them.
+    # Caught here, BEFORE the generic "no adapter found for provider" error
+    # a live resolve_latest_for call would otherwise raise, so the fail-loud
+    # message names the REAL fix (an explicit concrete llm_model, or none at
+    # all -- see _SUBSCRIPTION_MODEL_HINTS) instead of a confusing "set an
+    # API key" hint that does not apply to a subscription provider at all.
+    if provider in SUBSCRIPTION_ONLY_PROVIDERS:
+        hint = _SUBSCRIPTION_MODEL_HINTS.get(provider, "")
+        raise ValueError(
+            f"Cannot live-resolve llm_model={model!r} for "
+            f"llm_provider={provider!r}: unified_llm.resolve_latest_for has "
+            "no adapter for subscription providers (anthropic/openai/gemini "
+            f"only). {hint}"
+        )
 
     cache_key = (provider, model, stable_only)
     cached = _MODEL_RESOLUTION_CACHE.get(cache_key)

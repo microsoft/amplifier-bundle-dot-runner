@@ -1,6 +1,6 @@
 [project]
 name = "amplifier-module-pipeline-runner"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reusable engine-driving library + CLI for standalone DOT pipeline runs"
 license = "MIT"
 requires-python = ">=3.11"

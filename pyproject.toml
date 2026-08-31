@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "amplifier-dot-runner"
-version = "0.3.0"
+version = "0.4.0"
 description = "dot-runner: the engine that runs .dot pipelines. Root install package -- `uv tool install git+https://github.com/microsoft/amplifier-bundle-dot-runner` (no #subdirectory) lands exactly one console script, dot-runner, with microsoft/amplifier-agent embedded as its unconditional default worker. Thin re-export of modules/pipeline-runner; see amplifier_dot_runner's module docstring."
 readme = "README.md"
 license = "MIT"
