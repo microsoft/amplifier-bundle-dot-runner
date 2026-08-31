@@ -228,6 +228,13 @@ def test_fix_bare_run_pipeline_no_longer_silently_lands_on_llm_direct(
     installed) now carries the amplifier-agent worker + providers in its
     mount plan, NOT the text-only `llm-direct` worker.
     """
+    # Hermetic: simulate a configured provider so the bundle-synthesis
+    # step (default_worker._detect_configured_providers) does not depend
+    # on ambient environment state -- mirrors test_synthesized_bundle_
+    # providers.py's own established convention. Without this, this test
+    # passes/fails based on whether the machine running it happens to have
+    # a real provider API key set (a real hermeticity bug, caught by CI).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: True)
     ref_capture = _patch_load_named_bundle_capturing_ref(monkeypatch)
     captured = _capture_drive_engine(monkeypatch)
@@ -302,6 +309,8 @@ def test_fix_resume_pipeline_applies_the_same_ladder(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
+    # Hermetic: see the sibling run_pipeline test's comment above.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: True)
     _patch_load_named_bundle_capturing_ref(monkeypatch)
     captured = _capture_drive_engine(monkeypatch)
@@ -351,6 +360,9 @@ def test_worker_llm_direct_explicit_no_bundle_no_probe(monkeypatch, tmp_path):
 def test_worker_named_adapter_explicit_synthesizes_and_wires_bundle(
     monkeypatch, tmp_path, worker_name, expected_module_text
 ):
+    # Hermetic: see test_fix_bare_run_pipeline_no_longer_silently_lands_on_
+    # llm_direct's comment above.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     monkeypatch.setattr(default_worker, "_worker_available", lambda name: True)
     ref_capture = _patch_load_named_bundle_capturing_ref(monkeypatch)
     captured = _capture_drive_engine(monkeypatch)
@@ -411,6 +423,12 @@ def test_worker_unrecognized_name_fails_loud_listing_registered_workers(
     forwarded unchanged to the engine's own worker registry, which raises a
     loud `ValueError` listing every known worker -- the SAME mechanism the
     CLI relies on downstream (never re-implemented here)."""
+    # Hermetic: an unrecognized name still reaches the direct-provider
+    # bootstrap first (no bundle -> no session.spawn -> the bootstrap is
+    # fatal-if-missing) before the engine ever sees the node dispatch that
+    # raises the ValueError under test -- simulate a configured provider so
+    # this reaches that dispatch regardless of ambient environment state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     _patch_bare_base_bundle(monkeypatch)
 
     with pytest.raises(ValueError) as exc_info:
