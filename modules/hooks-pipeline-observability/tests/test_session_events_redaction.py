@@ -654,6 +654,14 @@ def test_ported_shapes_have_not_drifted_from_the_canonical_set():
     assert redaction.SENSITIVE_NAME_TAILS == canonical.SENSITIVE_NAME_TAILS
     assert redaction.ASSIGNMENT_PATTERN.pattern == canonical.ASSIGNMENT_PATTERN.pattern
     assert redaction.ASSIGNMENT_PATTERN.flags == canonical.ASSIGNMENT_PATTERN.flags
+    # tracker attractor-6rt: the value-shape gate is a NEW named constant on
+    # both sides of this seam (MIN_ASSIGNMENT_VALUE_LEN) -- pin it explicitly
+    # rather than trust that ASSIGNMENT_PATTERN.pattern equality above would
+    # always catch drift in it (it would, since the pattern is DERIVED from
+    # the constant, but a future refactor that hardcodes the digit on one
+    # side and not the other should fail HERE, by name, not just by a
+    # confusing pattern-string diff).
+    assert redaction.MIN_ASSIGNMENT_VALUE_LEN == canonical.MIN_ASSIGNMENT_VALUE_LEN
 
 
 def test_every_ported_shape_actually_redacts():
@@ -708,6 +716,11 @@ def test_the_two_doors_do_not_merely_SHARE_a_pattern_they_BEHAVE_alike():
         "PASSWORD=" + "\\" * 40,
         json.dumps({"output": f"{name}={tail}" + "\\" * 20}),
         json.dumps({"result": f"{name}={tail}" + "\\" + "\nPATH=/usr/bin\nHOME=/root"}),
+        # tracker attractor-6rt: short prose values after a real credential
+        # tail must be freed IDENTICALLY at both doors, not just at the
+        # canonical one.
+        f"{name}=success",
+        f"{key}=nope",
     ]
     for probe in probes:
         ported, ported_findings = redaction.redact_text(probe)

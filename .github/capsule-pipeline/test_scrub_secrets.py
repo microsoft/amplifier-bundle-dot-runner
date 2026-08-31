@@ -429,7 +429,12 @@ class ScrubTests(unittest.TestCase):
         )
         for name in redacts:
             with self.subTest(name=name, expect="redact"):
-                text, shapes = scrub_secrets.scrub_text(f"{name}=valuevalue\n", {})
+                # Placeholder value is >= MIN_ASSIGNMENT_VALUE_LEN chars (see
+                # attractor-6rt's value-shape gate) so this test keeps
+                # probing what it says it probes -- NAME anchoring -- and
+                # is not accidentally defeated by the VALUE-side floor this
+                # same file also enforces.
+                text, shapes = scrub_secrets.scrub_text(f"{name}=valuevaluevaluevalue\n", {})
                 self.assertEqual(text, f"{name}=[REDACTED:assignment]\n")
                 self.assertEqual(shapes, [f"assignment:{name}"])
         for name in survives:
@@ -1090,6 +1095,100 @@ class AssignmentValueGrammarTests(unittest.TestCase):
         self.assertEqual(shapes, [])
         # The gate's entropy layer is the backstop for material like this;
         # what matters for THIS rule is that it does not over-reach instead.
+
+
+# ---- tracker attractor-6rt: the value-shape gate on prose false positives ----
+#
+# RED-PROOF: every fixture below is a REAL sensitive-tail name (one of
+# SENSITIVE_NAME_TAILS -- not a "key"/"token" bare word, which the
+# end-anchored NAME rule (issue #205) already leaves alone) followed by a
+# short, ordinary English word or status token -- exactly the "monitor's own
+# report loses its verdict sentence" shape the tracker describes. Each one
+# is CORRUPTED on the pre-attractor-6rt 4-character floor (verified against
+# git history at this suite's base commit) and SURVIVES byte-identical here.
+class ProseFalsePositivesSurviveScrubTests(unittest.TestCase):
+    def scrub(self, text: str) -> tuple[str, list[str]]:
+        return scrub_secrets.scrub_text(text, {})
+
+    def test_short_verdict_words_after_a_real_credential_tail_survive(self) -> None:
+        cases = {
+            "token-validation-verdict": (
+                "Auth check: the session's GH_TOKEN=valid, so the request "
+                "was authorized -- proceeding.",
+            ),
+            "short-status-word": ("SERVICE_TOKEN=success and the run finished cleanly.",),
+            "short-secret-placeholder-word": ("the SESSION_SECRET=abcd was rotated last week.",),
+            "short-password-word": (
+                "CLIENT_PASSWORD=wrong on the first try, then the retry passed.",
+            ),
+            "short-api-key-word": ("note: API_KEY=nope, retrying auth momentarily.",),
+            "ellipsis-and-credentials-tail": (
+                "the monitor wrote GOOGLE_APPLICATION_CREDENTIALS=missing this "
+                "run... investigating.",
+            ),
+            "bare_yes": ("MY_PASSWORD=yes\n",),
+            "bare_ok": ("X_SECRET=ok\n",),
+            "bare_none": ("DB_PASSWORD=none\n",),
+        }
+        for label, (line,) in cases.items():
+            with self.subTest(case=label):
+                after, shapes = self.scrub(line)
+                self.assertEqual(
+                    after,
+                    line,
+                    f"{label}: innocent prose was rewritten -- "
+                    "the value-shape gate did not free it",
+                )
+                self.assertEqual(shapes, [])
+
+    def test_the_same_short_values_do_not_fire_the_scan_gate_either(self) -> None:
+        """The scrub-side fix must not leave `scan`/`gate` still blocking an
+        upload on the exact same freed prose -- that would just move the
+        corruption from "rewritten" to "the evidence never ships"."""
+        cases = (
+            "GH_TOKEN=success",
+            "SESSION_SECRET=abcd",
+            "CLIENT_PASSWORD=wrong",
+            "API_KEY=nope",
+        )
+        for line in cases:
+            with self.subTest(line=line):
+                self.assertEqual(scrub_secrets.scan_text(line, {}), [])
+
+    def test_known_residual_short_secret_below_the_value_floor(self) -> None:
+        """HONEST RESIDUAL, pinned exactly like the file's other named
+        residuals: a real secret SHORTER than MIN_ASSIGNMENT_VALUE_LEN,
+        using a recognized name tail, now survives this layer -- it always
+        would have been sub-threshold for the layer-4 entropy heuristic too
+        (that candidate regex has its own 28-char floor), so this narrows
+        the best-effort CLEANER, not the upload GATE's guarantee for this
+        job's own secrets (layer 3, exact literal match via
+        SCRUB_WATCH_ENV, is the mitigation for a known-short custom
+        credential). Both directions pinned so the exact boundary is
+        provable, not just described.
+        """
+        floor = scrub_secrets.MIN_ASSIGNMENT_VALUE_LEN
+        short_secret = ("x9" * 8)[: floor - 1]  # one char short of the floor
+        long_secret = ("x9" * 8)[:floor]  # exactly at the floor
+        self.assertEqual(len(short_secret), floor - 1)
+        self.assertEqual(len(long_secret), floor)
+
+        below, shapes_below = self.scrub(f"DB_PASSWORD={short_secret}\n")
+        self.assertEqual(below, f"DB_PASSWORD={short_secret}\n")  # residual: not redacted
+        self.assertEqual(shapes_below, [])
+
+        at_floor, shapes_at = self.scrub(f"DB_PASSWORD={long_secret}\n")
+        self.assertEqual(at_floor, "DB_PASSWORD=[REDACTED:assignment]\n")
+        self.assertEqual(shapes_at, ["assignment:DB_PASSWORD"])
+
+    def test_full_credential_battery_is_unaffected_by_the_raised_floor(self) -> None:
+        """Cross-check against this suite's OWN battery constants: every
+        value the existing credential tests actually use is already at or
+        above the new floor, so this fix trades nothing away from them."""
+        floor = scrub_secrets.MIN_ASSIGNMENT_VALUE_LEN
+        self.assertGreaterEqual(len(fake_tail()), floor)
+        self.assertGreaterEqual(len(FAKE_ASSIGNMENT_VALUE), floor)
+
 
 if __name__ == "__main__":
     unittest.main()

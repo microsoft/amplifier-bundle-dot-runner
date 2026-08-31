@@ -343,21 +343,70 @@ SENSITIVE_NAME_TAILS = (
 # never an over-redaction, and layer 4 (scan/gate) remains the backstop.
 #
 # WHAT DID NOT CHANGE, and each is load-bearing: the end-anchored name
-# (`total_tokens=` remains untouchable), the 4-character floor, and the fact
-# that no branch crosses a newline -- an unquoted value still stops dead at
-# whitespace, so a redaction can never swallow a following token or the rest
-# of a log line.
+# (`total_tokens=` remains untouchable), and the fact that no branch crosses
+# a newline -- an unquoted value still stops dead at whitespace, so a
+# redaction can never swallow a following token or the rest of a log line.
+#
+# THE VALUE-SHAPE GATE (tracker attractor-6rt): the floor DID change, from
+# 4 to MIN_ASSIGNMENT_VALUE_LEN below. Live evidence: a monitor's own
+# report prose -- a sentence naming a real credential-shaped variable while
+# reporting its VALIDATION VERDICT, not its value ("...the session's
+# GH_TOKEN=valid, so the request was authorized...") -- was rewritten by
+# this rule exactly as if "valid" were the leaked secret, because the old
+# 4-character floor does not care what a value LOOKS like, only how long it
+# is. NAME anchoring (issue #205) already closed the false-positive class
+# where the WORD was wrong (`total_tokens=` etc.); this closes the class
+# where the word is a real credential tail but the VALUE never looked like
+# a secret -- a short, ordinary English word/status token following it
+# ("valid", "yes", "success", "ok", "abcd", "wrong", "missing", "none", ...).
+#
+# WHY 16, NOT ARBITRARY: it is the floor this file's OWN credential battery
+# already assumes. `fake_tail()` in the test suite mints exactly 16 hex
+# characters (`secrets.token_hex(8)`), and every literal credential value
+# exercised anywhere in scrub/scan/gate tests is >= 16 characters already.
+# Raising the floor to 16 is therefore a pure narrowing at the FALSE-POSITIVE
+# end (frees every short verdict word) with zero narrowing at the
+# TRUE-POSITIVE end this repo's own tests exercise -- see
+# test_credential_assignment_shapes_still_redact,
+# test_real_credential_battery_still_detected, and every AssignmentValueGrammarTests
+# case (all tail-based, all >= 16 chars) for the pinned proof.
+#
+# NO CHARSET/DIGIT GATE -- considered, and deliberately REJECTED. A
+# "value must contain >= 1 digit" gate was on the table and does not survive
+# scrutiny: layer 4's own entropy heuristic already excludes an all-letter
+# run outright (`_entropy_suspicious`'s `core.isalpha()` guard, by design --
+# see that function's docstring), so requiring a digit HERE would open a
+# real coverage hole -- a genuine all-letter secret of 16+ characters would
+# then be caught by NEITHER layer. A pure length floor closes no door a
+# digit requirement would have closed better, and it opens none that a
+# digit requirement would have kept shut.
+#
+# HONEST RESIDUAL (the trade this narrowing makes, stated plainly, the same
+# way the end-anchor narrowing above states its own): a genuinely real
+# secret SHORTER than MIN_ASSIGNMENT_VALUE_LEN characters, using a
+# recognized name tail (a hand-chosen short password -- never a
+# service-issued key/token, which are always far longer in practice), now
+# survives this layer's scrub. It was already effectively unreachable by
+# layer 4 too (the entropy candidate regex has its own 28-character floor),
+# so this narrows the best-effort CLEANER, never the upload GATE's guarantee
+# for this job's OWN secrets: an operator holding a known-short, non-standard
+# credential should name it via `SCRUB_WATCH_ENV` so layer 3 (exact literal
+# match, shape- and length-independent) still covers it. See
+# test_known_residual_short_secret_below_the_value_floor for this exact
+# boundary pinned in both directions.
+MIN_ASSIGNMENT_VALUE_LEN = 16
+
 _ASSIGNMENT_VALUE_CHAR = r"[^\s\"'\\]"
 _ASSIGNMENT_VALUE_CONT = r"[^\s\"'\\,:;)\]}]"
 _ASSIGNMENT_VALUE = (
     # (a) double-quoted, including the JSON-escaped \"...\" form
-    r"(?P<quote>\\?\")[^\"\r\n]{4,}?(?<!\\)(?=\\?\")"
+    r"(?P<quote>\\?\")[^\"\r\n]{%d,}?(?<!\\)(?=\\?\")"
     # (b) single-quoted
-    r"|(?P<squote>')[^'\"\r\n]{4,}?(?<!\\)(?=')"
+    r"|(?P<squote>')[^'\"\r\n]{%d,}?(?<!\\)(?=')"
     # (c) unquoted run, with the two fenced joiners
     r"|(?:" + _ASSIGNMENT_VALUE_CHAR + r"|[\"'](?=" + _ASSIGNMENT_VALUE_CONT + r")"
-    r"|\\\\|\\(?![\s\\]|(?-i:[nrtu]))){4,}(?<!\\)"
-)
+    r"|\\\\|\\(?![\s\\]|(?-i:[nrtu]))){%d,}(?<!\\)"
+) % (MIN_ASSIGNMENT_VALUE_LEN, MIN_ASSIGNMENT_VALUE_LEN, MIN_ASSIGNMENT_VALUE_LEN)
 
 # The negative lookahead keeps an already-redacted value -- bare, quoted, or
 # JSON-escaped-quoted -- from being re-redacted into a less specific shape.

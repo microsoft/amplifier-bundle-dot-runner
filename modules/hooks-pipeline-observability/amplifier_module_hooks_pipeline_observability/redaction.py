@@ -180,20 +180,31 @@ SENSITIVE_NAME_TAILS = (
 #: stop is the CORRECT reading here; the residual belongs to the shared
 #: canonical rule, and it is always a non-redaction, never an over-redaction.
 #:
-#: Unchanged: the end-anchored name, the 4-character floor, and the fact that
-#: no branch crosses a newline -- an unquoted value still stops dead at
-#: whitespace, so a redaction can never swallow a following token.
+#: Unchanged: the end-anchored name, and the fact that no branch crosses a
+#: newline -- an unquoted value still stops dead at whitespace, so a
+#: redaction can never swallow a following token.
+#:
+#: THE VALUE-SHAPE GATE (tracker attractor-6rt), ported from the canonical
+#: set with the rest of layer 2 -- the floor DID change, from 4 to
+#: ``MIN_ASSIGNMENT_VALUE_LEN`` below. See
+#: ``.github/capsule-pipeline/scrub_secrets.py``'s own comment on this
+#: constant for the full rationale (the false positive it fixes, why 16 and
+#: not smaller, why no digit/charset gate, and the honest residual); the
+#: drift tripwire test asserts this seam's copy of the constant and the
+#: derived pattern stay byte-identical to that one.
+MIN_ASSIGNMENT_VALUE_LEN = 16
+
 _ASSIGNMENT_VALUE_CHAR = r"[^\s\"'\\]"
 _ASSIGNMENT_VALUE_CONT = r"[^\s\"'\\,:;)\]}]"
 _ASSIGNMENT_VALUE = (
     # (a) double-quoted, including the JSON-escaped \"...\" form
-    r"(?P<quote>\\?\")[^\"\r\n]{4,}?(?<!\\)(?=\\?\")"
+    r"(?P<quote>\\?\")[^\"\r\n]{%d,}?(?<!\\)(?=\\?\")"
     # (b) single-quoted
-    r"|(?P<squote>')[^'\"\r\n]{4,}?(?<!\\)(?=')"
+    r"|(?P<squote>')[^'\"\r\n]{%d,}?(?<!\\)(?=')"
     # (c) unquoted run, with the two fenced joiners
     r"|(?:" + _ASSIGNMENT_VALUE_CHAR + r"|[\"'](?=" + _ASSIGNMENT_VALUE_CONT + r")"
-    r"|\\\\|\\(?![\s\\]|(?-i:[nrtu]))){4,}(?<!\\)"
-)
+    r"|\\\\|\\(?![\s\\]|(?-i:[nrtu]))){%d,}(?<!\\)"
+) % (MIN_ASSIGNMENT_VALUE_LEN, MIN_ASSIGNMENT_VALUE_LEN, MIN_ASSIGNMENT_VALUE_LEN)
 
 # The negative lookahead keeps an already-redacted value -- bare, quoted, or
 # JSON-escaped-quoted -- from being re-redacted into a less specific shape.
