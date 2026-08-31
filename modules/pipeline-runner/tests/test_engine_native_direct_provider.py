@@ -179,6 +179,7 @@ def test_box_node_executes_via_direct_worker_real_chain(monkeypatch, tmp_path):
     result = asyncio.run(
         runner_mod.run_pipeline(
             _make_box_dot(),
+            worker="llm-direct",
             cwd=tmp_path / "work",
             logs_root=tmp_path / "logs",
         )
@@ -243,6 +244,7 @@ def test_resume_executes_pending_box_node(monkeypatch, tmp_path):
     first_result = asyncio.run(
         runner_mod.run_pipeline(
             dot_source,
+            worker="llm-direct",
             cwd=cwd,
             logs_root=logs_root,
         )
@@ -271,6 +273,7 @@ def test_resume_executes_pending_box_node(monkeypatch, tmp_path):
     resume_result = asyncio.run(
         runner_mod.resume_pipeline(
             logs_root,
+            worker="llm-direct",
             cwd=cwd,
         )
     )

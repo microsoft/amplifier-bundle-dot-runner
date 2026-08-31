@@ -908,6 +908,82 @@ def _augment_manifest_provenance(logs_dir: Path, provider: str) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
+def _reject_worker_and_bundle_both_given(
+    *, worker: str | None, bundle: str | None
+) -> None:
+    """Fail loud (``ValueError``) when a caller supplies BOTH ``worker=``
+    and ``bundle=`` -- mutually exclusive as of fix/library-seam-default-
+    worker (maintainer ruling: "ONE behavior on both seams").
+
+    ``worker=`` selects a NAMED worker (``"llm-direct"`` / ``"coding-agent"``
+    / ``"amplifier-agent"``) and -- for the latter two -- synthesizes its
+    OWN internal bundle via :func:`_resolve_worker_and_bundle_defaults`
+    (``default_worker.py``'s machinery, shared with the CLI). ``bundle=``
+    is the escape hatch for an explicit, caller-supplied bundle reference
+    (e.g. an opinionated pattern bundle such as attractor's own) whose OWN
+    declared ``worker``/``profiles`` become this run's effective default
+    instead. The two mechanisms wire the run's worker in fundamentally
+    different ways; silently letting one win (the pre-existing behavior --
+    an explicit ``worker=`` overrode a loaded bundle's declared default)
+    papered over a caller likely meaning something different than what
+    happened. Pass one or the other, never both.
+    """
+    if worker is not None and bundle is not None:
+        raise ValueError(
+            "run_pipeline()/resume_pipeline() received both `worker=` and "
+            "`bundle=` -- these are mutually exclusive. `worker=` selects "
+            "a NAMED worker (`llm-direct` / `coding-agent` / "
+            "`amplifier-agent`) and synthesizes its own bundle internally; "
+            "`bundle=` is an explicit, caller-supplied bundle reference "
+            "whose own declared worker/profiles apply instead. Pass one or "
+            "the other, never both."
+        )
+
+
+def _resolve_worker_and_bundle_defaults(
+    *, worker: str | None, dot_source: str | None
+) -> tuple[str | None, str | None]:
+    """Apply the library-seam default-worker ladder (fix/library-seam-
+    default-worker, WAVE 8) -- called by ``run_pipeline``/``resume_pipeline``
+    whenever the caller gave no explicit ``bundle=``.
+
+    This is THE FIX for the wiki-weaver incident (2026-08-30): a bare
+    ``run_pipeline()`` call (no ``bundle=``, no ``worker=`` -- exactly how
+    microsoft/amplifier-app-wiki-weaver calls this library) used to
+    hardcode ``resolved_worker = "llm-direct"`` a few lines below this
+    function's call site, silently running a spawn-path DOT graph on the
+    TEXT-ONLY unified-llm worker (no tool loop -- the model emitted tool
+    calls as prose, nothing executed, and the step burned its whole retry
+    budget before failing to converge). ``dot-runner run`` (the CLI) never
+    had this bug because ``cli.py`` always calls
+    ``default_worker.resolve()`` before ``run_pipeline`` -- this function
+    is the SAME machinery (synthesis + provider detection + PROVIDER_SPECS
+    all reused verbatim, never duplicated), reached via
+    ``default_worker.resolve_for_library`` -- see that function's
+    docstring for the full selection ladder.
+
+    Delegates entirely; this thin wrapper exists only to (a) perform the
+    import lazily (``default_worker`` imports ``runner`` at module level --
+    a module-level import here would be circular) and (b) give
+    ``run_pipeline``/``resume_pipeline`` one shared call site instead of
+    two copies.
+
+    Returns:
+        The ``(worker, bundle)`` pair to use downstream, exactly as if the
+        caller had supplied it directly -- see ``default_worker.
+        resolve_for_library``'s own return-value docs.
+
+    Raises:
+        default_worker.WorkerResolutionError: a retired worker name, an
+            explicit named worker whose install is missing/broken, or (no
+            explicit worker at all) amplifier-agent's own broken-install
+            guard tripping. Never a silent ``llm-direct`` degrade.
+    """
+    from . import default_worker
+
+    return default_worker.resolve_for_library(worker=worker, dot_source=dot_source)
+
+
 async def run_pipeline(
     dot_source: str,
     *,
@@ -955,12 +1031,41 @@ async def run_pipeline(
             win outright; otherwise defaults to ``bundle``'s own declared
             ``profiles`` (if any), else ``{}``.
         worker: Run-level worker-selection default (EXTENSIONS.md Sec40 /
-            DESIGN-worker-registry-core-split.md P1 item 3, P3 item 2).
-            Explicit callers win outright; otherwise defaults to ``bundle``'s
-            own declared ``worker`` (if any); with no ``bundle`` and no
-            explicit ``worker``, resolves to ``"llm-direct"``. Precedence is
-            always: per-node ``worker=`` attribute > this value > the
-            engine's own spawn-if-available-else-direct fallback chain.
+            DESIGN-worker-registry-core-split.md P1 item 3, P3 item 2) --
+            mirrors the CLI's ``--worker`` semantics exactly: one of
+            ``"llm-direct"`` (bare loop, unified-llm-spec), ``"coding-agent"``
+            (coding-agent-loop spec), or ``"amplifier-agent"``. Mutually
+            exclusive with ``bundle=`` (raises ``ValueError`` if both are
+            given -- see that arg below). An unrecognized name is forwarded
+            unchanged and fails loud downstream (the engine's own worker
+            registry raises, listing every registered name plus a rename
+            hint for a retired name); a retired name (``"direct"``/
+            ``"loop-agent"``) fails loud immediately naming its replacement.
+            ``"coding-agent"``/``"amplifier-agent"`` synthesize + wire their
+            own internal bundle (the SAME mechanism ``dot-runner run
+            --worker <name>`` uses -- see
+            ``amplifier_module_pipeline_runner.default_worker``), enabling
+            ``session.spawn`` for this run exactly as an explicit
+            ``bundle=`` would.
+
+            **Fix/library-seam-default-worker (WAVE 8, maintainer ruling:
+            "ONE behavior on both seams"):** ``worker=None`` and no
+            ``bundle=`` (a bare call -- e.g. microsoft/amplifier-app-wiki-
+            weaver's ``from amplifier_module_pipeline_runner import
+            run_pipeline``, called with neither) NO LONGER hardcodes
+            ``"llm-direct"``. It now applies the exact same default ladder
+            the CLI's bare ``dot-runner run`` applies: synthesize + wire the
+            unconditional ``amplifier-agent`` default, or **FAIL LOUD**
+            (``default_worker.WorkerResolutionError``, never a silent
+            ``llm-direct`` degrade) if that install is broken. This closes
+            the incident where a spawn-path DOT graph run via bare
+            ``run_pipeline()`` silently executed on the TEXT-ONLY
+            ``llm-direct`` worker (no tool loop -- the model emitted tool
+            calls as prose, nothing executed, and the step burned its whole
+            retry budget before failing to converge). Pass
+            ``worker="llm-direct"`` explicitly if the bare, text-only loop
+            is what you actually want -- that deliberate choice is still
+            fully supported, and never nannied.
         hooks: Optional hooks object forwarded to the engine.
         interviewer: Optional interviewer object forwarded to the handler
             registry (human-in-the-loop gate seam).
@@ -990,20 +1095,36 @@ async def run_pipeline(
             attractor-pipeline.yaml"``) to compose as this run's base bundle
             instead of the bare default -- the preserved mechanism for an
             opinionated experience, declared rather than assumed (mirrors
-            the CLI's ``--bundle``/``DOT_RUNNER_BUNDLE``). ``None`` (the
-            default): no bundle is loaded, zero network reach into any
-            pattern repo, and ``session.spawn`` is never registered. When
-            given: the referenced bundle is composed as the base (its own
-            ``agents:`` block, if any, becomes spawnable), ``session.spawn``
-            IS registered, and its own declared ``session.orchestrator.config``
+            the CLI's ``--bundle``/``DOT_RUNNER_BUNDLE``). Mutually
+            exclusive with ``worker=`` (raises ``ValueError`` if both are
+            given). ``None`` (the default, with ``worker`` also ``None``):
+            no EXPLICIT bundle is loaded by the caller -- but see
+            ``worker=``'s docstring above: the library-seam default ladder
+            (WAVE 8) may still synthesize + load its OWN internal bundle
+            (the ``amplifier-agent`` default) and register
+            ``session.spawn`` accordingly; only a genuinely explicit
+            ``worker="llm-direct"`` keeps this run bare with zero bundle
+            involved. When ``bundle`` IS given explicitly: the referenced
+            bundle is composed as the base (its own ``agents:`` block, if
+            any, becomes spawnable), ``session.spawn`` IS registered, and
+            its own declared ``session.orchestrator.config``
             (``worker``/``profiles``) becomes this run's effective default
-            unless ``worker=``/``profiles=`` explicitly override it. The
-            engine has zero built-in knowledge of what the reference
-            contains -- this is mechanism, not policy.
+            unless ``profiles=`` explicitly overrides it. The engine has
+            zero built-in knowledge of what the reference contains -- this
+            is mechanism, not policy.
 
     Returns:
         A ``PipelineResult`` with status, notes, logs_dir, and raw JSON.
+
+    Raises:
+        ValueError: both ``worker=`` and ``bundle=`` were given.
+        default_worker.WorkerResolutionError: the library-seam default
+            ladder (``worker=``/no-bundle case) hit a retired worker name,
+            an explicit named worker whose install is missing/broken, or
+            (worker=None) amplifier-agent's own broken-install guard.
     """
+    _reject_worker_and_bundle_both_given(worker=worker, bundle=bundle)
+
     if logs_root is not None:
         logs_dir = Path(logs_root).expanduser().resolve()
     else:
@@ -1017,6 +1138,20 @@ async def run_pipeline(
     # (drive_engine materializes it; the resolved graph is logged by the engine.)
     if not dot_source.startswith("git+https://"):
         (logs_dir / "pipeline.dot").write_text(dot_source, encoding="utf-8")
+
+    # Library-seam default ladder (fix/library-seam-default-worker, WAVE 8):
+    # no explicit `bundle=` means the caller made, at most, a NAMED-worker
+    # choice (`worker=`) -- apply the SAME resolution `dot-runner run`
+    # applies before ever reaching here (see
+    # `_resolve_worker_and_bundle_defaults`). This is what fixes the
+    # wiki-weaver incident: a bare `run_pipeline()` call used to hardcode
+    # `resolved_worker = "llm-direct"` two lines below, silently running a
+    # spawn-path graph on the text-only worker. `bundle` explicitly given
+    # skips this outright -- see the mutual-exclusivity guard above.
+    if not bundle:
+        worker, bundle = _resolve_worker_and_bundle_defaults(
+            worker=worker, dot_source=dot_source
+        )
 
     loaded_bundle: Any = None
     declared_worker: str | None = None
@@ -1048,10 +1183,12 @@ async def run_pipeline(
     )
     session = await prepared.create_session(session_cwd=cwd_path)
     if bundle:
-        # Only registered when the caller explicitly opted in via `bundle` --
-        # see this function's docstring. Never registered by default, so a
-        # bare run's fallback chain and `direct`-only reachability are
-        # unaffected by this mechanism's mere existence.
+        # Registered whenever a bundle is in play -- either the caller's
+        # own explicit `bundle=`, or (WAVE 8) the internal bundle the
+        # default ladder just synthesized for a named worker
+        # (`coding-agent`/`amplifier-agent`, explicit or the bare default).
+        # Never registered for a bare `llm-direct` run, so that fallback
+        # chain and its exclusive reachability are unaffected.
         session.coordinator.register_capability(
             "session.spawn",
             make_spawn_fn(
@@ -1151,8 +1288,11 @@ async def resume_pipeline(
         cwd: Working directory for the resumed run.  Behaves exactly as on
             ``run_pipeline`` (process-level wiring cannot be serialized).
         provider, profiles, hooks, interviewer, transform, validate,
-        extra_overlays, child_constraint, spawn_timeout, bundle: as
-            ``run_pipeline``.
+        extra_overlays, child_constraint, spawn_timeout, worker, bundle: as
+        ``run_pipeline`` -- including the WAVE 8 library-seam default
+        ladder (``worker=None``/no ``bundle=`` resolves to amplifier-agent,
+        never a silent ``llm-direct`` degrade) and the ``worker=``/
+        ``bundle=`` mutual-exclusivity guard.
 
     Returns:
         A ``PipelineResult`` whose ``logs_dir`` is ``run_dir``.
@@ -1161,7 +1301,12 @@ async def resume_pipeline(
         CheckpointResumeError: any rung of the validation ladder — missing,
             corrupted, wrong schema, already completed, graph mismatch, or
             structurally invalid.  Never a silent fresh start.
-        ValueError: a ``--param`` collides with restored context state.
+        ValueError: a ``--param`` collides with restored context state, or
+            both ``worker=`` and ``bundle=`` were given.
+        default_worker.WorkerResolutionError: the library-seam default
+            ladder hit a retired worker name, an explicit named worker
+            whose install is missing/broken, or (worker=None)
+            amplifier-agent's own broken-install guard.
     """
     from amplifier_module_loop_pipeline.checkpoint import load_checkpoint_for_resume
 
@@ -1191,6 +1336,19 @@ async def resume_pipeline(
 
     cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else Path.cwd()
     cwd_path.mkdir(parents=True, exist_ok=True)
+
+    _reject_worker_and_bundle_both_given(worker=worker, bundle=bundle)
+
+    # Library-seam default ladder (fix/library-seam-default-worker, WAVE 8) --
+    # mirrors run_pipeline's own call exactly, and reuses the checkpoint's
+    # OWN embedded dot_source (already resolved above) for the
+    # github-copilot intent-rule scan -- a resume actually knows the real
+    # graph text here, unlike the CLI's cmd_resume (which only sees
+    # --dot-file, often absent on resume).
+    if not bundle:
+        worker, bundle = _resolve_worker_and_bundle_defaults(
+            worker=worker, dot_source=resolved_dot_source
+        )
 
     loaded_bundle: Any = None
     declared_worker: str | None = None

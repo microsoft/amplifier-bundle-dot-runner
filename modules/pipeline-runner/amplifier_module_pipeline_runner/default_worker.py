@@ -84,6 +84,36 @@ Explicit choices always win: :func:`resolve` is a no-op the moment the
 caller already made ANY choice -- an explicit ``--worker``, or a bundle
 reference from ``--bundle``/``DOT_RUNNER_BUNDLE`` (both arrive here already
 merged by ``cli._resolve_bundle_ref`` before this module is consulted).
+
+WAVE 8 (fix/library-seam-default-worker, 2026-08-31, maintainer ruling: "ONE
+behavior on both seams -- fail loud, never silently degraded"): the LIBRARY
+seam (``amplifier_module_pipeline_runner.runner.run_pipeline``/
+``resume_pipeline``, e.g. microsoft/amplifier-app-wiki-weaver's ``from
+amplifier_module_pipeline_runner import run_pipeline`` with no ``bundle=``
+and no worker choice) used to bypass this entire ladder outright --
+``run_pipeline`` hardcoded ``resolved_worker = "llm-direct"`` whenever
+``worker is None and not bundle``. That let a spawn-path DOT graph run
+silently on the TEXT-ONLY ``llm-direct`` worker (no tool loop): the model
+emitted tool calls as prose, nothing executed, and the step burned its
+whole retry budget before failing to converge (proven live: 137 iterations
+/ 16 minutes of paid LLM calls in a 2026-08-30 DTU). The CLI never had this
+bug because ``cli.py`` always calls :func:`resolve` before ``run_pipeline``.
+
+The ladder logic itself is factored into :func:`_resolve_or_raise` -- shared
+VERBATIM by both seams, never duplicated:
+
+* :func:`resolve` (CLI): wraps it in the existing print-to-stderr +
+  ``SystemExit(1)`` contract, UNCHANGED (every test in
+  ``test_default_worker.py`` pins this exact behavior).
+* :func:`resolve_for_library`: the same ladder, but a fail-loud case raises
+  :class:`WorkerResolutionError` (a normal, catchable exception) instead of
+  calling ``sys.exit`` -- a library caller's host process must never be
+  killed out from under it. Called by ``runner.run_pipeline``/
+  ``runner.resume_pipeline`` whenever the caller gave no explicit
+  ``bundle=`` (see those functions' docstrings and
+  ``runner._resolve_worker_and_bundle_defaults``). The two share the SAME
+  message text (``BROKEN_INSTALL_HINT``, the "not installed" message, the
+  retired-name migration hint) -- only the delivery mechanism differs.
 """
 
 from __future__ import annotations
@@ -488,16 +518,27 @@ def write_default_agent_bundle() -> Path:
     return write_agent_bundle(AMPLIFIER_AGENT_NAME)
 
 
-def resolve(
-    *, worker: str | None, prog: str = "dot-runner", dot_source: str | None = None
-) -> tuple[str | None, str | None]:
-    """Resolve this run's effective ``(worker, bundle)`` pair.
+class WorkerResolutionError(RuntimeError):
+    """Fail-loud named-worker resolution failure -- a retired name, an
+    explicit named worker whose install is missing/broken, or (no explicit
+    choice) amplifier-agent's own broken-install guard tripping.
 
-    ``--bundle``/``DOT_RUNNER_BUNDLE`` are REMOVED from the CLI surface
-    (WAVE 5 repair, maintainer ruling: "bundles are under the hood -- never
-    exposed to runner users"). ``bundle`` in the returned pair is now purely
-    INTERNAL machinery this function may synthesize itself; the caller
-    (``cli.py``) never supplies one.
+    WAVE 8 (fix/library-seam-default-worker): this is the LIBRARY-seam form
+    of the exact diagnostic :func:`resolve` (CLI) prints to stderr then
+    calls ``sys.exit(1)`` on -- see :func:`_resolve_or_raise`, shared
+    verbatim by both. A normal, catchable exception (never a process exit)
+    so an embedding library caller (e.g. amplifier-app-wiki-weaver's ``from
+    amplifier_module_pipeline_runner import run_pipeline``) can observe and
+    report the failure without its host process being killed out from
+    under it.
+    """
+
+
+def _resolve_or_raise(
+    *, worker: str | None, dot_source: str | None = None
+) -> tuple[str | None, str | None]:
+    """Core resolution ladder -- shared VERBATIM by :func:`resolve` (CLI)
+    and :func:`resolve_for_library` (library seam), never duplicated.
 
     Selection, in priority order:
 
@@ -525,22 +566,25 @@ def resolve(
     3. ``worker`` is anything else (unknown name, or ``None``/absent) -> if
        ``None``: no explicit choice was made, so the ONLY rung left is
        amplifier-agent, PERIOD (available -> synthesize + wire, same as
-       case 2; unavailable -> **FAIL LOUD**, WAVE 7: ``SystemExit(1)``
-       naming the broken install and the reinstall command -- there is no
-       longer a degraded fallback to ``llm-direct`` to land on). If
-       ``worker`` is a non-empty, unrecognized name (and not a retired
-       name handled by case 0): returned unchanged, letting the registry's
-       own loud "Unknown worker" error fire downstream (existing behavior).
+       case 2; unavailable -> **FAIL LOUD** -- there is no longer a
+       degraded fallback to ``llm-direct`` to land on). If ``worker`` is a
+       non-empty, unrecognized name (and not a retired name handled by case
+       0): returned unchanged, letting the registry's own loud "Unknown
+       worker" error fire downstream (existing behavior, both seams).
+
+    Raises:
+        WorkerResolutionError: cases 0, 2 (unavailable), and 3 (``None``,
+            unavailable) above. Message text carries no ``prog``/CLI
+            framing -- :func:`resolve` adds that; :func:`resolve_for_library`
+            lets it propagate as-is.
     """
     if worker is not None and worker in RENAMED_WORKER_NAMES:
         new_name = RENAMED_WORKER_NAMES[worker]
-        print(
-            f"{prog}: --worker {worker!r} was renamed: {worker!r} -> "
+        raise WorkerResolutionError(
+            f"--worker {worker!r} was renamed: {worker!r} -> "
             f"{new_name!r}. Use --worker {new_name!r} instead -- there is "
-            "no alias for the old name.",
-            file=sys.stderr,
+            "no alias for the old name."
         )
-        raise SystemExit(1)
 
     if worker == "llm-direct":
         return worker, None
@@ -554,19 +598,15 @@ def resolve(
             # root install -- an explicit ask for it failing the runtime
             # import guard is a broken environment, not a missing optional
             # extra. Same diagnostic as the no-explicit-choice branch below.
-            print(
-                f"{prog}: --worker {worker!r} was requested, but {BROKEN_INSTALL_HINT}",
-                file=sys.stderr,
+            raise WorkerResolutionError(
+                f"--worker {worker!r} was requested, but {BROKEN_INSTALL_HINT}"
             )
-            raise SystemExit(1)
-        print(
-            f"{prog}: --worker {worker!r} was requested but is not "
+        raise WorkerResolutionError(
+            f"--worker {worker!r} was requested but is not "
             f"installed (missing {adapter_module!r} and/or "
             f"{probe_module!r}). Install its dependencies, or choose "
-            f"--worker llm-direct / --worker {AMPLIFIER_AGENT_NAME!r}.",
-            file=sys.stderr,
+            f"--worker llm-direct / --worker {AMPLIFIER_AGENT_NAME!r}."
         )
-        raise SystemExit(1)
 
     if worker is not None:
         # Unknown name: hand back unchanged so the registry's own loud
@@ -593,5 +633,54 @@ def resolve(
     # the one that was (implicitly) requested is never the right response
     # to that bug. `--worker llm-direct` remains available -- deliberately,
     # explicitly -- as the user's own way to run the light loop.
-    print(f"{prog}: {BROKEN_INSTALL_HINT}", file=sys.stderr)
-    raise SystemExit(1)
+    raise WorkerResolutionError(BROKEN_INSTALL_HINT)
+
+
+def resolve(
+    *, worker: str | None, prog: str = "dot-runner", dot_source: str | None = None
+) -> tuple[str | None, str | None]:
+    """Resolve this run's effective ``(worker, bundle)`` pair -- CLI seam.
+
+    ``--bundle``/``DOT_RUNNER_BUNDLE`` are REMOVED from the CLI surface
+    (WAVE 5 repair, maintainer ruling: "bundles are under the hood -- never
+    exposed to runner users"). ``bundle`` in the returned pair is now purely
+    INTERNAL machinery this function may synthesize itself; the caller
+    (``cli.py``) never supplies one.
+
+    Thin wrapper over :func:`_resolve_or_raise` (see its docstring for the
+    full selection ladder): on :class:`WorkerResolutionError`, prints
+    ``f"{prog}: {error}"`` to stderr and raises ``SystemExit(1)`` --
+    UNCHANGED CLI behavior (every test in ``test_default_worker.py`` pins
+    this exact contract). See :func:`resolve_for_library` for the
+    library-seam counterpart that raises instead of exiting.
+    """
+    try:
+        return _resolve_or_raise(worker=worker, dot_source=dot_source)
+    except WorkerResolutionError as exc:
+        print(f"{prog}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
+def resolve_for_library(
+    *, worker: str | None = None, dot_source: str | None = None
+) -> tuple[str | None, str | None]:
+    """Resolve this run's effective ``(worker, bundle)`` pair -- LIBRARY seam.
+
+    WAVE 8 (fix/library-seam-default-worker, maintainer ruling: "ONE
+    behavior on both seams"): the exact same ladder :func:`resolve` (CLI)
+    applies, via the SAME shared :func:`_resolve_or_raise` -- but a
+    fail-loud case raises :class:`WorkerResolutionError` (a normal,
+    catchable exception carrying the identical message text, including
+    :data:`BROKEN_INSTALL_HINT`) instead of printing to stderr and calling
+    ``sys.exit``. A library caller's host process must never be killed out
+    from under it.
+
+    Called by ``runner.run_pipeline``/``runner.resume_pipeline`` whenever
+    the caller gave no explicit ``bundle=`` (see those functions'
+    docstrings) -- this is what makes a bare ``run_pipeline()`` call (no
+    ``bundle=``, no ``worker=``) synthesize + wire the SAME internal
+    amplifier-agent bundle ``dot-runner run`` gets by default, instead of
+    silently landing on the text-only ``llm-direct`` worker (the
+    2026-08-30 wiki-weaver incident this fix closes).
+    """
+    return _resolve_or_raise(worker=worker, dot_source=dot_source)

@@ -3264,6 +3264,34 @@ exercises unless its author opts in.
 > that degraded-fallback code path and its dedicated test coverage are deleted, not merely
 > reworded.
 
+> **Addendum (dated 2026-08-31, fix/library-seam-default-worker, maintainer ruling: "ONE
+> behavior on both seams -- fail loud, never silently degraded"):** the CLI-only fix above
+> left the LIBRARY seam (`amplifier_module_pipeline_runner.runner.run_pipeline`/
+> `resume_pipeline` -- e.g. microsoft/amplifier-app-wiki-weaver's `from
+> amplifier_module_pipeline_runner import run_pipeline`, called with no `bundle=` and no
+> worker choice) with none of this ladder: a bare call hardcoded `resolved_worker =
+> "llm-direct"`, so a spawn-path graph ran silently on the TEXT-ONLY worker (no tool loop --
+> proven live: 137 iterations / 16 minutes of paid LLM calls in a 2026-08-30 DTU before the
+> step bound). `run_pipeline`/`resume_pipeline` now gained a `worker=` parameter mirroring
+> `--worker` exactly (`"llm-direct" | "coding-agent" | "amplifier-agent"`, unknown names fail
+> loud downstream, retired names fail loud immediately with the rename hint), and a bare call
+> (no `worker=`, no `bundle=`) applies the SAME default ladder as the CLI's bare `dot-runner
+> run` -- amplifier-agent, unconditionally, via the identical internal synthesis
+> (`default_worker.py`'s `_resolve_or_raise`, now shared verbatim by both seams through a new
+> `resolve_for_library` entry point). `worker=` and the pre-existing `bundle=` (an explicit,
+> caller-supplied bundle reference) are now mutually exclusive -- passing both raises
+> `ValueError` immediately, replacing the prior silent-override behavior (an explicit
+> `worker=` used to win outright over a loaded bundle's own declared default with no
+> complaint). The ONE deliberate divergence from the CLI: a fail-loud case on the library seam
+> raises `default_worker.WorkerResolutionError` (a normal, catchable exception) rather than
+> calling `sys.exit(1)` -- a library caller's host process must never be killed out from under
+> it. Explicit `bundle=` callers (the pre-existing mechanism) are completely unaffected.
+> Implementation: `runner._resolve_worker_and_bundle_defaults` /
+> `runner._reject_worker_and_bundle_both_given` (`modules/pipeline-runner/
+> amplifier_module_pipeline_runner/runner.py`); `default_worker._resolve_or_raise` /
+> `default_worker.resolve_for_library` (`modules/pipeline-runner/
+> amplifier_module_pipeline_runner/default_worker.py`).
+
 ---
 
 ## 41. Status-File Contract Read Side: `status.json` as a Spec-Native Verdict Channel (Conformance Restoration)
