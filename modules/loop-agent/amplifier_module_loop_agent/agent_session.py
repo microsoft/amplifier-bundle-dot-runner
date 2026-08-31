@@ -19,6 +19,12 @@ import time
 import uuid
 from typing import Any
 
+from amplifier_core.events import (
+    CONTENT_BLOCK_END,
+    CONTENT_BLOCK_START,
+    TOOL_POST,
+    TOOL_PRE,
+)
 from amplifier_core.llm_errors import ContextLengthError, LLMError
 from amplifier_core.message_models import (
     ChatRequest,
@@ -28,17 +34,10 @@ from amplifier_core.message_models import (
     ThinkingBlock,
     ToolSpec,
 )
-from amplifier_core.events import (
-    CONTENT_BLOCK_END,
-    CONTENT_BLOCK_START,
-    TOOL_POST,
-    TOOL_PRE,
-)
 from amplifier_core.models import ToolResult
 
 from .config import SessionConfig
 from .environment import build_environment_context
-from .system_prompt import build_system_prompt, discover_project_docs
 from .events import (
     AGENT_ASSISTANT_TEXT_DELTA,
     AGENT_ASSISTANT_TEXT_END,
@@ -63,6 +62,7 @@ from .loop_detection import LoopDetector
 from .messages import convert_history_to_messages
 from .state import SessionState, SessionStateMachine
 from .steering import FollowUpQueue, SteeringQueue
+from .system_prompt import build_system_prompt, discover_project_docs
 from .tool_registry import ToolRegistry
 from .turns import (
     AssistantTurn,
@@ -87,7 +87,24 @@ KNOWN_PROVIDERS = ("anthropic", "openai", "gemini")
 # plain OpenAI -- silently treating them as equivalent causes a wrong-provider
 # misroute. Checked before the substring scan below so these names resolve to
 # None (unrecognised) rather than a same-named but incorrect canonical family.
-_DISTINCT_COMPOUND_PROVIDERS = ("azure-openai", "azure_openai", "azureopenai")
+_DISTINCT_COMPOUND_PROVIDERS = (
+    "azure-openai",
+    "azure_openai",
+    "azureopenai",
+    # Subscription-provider expansion (idea-transfer from microsoft/
+    # amplifier-bundle-attractor#322, credited in this feature's commit):
+    # "openai-chatgpt" pairs the "openai" family name with a distinguishing
+    # qualifier exactly like "azure-openai" above, and names a genuinely
+    # distinct, differently-configured provider (OAuth device-code auth
+    # against the undocumented chatgpt.com backend API, not an OPENAI_API_KEY
+    # against api.openai.com) -- it must not be silently absorbed into
+    # "openai"'s canonical identity (which would load the openai-toned
+    # system prompt / apply the wrong doc-discovery rules by accident
+    # rather than by an explicit prompt_profile/system_prompt choice -- see
+    # __init__.py's _resolve_base_prompt).
+    "openai-chatgpt",
+    "openai_chatgpt",
+)
 
 
 def canonical_provider(raw: str | None) -> str | None:

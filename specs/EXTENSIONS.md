@@ -3543,3 +3543,188 @@ just with a less specific message naming the coercion, not the missing `--param`
 - Tests: `modules/loop-pipeline/tests/test_dot_render_compliance.py`,
   `test_topological_lint.py` (corpus sweeps updated to supply a placeholder `max_duration`
   param so the shipped `$`-token graphs still parse for lint-only purposes)
+
+---
+
+**Addendum (2026-08-31, feat/subscription-providers): the subscription-provider boundary.**
+Two new providers -- `github-copilot` and `openai-chatgpt` (see entry 44) -- are servable
+ONLY via a spawn worker (`coding-agent`/`amplifier-agent`), never via the `llm-direct`
+worker this entry's rung-4 table serves. Both proxy MULTIPLE model families through one
+mounted adapter, so `unified_llm.resolve_latest_for` (SDK adapters for the pure
+`anthropic`/`openai`/`gemini` triad only) can never resolve a family-token/glob
+`llm_model` (e.g. `sonnet`) for them -- there is no rung-4 row for either in
+`_PROVIDER_DEFAULT_MODEL_PATTERN` and none is planned; adding one would require an
+adapter this engine deliberately does not have. `_resolve_concrete_model` fails loud
+BEFORE attempting a live resolve when the provider is one of these two
+(`SUBSCRIPTION_ONLY_PROVIDERS`, `backend.py`), naming the real fix: an explicit CONCRETE
+`llm_model` (passed straight through, no resolution), or none at all -- both mounted
+provider MODULES document their own sensible `default_model`
+(`github-copilot`: `"claude-opus-4.5"`; `openai-chatgpt`: `"latest"`, resolved
+dynamically), so an absent `llm_model` is a supported, working configuration for either,
+not a gap this entry's table needs to fill. See entry 44 for the full detection/mounting
+story.
+
+---
+
+## 44. Subscription-Provider Detection for Spawn Workers (`github-copilot` / `openai-chatgpt`)
+
+**Classification: implementor-level extensibility, NOT a spec divergence.** Canonical
+unified-llm spec §8.4 declares `llm_provider` an OPEN set ("openai, anthropic, gemini,
+etc.") -- this entry is exactly that "etc.", exercised for the first time. No
+`SPEC_CONFORMANCE.md` row is added: this is the SAME implementor extension point entry 40
+(Worker Registry) already established for worker NAMES, applied here to provider NAMES.
+
+**depends-on:** entry 36 (startup provider preflight), entry 40 (worker registry), entry 42
+(per-provider default model, see that entry's 2026-08-31 addendum for the model-resolution
+boundary this feature respects).
+
+**Credit:** idea-transfer from external PR `microsoft/amplifier-bundle-attractor#322`
+(treated as idea-transfer per maintainer ruling, not a literal merge) -- both the
+sole-mounted provider default and the `prompt_profile` toolset-selection rung below are
+ported from that PR's design.
+
+**The scenario:** run pipelines on subscriptions users already have.
+`llm_provider="github-copilot"` and `llm_provider="openai-chatgpt"` on box nodes now work
+with the `coding-agent`/`amplifier-agent` spawn workers -- no Anthropic/OpenAI/Gemini API
+key required. `llm-direct` (the bare unified-llm-spec loop) cannot serve either, by
+architectural ruling (see below).
+
+**★ The architectural constraint (non-negotiable).** `unified-llm-client` is the PURE
+unified-llm-spec client -- SDK-direct `anthropic`/`openai`/`gemini`, and nothing else. Its
+own `PROVIDER_ENV_KEYS`/`detect_configured_providers` (`unified_llm/client.py`) are NOT
+touched by this feature and never grow a subscription-provider entry: teaching the pure
+client providers it structurally cannot serve (no SDK adapter exists, or ever will, for a
+GitHub-Copilot-proxied or ChatGPT-OAuth-proxied model family) would defeat the whole point
+of "pure". Spawn workers proxy an arbitrary mounted PROVIDER MODULE instead, so a provider
+whose auth is a subscription/OAuth flow (not an API key) is still perfectly servable there.
+
+**The detection seam.** `modules/pipeline-runner/amplifier_module_pipeline_runner/
+provider_detection.py` (new module) is the single registry (`PROVIDER_SPECS`) every
+consumer now derives from -- refactored to ONE table rather than three independently
+maintained collections (the preferred option this entry's own drift-class explicitly
+calls for; see below):
+
+- **Detection.** Native three delegate verbatim to `unified_llm.client.
+  detect_configured_providers` (never re-declared -- issue #338's root cause). Two new
+  probes:
+  - `github-copilot` (env probe): configured iff `COPILOT_AGENT_TOKEN` or
+    `COPILOT_GITHUB_TOKEN` is set (these carry inherent intent -- copilot-specific names),
+    OR `GH_TOKEN`/`GITHUB_TOKEN` is set **and** the run explicitly asks for github-copilot
+    (see INTENT RULE below). Mirrors `amplifier-module-provider-github-copilot`'s own
+    `sdk_adapter` client token-resolution order (`COPILOT_AGENT_TOKEN` -> 
+    `COPILOT_GITHUB_TOKEN` -> `GH_TOKEN` -> `GITHUB_TOKEN`, per that module's README).
+  - `openai-chatgpt` (file probe): configured iff the OAuth token cache exists and is
+    non-empty at `~/.amplifier/openai-chatgpt-oauth.json` (the exact path
+    `amplifier-module-provider-openai-chatgpt`'s README documents, and its
+    `token_file_path` config default) -- `.expanduser()`'d, overridable via
+    `AMPLIFIER_OPENAI_CHATGPT_OAUTH_PATH_OVERRIDE` for hermetic tests.
+- **★ INTENT RULE (github-copilot only).** `COPILOT_AGENT_TOKEN`/`COPILOT_GITHUB_TOKEN`
+  are copilot-specific env var NAMES -- their mere presence already carries intent, so
+  they always count. `GH_TOKEN`/`GITHUB_TOKEN` are GENERIC tokens (GitHub Actions injects
+  `GITHUB_TOKEN` into every job; many developers already export `GH_TOKEN` for unrelated
+  `gh` CLI use) -- presence alone carries no intent. They count ONLY when the run
+  explicitly asks for github-copilot: some node in the DOT source declares
+  `llm_provider="github-copilot"`. Auto-mounting (and, worse, attempting to authenticate)
+  copilot into every ordinary CI lane just because `GITHUB_TOKEN` exists would be a
+  surprise this rule exists to prevent. Detected via a conservative TEXT SCAN over the raw
+  DOT source (`provider_detection.explicitly_requested_providers` -- a regex over
+  `llm_provider=...` attribute assignments), not a full graph parse: worker/bundle
+  resolution (`default_worker.resolve`, called from `cli.py`) runs BEFORE the graph is
+  ever parsed into `Node` objects, so a real parse is not available yet at the point this
+  signal is needed. `openai-chatgpt`'s file probe has no equivalent ambiguity -- the OAuth
+  cache's mere existence already means a human deliberately ran the device-code login
+  flow; there is no "generic, always-present" file it could be confused with.
+- **Module-source map.** `default_worker._PROVIDER_MODULE_SOURCES` is now
+  `provider_detection.module_source_map()` -- derived, never hand-maintained. New entries:
+  `provider-github-copilot` (`git+https://github.com/microsoft/
+  amplifier-module-provider-github-copilot@main`), `provider-openai-chatgpt`
+  (`git+https://github.com/microsoft/amplifier-module-provider-openai-chatgpt@main`).
+- **Profiles map.** `_synthesize_agent_bundle_yaml`'s `profiles:` routing map now iterates
+  `provider_detection.PROVIDER_SPECS` (5 names) instead of `runner.PROVIDER_KEY_ENV` (the
+  native-3 table, which stays exactly that -- the PURE `llm-direct`/CLI `--provider` table,
+  deliberately never grown; see entry 42's addendum and the constraint above).
+- **★ THE THREE-TABLE SYNC GUARD.** Detection table, module-source map, and profiles-map
+  key set are this feature's own #338-shaped drift class -- three collections that must
+  never silently disagree. Resolved by refactoring to the ONE table above rather than
+  adding a fourth guard test to police three separate ones (the preferred option this
+  entry's own review explicitly named): `test_provider_detection.py::
+  test_three_tables_derive_from_one_registry` is the structural regression proof.
+
+**llm-direct fail-loud.** A node declaring `llm_provider="github-copilot"`/
+`"openai-chatgpt"` under `llm-direct` fails loud immediately
+(`workers/direct_worker.py::DirectWorker.run`, `SUBSCRIPTION_ONLY_PROVIDERS` in
+`backend.py`) naming the fix: *"`<provider>` is available via the coding-agent and
+amplifier-agent workers -- add `--worker coding-agent` (or `--worker amplifier-agent`), or
+set llm_provider to one of: anthropic, openai, gemini."* This fires BEFORE the generic
+"no adapter found for provider" error a live `unified_llm.resolve_latest_for` call would
+otherwise raise several calls deeper.
+
+**Model selection.** Both providers proxy MULTIPLE model families through one mounted
+adapter; `unified_llm.resolve_latest_for` has no adapter for either (pure native-3 only).
+Decision: an explicit `llm_model` is NOT hard-required, because both provider MODULES
+document a sensible `default_model` the module itself applies when config omits one
+(`github-copilot`: `"claude-opus-4.5"`; `openai-chatgpt`: `"latest"`, resolved dynamically
+to the current flagship, e.g. `gpt-5.6-sol`) -- letting the module default stand is a
+supported, working configuration. A FAMILY-TOKEN/glob `llm_model` (e.g. `"sonnet"`) is a
+different story: it can never be live-resolved for these two (`_resolve_concrete_model`
+fails loud before attempting it, naming the fix -- an explicit concrete id, or omit
+`llm_model` entirely). See entry 42's 2026-08-31 addendum for the full boundary note.
+
+**Stolen from #322 (credited above).**
+
+1. **Sole-mounted default.** `AmplifierBackend.run()`'s per-node provider resolution used
+   to fall back to a LITERAL `"anthropic"` whenever a node declared no `llm_provider` at
+   all -- wrong the instant a run mounts some other single provider (e.g. a
+   subscription-only environment with just `github-copilot` configured). Fixed
+   (`_implicit_default_provider`, `backend.py`): when exactly ONE provider is mounted
+   (`profiles` -- the provider -> agent routing map -- has exactly one key), an implicit
+   node now defaults to it. Zero or MULTIPLE mounted preserves the literal `"anthropic"`
+   fallback byte-for-byte -- a deliberate, scope-bounded decision (verified today's
+   behavior; the ambiguous multi-mount case is left unchanged rather than replaced with a
+   fail-loud, to avoid regressing any existing multi-profile caller whose nodes omit
+   `llm_provider` -- see `test_backend.py::test_backend_default_provider_is_anthropic`,
+   unaffected).
+2. **`prompt_profile` = toolset, not model family.** `loop-agent`'s `_resolve_base_prompt`
+   picked `system-<provider>.md` by canonical provider (`anthropic`/`openai`/`gemini`
+   only) -- an unrecognized provider (github-copilot/openai-chatgpt are NOT one of
+   `KNOWN_PROVIDERS` by design; `openai-chatgpt` is additionally excluded from
+   `canonical_provider`'s substring match via `_DISTINCT_COMPOUND_PROVIDERS`, the same
+   mechanism `azure-openai` already uses, since it is a genuinely distinct,
+   differently-configured provider) used to fail loud unconditionally. Two additions to
+   `_resolve_base_prompt`'s precedence: (3) an explicit `prompt_profile` config key
+   selects a toolset prompt directly (the system-*.md files are TOOLSET prompts -- which
+   tool names/workflow the agent should use -- not model-FAMILY prompts), independent of
+   which provider is mounted; (5) a KNOWN subscription provider defaults to the generic
+   `"anthropic"` toolset prompt (its tool names -- `edit_file`/`write_file`/`read_file` --
+   match the `tool-filesystem` module every synthesized bundle mounts; `openai`'s prompt
+   assumes `apply_patch`, `gemini`'s assumes `read_many_files`, neither of which is
+   mounted by default) rather than failing loud -- zero new config required. A genuinely
+   unknown/typo'd provider name still fails loud exactly as before (scope guard: this is
+   NOT a blanket "any unrecognized provider" policy -- see
+   `test_system_prompt_wiring.py::test_unknown_provider_with_no_base_raises_loud_error`,
+   unaffected, and this entry's own
+   `test_unrecognized_provider_still_fails_loud_not_defaulted`).
+
+**Implementation locations:**
+- `modules/pipeline-runner/amplifier_module_pipeline_runner/provider_detection.py` (new) --
+  `PROVIDER_SPECS`, `detect_configured_providers`, `explicitly_requested_providers`,
+  `module_source_map`, `credential_hint`, `model_required_hint`
+- `modules/pipeline-runner/amplifier_module_pipeline_runner/default_worker.py` --
+  `_PROVIDER_MODULE_SOURCES`, `_detect_configured_providers`,
+  `_synthesize_agent_bundle_yaml` (now `dot_source`-aware), `write_agent_bundle`, `resolve`
+- `modules/pipeline-runner/amplifier_module_pipeline_runner/cli.py` -- threads `dot_source`
+  into `default_worker.resolve(...)` from both `cmd_run`/`cmd_resume`
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/backend.py` --
+  `SUBSCRIPTION_ONLY_PROVIDERS`, `_SUBSCRIPTION_MODEL_HINTS`,
+  `_implicit_default_provider`, `_resolve_concrete_model` (subscription pre-check)
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/workers/direct_worker.py` --
+  llm-direct fail-loud guard in `DirectWorker.run`
+- `modules/loop-agent/amplifier_module_loop_agent/__init__.py` --
+  `_SUBSCRIPTION_PROVIDER_DEFAULT_PROMPT_PROFILE`, `_resolve_base_prompt` (rungs 3 and 5)
+- `modules/loop-agent/amplifier_module_loop_agent/agent_session.py` --
+  `_DISTINCT_COMPOUND_PROVIDERS` gains `openai-chatgpt`/`openai_chatgpt`
+- Tests: `modules/pipeline-runner/tests/test_provider_detection.py`,
+  `test_synthesized_bundle_providers.py` (extended), `test_default_worker.py` (updated
+  invariant), `modules/loop-pipeline/tests/test_subscription_provider_direct_worker.py`,
+  `test_sole_mounted_provider_default.py`,
+  `modules/loop-agent/tests/test_subscription_provider_prompt_profile.py`

@@ -235,6 +235,54 @@ been built (an upstream, public-seam ask -- tracked, not silently dropped).
 If a node's prompt assumes a custom pipeline-declared tool will be
 available to the LLM, it will not reach amplifier-agent's Engine this way.
 
+### Subscription providers: `github-copilot` / `openai-chatgpt` (spawn workers only)
+
+`llm_provider="github-copilot"` and `llm_provider="openai-chatgpt"` on a box
+node work with the `coding-agent`/`amplifier-agent` spawn workers -- run
+pipelines on subscriptions you already have, no Anthropic/OpenAI/Gemini API
+key needed (idea-transfer from external PR
+`microsoft/amplifier-bundle-attractor#322`; EXTENSIONS.md §44).
+
+```bash
+# github-copilot: set a GitHub token that carries intent (any one of these)
+export COPILOT_AGENT_TOKEN=...      # or COPILOT_GITHUB_TOKEN
+dot-runner run pipeline.dot --worker coding-agent
+
+# openai-chatgpt: authenticate once via the provider module's own device-code
+# flow, which writes ~/.amplifier/openai-chatgpt-oauth.json
+amplifier provider login openai-chatgpt
+dot-runner run pipeline.dot --worker amplifier-agent
+```
+
+**Detection.** `github-copilot` is configured iff `COPILOT_AGENT_TOKEN` or
+`COPILOT_GITHUB_TOKEN` is set (these carry intent by their very name), OR the
+generic `GH_TOKEN`/`GITHUB_TOKEN` is set **and** some node in the pipeline
+explicitly declares `llm_provider="github-copilot"` (the INTENT RULE --
+GitHub Actions injects `GITHUB_TOKEN` into every job, so its bare presence
+must never silently auto-mount copilot into an ordinary CI lane).
+`openai-chatgpt` is configured iff its OAuth token cache exists and is
+non-empty at `~/.amplifier/openai-chatgpt-oauth.json` -- no equivalent
+ambiguity, since a human had to deliberately run the login flow to create it.
+
+**`llm-direct` cannot serve either** -- it is the pure unified-llm-spec
+client (SDK-direct anthropic/openai/gemini only, by maintainer ruling). A
+node declaring one of these two providers under `--worker llm-direct` fails
+loud, naming the fix: add `--worker coding-agent`/`--worker amplifier-agent`,
+or change `llm_provider`.
+
+**Model selection.** Both providers proxy multiple model families through
+one mounted adapter, so `llm_model` family tokens/globs (e.g. `sonnet`)
+cannot be live-resolved for them the way they can for anthropic/openai/gemini
+-- set an explicit concrete `llm_model` (e.g. `llm_model="claude-sonnet-4.6"`
+for github-copilot, `llm_model="gpt-5.5"` for openai-chatgpt), or omit it
+entirely and let the mounted provider module apply its own configured
+default (`github-copilot` defaults to `claude-opus-4.5`; `openai-chatgpt`
+resolves `"latest"` dynamically).
+
+See [`amplifier-module-provider-github-copilot`](https://github.com/microsoft/amplifier-module-provider-github-copilot)
+and [`amplifier-module-provider-openai-chatgpt`](https://github.com/microsoft/amplifier-module-provider-openai-chatgpt)
+for full auth setup instructions per provider.
+
 ### Dependency conflict fix: amplifier-foundation SHAPE mismatch (resolved)
 
 Root install (`amplifier-dot-runner`) now declares

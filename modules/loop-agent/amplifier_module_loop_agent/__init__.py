@@ -115,6 +115,29 @@ def _resolve_system_prompt_file(spf: str) -> Path:
     )
 
 
+#: Subscription providers (idea-transfer from microsoft/amplifier-bundle-
+#: attractor#322, credited in this feature's commit) that `canonical_provider()`
+#: cannot identify BY DESIGN (they proxy multiple model families / use OAuth
+#: device-code auth, not an API key -- see agent_session.py's
+#: _DISTINCT_COMPOUND_PROVIDERS for "openai-chatgpt"; "github-copilot" never
+#: matched the KNOWN_PROVIDERS substring scan to begin with). Each maps to
+#: the TOOLSET prompt profile it defaults to when no explicit prompt_profile/
+#: system_prompt/system_prompt_file overrides it. "anthropic" is the most
+#: GENERIC toolset (edit_file/write_file/read_file match the tool-filesystem
+#: module every synthesized --worker coding-agent/amplifier-agent bundle
+#: mounts; openai's prompt assumes apply_patch, gemini's assumes
+#: read_many_files -- neither tool exists in that default mount).
+#:
+#: Deliberately NOT a blanket "any unrecognized provider gets a default"
+#: policy -- a genuinely unknown/typo'd provider name (e.g. "ollama", a
+#: made-up test double) still fails loud exactly as before; only these two
+#: specific, real, documented subscription providers get the default.
+_SUBSCRIPTION_PROVIDER_DEFAULT_PROMPT_PROFILE: dict[str, str] = {
+    "github-copilot": "anthropic",
+    "openai-chatgpt": "anthropic",
+}
+
+
 def _resolve_provider_default_prompt(canonical: str) -> str:
     """Resolve the provider-DEFAULT Layer-1 base prompt content for ``canonical``.
 
@@ -245,20 +268,60 @@ class AgentOrchestrator:
         if spf:
             return _resolve_system_prompt_file(spf).read_text(encoding="utf-8")
 
-        # (3) provider default (bundle-root COMPAT, then module-local; see
-        # _resolve_provider_default_prompt), else (4) unknown provider fail-loud.
+        # (3) NEW rung -- explicit prompt_profile (idea-transfer from
+        # microsoft/amplifier-bundle-attractor#322, credited in this
+        # feature's commit): the system-*.md files are TOOLSET prompts
+        # (which tool names/workflow the agent should use), not
+        # model-FAMILY prompts, so a node/agent can select one directly,
+        # independent of which provider is actually mounted. Minimal by
+        # design -- one optional key, resolved through the SAME two-rung
+        # lookup (_resolve_provider_default_prompt) a canonical provider
+        # name already uses; it is not a new prompt-loading mechanism.
+        prompt_profile = config_dict.get("prompt_profile")
+        if prompt_profile:
+            return _resolve_provider_default_prompt(prompt_profile)
+
+        # (4) provider default (bundle-root COMPAT, then module-local; see
+        # _resolve_provider_default_prompt), else (5) a known SUBSCRIPTION
+        # provider defaults to the generic toolset prompt, else (6) unknown
+        # provider fail-loud (unchanged for any other unrecognized name).
         canonical = canonical_provider(provider_name)
-        if canonical is None:
-            raise RuntimeError(
-                f"loop-agent cannot select a Layer-1 base prompt: no "
-                f"system_prompt or system_prompt_file is configured, and the "
-                f"provider {provider_name!r} is not one of the known providers "
-                f"{KNOWN_PROVIDERS} (so no default context/system-<provider>.md "
-                f"applies). Set an explicit system_prompt_file in "
-                f"session.orchestrator.config, or run under a known provider. "
-                f"See docs/designs/layer-1-profile-owned-system-prompt.md."
+        if canonical is not None:
+            return _resolve_provider_default_prompt(canonical)
+
+        fallback_profile = _SUBSCRIPTION_PROVIDER_DEFAULT_PROMPT_PROFILE.get(
+            (provider_name or "").lower()
+        )
+        if fallback_profile is not None:
+            # Subscription providers (github-copilot/openai-chatgpt) are not
+            # one of KNOWN_PROVIDERS by design (they proxy multiple model
+            # families / use OAuth, not an API key -- see agent_session.py's
+            # _DISTINCT_COMPOUND_PROVIDERS for "openai-chatgpt"), so they
+            # would otherwise always hit the fail-loud branch below. Default
+            # them to the generic toolset prompt instead -- zero new config
+            # required; an explicit prompt_profile/system_prompt/
+            # system_prompt_file above still wins for anyone who wants a
+            # different toolset.
+            logger.info(
+                "loop-agent: provider %r is not one of the known providers "
+                "%s -- defaulting Layer-1 base prompt to the generic %r "
+                "toolset profile (set prompt_profile explicitly to choose "
+                "a different one).",
+                provider_name,
+                KNOWN_PROVIDERS,
+                fallback_profile,
             )
-        return _resolve_provider_default_prompt(canonical)
+            return _resolve_provider_default_prompt(fallback_profile)
+
+        raise RuntimeError(
+            f"loop-agent cannot select a Layer-1 base prompt: no "
+            f"system_prompt or system_prompt_file is configured, and the "
+            f"provider {provider_name!r} is not one of the known providers "
+            f"{KNOWN_PROVIDERS} (so no default context/system-<provider>.md "
+            f"applies). Set an explicit system_prompt_file or prompt_profile "
+            f"in session.orchestrator.config, or run under a known provider. "
+            f"See docs/designs/layer-1-profile-owned-system-prompt.md."
+        )
 
     async def _execute_session(
         self,
@@ -322,8 +385,11 @@ class AgentOrchestrator:
             # entirely (e.g. minimal stubs).
             if not config_dict.get("working_dir"):
                 import os as _os
+
                 _get_cap = getattr(self._coordinator, "get_capability", None)
-                _cap_val = _get_cap("session.working_dir") if callable(_get_cap) else None
+                _cap_val = (
+                    _get_cap("session.working_dir") if callable(_get_cap) else None
+                )
                 config_dict["working_dir"] = (
                     _cap_val if isinstance(_cap_val, str) else _os.getcwd()
                 )

@@ -3,8 +3,8 @@ revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
     "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "amplifier-module-loop-pipeline"
-version = "0.1.0"
+version = "0.4.0"
 source = { directory = "../loop-pipeline" }
 dependencies = [
     { name = "amplifier-core" },
@@ -72,7 +72,7 @@ dev = [
 
 [[package]]
 name = "amplifier-module-pipeline-runner"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "amplifier-core" },
