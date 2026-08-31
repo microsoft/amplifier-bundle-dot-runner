@@ -186,6 +186,76 @@ def test_explicitly_requested_providers_scans_multiple_nodes():
 
 
 # ---------------------------------------------------------------------------
+# Adversarial review (feat/subscription-providers): comment-stripping fix +
+# pinned known limitations of the pre-parse text scan.
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_ask_ignores_line_comment():
+    """FIX: a // line comment mentioning llm_provider="github-copilot" must
+    NOT count as an explicit ask -- no node actually declares it."""
+    dot = (
+        "digraph {\n"
+        '  // llm_provider="github-copilot" -- just a note to a reviewer\n'
+        '  a [shape=box, llm_provider="anthropic"];\n'
+        "}\n"
+    )
+    assert provider_detection.explicitly_requested_providers(dot) == frozenset(
+        {"anthropic"}
+    )
+
+
+def test_explicit_ask_ignores_block_comment():
+    """FIX: a /* ... */ block comment mentioning llm_provider="github-copilot"
+    must NOT count as an explicit ask."""
+    dot = (
+        "digraph {\n"
+        '  /* llm_provider="github-copilot" mentioned here for context */\n'
+        '  a [shape=box, llm_provider="anthropic"];\n'
+        "}\n"
+    )
+    assert provider_detection.explicitly_requested_providers(dot) == frozenset(
+        {"anthropic"}
+    )
+
+
+def test_explicit_ask_tolerates_dot_attribute_syntax_variants():
+    """The regex must tolerate the whitespace/terminator variants the DOT
+    tokenizer itself treats as equivalent (spaces around `=`, a trailing
+    `;`, extra surrounding whitespace) -- verified against dot_parser's own
+    tokenizer, which discards whitespace between tokens freely."""
+    dot = 'digraph { a [shape=box, llm_provider = "github-copilot" ;]; }'
+    assert provider_detection.explicitly_requested_providers(dot) == frozenset(
+        {"github-copilot"}
+    )
+
+
+def test_explicit_ask_prompt_string_content_is_a_known_false_positive():
+    """KNOWN, ACCEPTED LIMITATION (pinned, not silently absorbed): text that
+    merely *mentions* `llm_provider=github-copilot` inside another
+    attribute's own string content (e.g. a prompt that talks about copilot)
+    still counts as an explicit ask, because disambiguating "inside a
+    string value" from "a real key=value pair" requires the same real
+    parse this scan deliberately runs without (see module docstring's
+    KNOWN LIMITATIONS #2). This test exists so a future change to this
+    behavior is a deliberate, reviewed decision -- not a silent regression
+    either direction. (A backslash-escaped-quote mention, e.g. a prompt
+    containing literal \\"github-copilot\\" text, happens to defeat the
+    naive regex too -- a coincidence of that escaping style, not a
+    guarantee -- so this test pins the plainer, actually-common case: an
+    unescaped mention of the bare attribute-assignment text inside another
+    attribute's own string value.)"""
+    dot_unescaped_mention = (
+        'digraph { a [shape=box, prompt="mentioning llm_provider=github-copilot '
+        'in passing"]; }'
+    )
+    assert provider_detection.explicitly_requested_providers(
+        dot_unescaped_mention
+    ) == frozenset({"github-copilot"})
+    # (documented false positive -- not a "should never happen" assertion)
+
+
+# ---------------------------------------------------------------------------
 # ★ THE THREE-TABLE SYNC GUARD
 # ---------------------------------------------------------------------------
 

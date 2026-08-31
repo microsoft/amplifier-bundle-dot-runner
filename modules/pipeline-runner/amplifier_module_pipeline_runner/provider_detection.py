@@ -220,18 +220,105 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
 # false negatives (missing a real declaration due to unusual formatting)
 # only cost the generic-token signal being ignored -- exactly the safe
 # direction for the intent rule -- never a false positive that widens it.
+#
+# KNOWN LIMITATIONS (adversarial review, feat/subscription-providers):
+#
+# 1. Comments: FIXED here. Without stripping, a `// llm_provider=
+#    "github-copilot"` line comment or `/* ... */` block comment would
+#    match -- a real false positive (mounts copilot for a node that never
+#    asked for it). ``_strip_comments_for_scan`` below removes `//` and
+#    `/* */` DOT comments (mirroring ``dot_parser._strip_comments``'s own
+#    quote-aware algorithm, duplicated rather than imported -- this module
+#    intentionally has no dependency on ``amplifier_module_loop_pipeline``'s
+#    parser internals) before the regex ever runs.
+#
+# 2. Quoted string CONTENT (e.g. a node's own ``prompt="...talks about
+#    llm_provider=github-copilot..."``) is NOT, and cannot cheaply be,
+#    disambiguated from a real attribute assignment: telling "text inside a
+#    string value" apart from "a real key=value pair" requires the same
+#    tokenizer/parser this scan deliberately runs without (see above -- a
+#    real parse is not available yet at this point in the CLI's call
+#    order). This is an ACCEPTED, DOCUMENTED false-positive surface, not an
+#    oversight: worst case it mounts github-copilot when nothing actually
+#    uses it -- a wasted mount, never a wrong-routing or credential leak.
+#    See ``test_explicit_ask_prompt_string_content_is_a_known_false_
+#    positive`` (test_provider_detection.py) -- a test that PINS this
+#    limitation (asserts the false positive still happens) rather than
+#    silently hoping nobody notices.
+#
+# 3. Scope: this scans ONLY the ROOT ``dot_source`` the CLI was handed
+#    (``--dot-source`` or the root ``dot_file``) -- never any transformed /
+#    stylesheet-applied text, and NEVER a child graph reached through a
+#    ``shape=folder``/``dot_file=`` sub-pipeline node (EXTENSIONS.md S10).
+#    Child graphs are not read at all at this point in the CLI's call
+#    order (worker/bundle resolution -> THIS scan -> run_pipeline's own
+#    graph parse -> only later, if/when a folder node executes, does its
+#    child .dot get read). A node buried in a child graph that declares
+#    ``llm_provider="github-copilot"`` will NOT unlock the generic
+#    GH_TOKEN/GITHUB_TOKEN signal by itself -- the run needs either a
+#    high-intent token (COPILOT_AGENT_TOKEN/COPILOT_GITHUB_TOKEN, which
+#    always count) or an explicit ask somewhere in the ROOT graph. This is
+#    a real, structural limitation of running the intent scan pre-parse at
+#    the root only; fixing it would require plumbing this scan through
+#    every folder-node child-graph read (a synthesis-time architectural
+#    change) -- out of scope here, named loudly rather than fixed.
 # ---------------------------------------------------------------------------
 _EXPLICIT_LLM_PROVIDER_RE = re.compile(r'llm_provider\s*=\s*"?([A-Za-z0-9_.-]+)"?')
+
+
+def _strip_comments_for_scan(source: str) -> str:
+    """Remove ``//`` line comments and ``/* */`` block comments, preserving
+    the content of double-quoted strings verbatim (mirrors
+    ``amplifier_module_loop_pipeline.dot_parser._strip_comments``'s
+    algorithm -- duplicated, not imported, to keep this module free of a
+    dependency on that parser's internals). Used ONLY to make the
+    explicit-ask text scan comment-blind; never applied to the DOT source
+    actually handed to the real parser."""
+    result: list[str] = []
+    i = 0
+    length = len(source)
+    while i < length:
+        if source[i] == '"':
+            j = i + 1
+            while j < length:
+                if source[j] == "\\" and j + 1 < length:
+                    j += 2
+                    continue
+                if source[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            result.append(source[i:j])
+            i = j
+        elif source[i : i + 2] == "//":
+            j = source.find("\n", i)
+            if j == -1:
+                break
+            i = j
+        elif source[i : i + 2] == "/*":
+            j = source.find("*/", i + 2)
+            if j == -1:
+                break
+            i = j + 2
+        else:
+            result.append(source[i])
+            i += 1
+    return "".join(result)
 
 
 def explicitly_requested_providers(dot_source: str | None) -> frozenset[str]:
     """Provider names a DOT source's own node attributes explicitly declare
     via ``llm_provider=...`` -- a conservative text scan (see module
-    docstring), lower-cased. Empty when ``dot_source`` is falsy."""
+    docstring's KNOWN LIMITATIONS), lower-cased. Empty when ``dot_source``
+    is falsy. Comments are stripped before scanning (limitation 1); a
+    mention inside a quoted string's own content is a known, accepted
+    false-positive surface (limitation 2); only the root dot_source is ever
+    seen, never a child graph (limitation 3)."""
     if not dot_source:
         return frozenset()
+    scanned = _strip_comments_for_scan(dot_source)
     return frozenset(
-        m.group(1).lower() for m in _EXPLICIT_LLM_PROVIDER_RE.finditer(dot_source)
+        m.group(1).lower() for m in _EXPLICIT_LLM_PROVIDER_RE.finditer(scanned)
     )
 
 
