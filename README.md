@@ -395,6 +395,81 @@ including amplifier-agent + its full dependency tree, with
 `modules/pipeline-runner` and `modules/loop-amplifier-agent`; a scratch-env
 `uv tool install git+file://<this repo>` (and an equivalent local-path
 install) both succeed end-to-end and land a working `dot-runner`.
+
+### The library-seam / module-dist coupling: which install a bare `run_pipeline()` needs (fix/library-seam-default-worker)
+
+The library-seam fix above (previous section) makes a bare `run_pipeline()`
+resolve to `amplifier-agent`, unconditionally -- the SAME ladder the CLI
+applies. That guarantee is only as good as the *installed distribution*
+actually shipping `amplifier-agent` + the `loop-amplifier-agent` adapter.
+Two distributions exist (pattern (a) vs (b) above), and **only the root one
+does**:
+
+* `amplifier-dot-runner` (root, no `#subdirectory` -- pattern (a)): declares
+  `amplifier-module-loop-amplifier-agent` as an unconditional
+  `[project.dependencies]` entry (WAVE 6) -- see the "Dependency conflict
+  fix" section above. `amplifier-agent` is always present.
+* `amplifier-module-pipeline-runner` (the module dist,
+  `#subdirectory=modules/pipeline-runner` -- pattern (b)'s underlying
+  package name, and what a `pip`/`uv add` **library** consumer like
+  microsoft/amplifier-app-wiki-weaver names in its own `dependencies`) does
+  **NOT** depend on `amplifier-agent` or the adapter at all -- see this
+  module's own `pyproject.toml`. A bare `run_pipeline()` call against
+  *this* install alone finds no adapter installed and raises
+  `default_worker.WorkerResolutionError` on every call: fail-loud is
+  honored (never a silent `llm-direct` degrade), but the library is
+  unusable zero-config out of the box.
+
+**Resolution (decided here, evidence below):** do **NOT** add
+`amplifier-module-loop-amplifier-agent` as an unconditional dependency of
+the `modules/pipeline-runner` module dist itself. A library consumer that
+wants the zero-config, same-as-CLI default-worker experience should depend
+on the root **`amplifier-dot-runner`** distribution instead (it already
+depends on, and re-exports, `amplifier_module_pipeline_runner` -- see
+`amplifier_dot_runner/__init__.py` -- so `from
+amplifier_module_pipeline_runner import run_pipeline` still works
+unchanged). A library consumer that wants to stay on the lean module dist
+keeps that option too, by always passing `worker=`/`bundle=` explicitly
+(the ladder is a no-op the moment any explicit choice is made).
+
+**Why not add the adapter to the module dist directly (the other
+candidate):** measured, not assumed -- `amplifier-module-loop-amplifier-agent`
+declares `requires-python = ">=3.12"` (it wraps `amplifier-agent`, which
+requires the same floor). `modules/pipeline-runner/pyproject.toml`
+deliberately keeps a `>=3.11` floor (WAVE 6 explicitly preserved this "for
+modules/pipeline-runner ... unaffected"). Adding the adapter as an
+unconditional dependency there forces `requires-python >=3.12` onto
+**every** module-dist consumer -- proven with a scratch `uv lock` against a
+module `pyproject.toml` carrying that added dependency:
+
+```
+No solution found when resolving dependencies for split ...:
+  Because the requested Python version (>=3.11) does not satisfy
+  Python>=3.12 and amplifier-module-loop-amplifier-agent==0.1.0
+  depends on Python>=3.12, ... your project's requirements are
+  unsatisfiable.
+```
+
+That is a strictly worse blast radius than the root dist's own choice: the
+root dist bumped ITS OWN floor to `>=3.12` (it exists *only* to ship the
+batteries-included console-script experience), while the module dist is
+also legitimately consumed by callers who explicitly pick `worker=` /
+`bundle=` and never touch `amplifier-agent` at all -- forcing them onto
+`>=3.12` and the full agent dependency tree for a feature they don't use
+would be the wrong trade. Scoping the floor-bump + heavier install to the
+root dist (opt-in, by depending on it) rather than the module dist
+(unconditional, no opt-out) is the more surgical fix. (Note: this floor
+bump is NOT unique to whichever option was picked here -- ANY consumer that
+wants amplifier-agent as its default, module dist or root dist, ends up
+needing Python >=3.12 one way or another. The question was only ever which
+distribution's consumers should be forced to pay it.)
+
+microsoft/amplifier-app-wiki-weaver's own fix (branch
+`fix/engine-020-compat`) implements the consumer side of this: its engine
+dependency now points at the root `amplifier-dot-runner` distribution (not
+the module subdirectory), and its own `requires-python` floor moved to
+`>=3.12` to match -- see that repo's PR for the install proof.
+
 ### Pattern (c) — mount as an Amplifier bundle
 
 ```bash
