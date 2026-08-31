@@ -456,8 +456,9 @@ def test_unknown_worker_name_fails_clean_not_a_traceback(monkeypatch, tmp_path, 
 
 
 def test_only_dot_runner_script_registered_in_pyproject():
-    import tomllib
     from pathlib import Path
+
+    import tomllib
 
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
@@ -465,6 +466,35 @@ def test_only_dot_runner_script_registered_in_pyproject():
     assert set(scripts) == {"dot-runner"}
     assert scripts["dot-runner"] == "amplifier_module_pipeline_runner.cli:main"
     assert "attractor" not in scripts
+
+
+def test_root_same_repo_dependencies_are_direct_refs_for_no_sources_installs():
+    """Foundation ignores local uv source mappings when it activates a bundle."""
+    from pathlib import Path
+
+    import tomllib
+
+    root_pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    data = tomllib.loads(root_pyproject.read_text(encoding="utf-8"))
+    dependencies = data["project"]["dependencies"]
+    sources = data["tool"]["uv"]["sources"]
+
+    expected = {
+        "amplifier-module-pipeline-runner": "modules/pipeline-runner",
+        "amplifier-module-loop-amplifier-agent": "modules/loop-amplifier-agent",
+        "amplifier-module-loop-agent": "modules/loop-agent",
+    }
+    for package, subdirectory in expected.items():
+        direct_reference = (
+            f"{package} @ "
+            "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
+            f"#subdirectory={subdirectory}"
+        )
+        assert direct_reference in dependencies
+        assert package not in dependencies
+        assert sources[package] == {"path": subdirectory}
+
+    assert data["tool"]["hatch"]["metadata"]["allow-direct-references"] is True
 
 
 def test_help_works():

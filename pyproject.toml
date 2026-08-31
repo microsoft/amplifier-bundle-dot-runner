@@ -20,7 +20,10 @@ authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
 dependencies = [
-    "amplifier-module-pipeline-runner",
+    # Direct git references (not bare names) keep the root distribution
+    # resolvable when Foundation installs it with `--no-sources`, which ignores
+    # the local-development mappings in [tool.uv.sources] below.
+    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/pipeline-runner",
     # WAVE 6 (feat/agent-always-installed): amplifier-agent is no longer an
     # optional, probed-for peer -- it is embedded, always. Maintainer ruling:
     # "I thought we were embedding amplifier-agent engine/lib, so it's
@@ -31,7 +34,7 @@ dependencies = [
     # See the `[tool.uv] override-dependencies` entry below for how the
     # historical `uv lock` "conflicting URLs for package amplifier-foundation"
     # break (the reason this was ever optional) is resolved.
-    "amplifier-module-loop-amplifier-agent",
+    "amplifier-module-loop-amplifier-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-amplifier-agent",
     # issue #338 point 2: `loop-agent` is a first-class, documented worker
     # NAME (`--worker loop-agent`, on par with `direct`/`amplifier-agent`),
     # but until now it was never a root dependency -- a fresh `uv tool
@@ -45,7 +48,7 @@ dependencies = [
     # library or Python-floor conflict (unlike amplifier-agent's WAVE 6
     # story above) -- unlike amplifier-agent, this is a plain, low-risk
     # addition.
-    "amplifier-module-loop-agent",
+    "amplifier-module-loop-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-agent",
 ]
 
 [project.urls]
@@ -59,7 +62,7 @@ dot-runner = "amplifier_dot_runner:main"
 # WAVE 6 (feat/agent-always-installed): resolves the "conflicting URLs for
 # package amplifier-foundation" uv error that made amplifier-agent optional
 # in the first place. Root cause (investigated against a fresh
-# microsoft/amplifier-agent clone): the two path-dependencies pulled in below
+# microsoft/amplifier-agent clone): the two direct-reference dependencies below
 # each reach amplifier-foundation through a STRUCTURALLY DIFFERENT
 # requirement shape for the exact same ref --
 #
@@ -80,8 +83,8 @@ dot-runner = "amplifier_dot_runner:main"
 # `@main`-suffixed direct URL and a `branch = "main"` sources-redirect are
 # different representations of "the same ref" as far as that identity check
 # is concerned -- hence "conflicting URLs for package amplifier-foundation"
-# the instant both path-dependencies below are resolved together (which they
-# now always are, since amplifier-agent is no longer optional).
+# the instant both direct-reference dependencies below are resolved together
+# (which they now always are, since amplifier-agent is no longer optional).
 #
 # Candidates considered and rejected (matching the reasoning already on
 # record in modules/pipeline-runner/pyproject.toml / compat.py):
@@ -120,36 +123,24 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-# Relative-path dependency onto modules/pipeline-runner's own package --
-# NOT a copy, NOT a fork. modules/pipeline-runner keeps its own name,
-# pyproject.toml, and `dot-runner` console script fully intact, so the
-# existing `#subdirectory=modules/pipeline-runner` install form is
-# unaffected by this root package's existence.
+# Local-development mapping for modules/pipeline-runner. The project
+# dependency above is a direct git reference so Foundation's `--no-sources`
+# install resolves it; this mapping keeps editable root installs on this
+# checkout.
 amplifier-module-pipeline-runner = { path = "modules/pipeline-runner" }
-# Same relative-path pattern, now for the always-installed agent adapter
-# (WAVE 6). modules/loop-amplifier-agent keeps its own name, pyproject.toml,
-# and `#subdirectory=modules/loop-amplifier-agent` install form fully intact.
+# Local-development mapping for the always-installed agent adapter (WAVE 6).
 amplifier-module-loop-amplifier-agent = { path = "modules/loop-amplifier-agent" }
-# issue #338 point 2: same relative-path pattern for loop-agent, so a fresh
-# root install can always resolve the --worker loop-agent name AND so this
-# checkout's own local edits (e.g. this module's own [tool.uv.sources]
-# overrides, see modules/loop-agent/pyproject.toml) are what actually gets
-# used -- a plain git+ URL here would instead fetch loop-agent fresh from
-# published upstream, bypassing any local branch changes entirely.
+# Local-development mapping for loop-agent, so root installs from this
+# checkout exercise local worker changes.
 amplifier-module-loop-agent = { path = "modules/loop-agent" }
-# issue #338 point 2: same relative-path pattern for loop-agent, so a fresh
-# root install can always resolve the `--worker loop-agent` name. modules/
-# loop-agent keeps its own name, pyproject.toml, and its existing
-# `#subdirectory=modules/loop-agent` install form fully intact.
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_dot_runner"]
 
 [tool.hatch.metadata]
-# Required because this root package's dependencies resolve (transitively,
-# via the two path-dependencies above) through direct references
-# (git+https:// URLs) -- hatchling refuses to build a package declaring
-# those unless this is explicitly set. Mirrors modules/pipeline-runner/
+# Required because this root package declares direct git references. Hatchling
+# refuses to build a package declaring them unless this is explicitly set.
+# Mirrors modules/pipeline-runner/
 # pyproject.toml and modules/loop-amplifier-agent/pyproject.toml, which
 # already carry this same flag for the same reason.
 allow-direct-references = true
