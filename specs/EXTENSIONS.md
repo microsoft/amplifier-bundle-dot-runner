@@ -489,8 +489,10 @@ No spec-conformant `.dot` file can depend on the prior "single timeout kills the
 
 **What:** A graph-level attribute `max_pipeline_duration` (integer, milliseconds) that is NOT
 defined in the upstream attractor nlspec. When set, the engine checks elapsed wall-clock time
-before each step; if the elapsed time exceeds `max_pipeline_duration`, the pipeline terminates
-immediately with `status=FAIL` and `failure_reason="max_pipeline_duration_exceeded"`.
+before each step, AND bounds each node's own execution by whatever budget remains; if the
+elapsed time exceeds `max_pipeline_duration` (between steps) or the remaining budget is
+exhausted DURING a node's own execution, the pipeline terminates immediately with `status=FAIL`
+and `failure_reason="max_pipeline_duration_exceeded"`.
 
 **Why:** The upstream spec's step-count ceiling (`max_steps`) guards against infinite loops but
 does not bound wall-clock time. Long-running nodes (network calls, LLM invocations) can stall
@@ -498,21 +500,68 @@ a pipeline for an unbounded duration even within the step ceiling. `max_pipeline
 provides an independent wall-clock safety bound that is orthogonal to step count and useful
 for production deployments with SLA requirements.
 
+**Update (2026-08-31, attractor-674 -- node-granularity enforcement):** the check described
+below as "before each step" is real but was, before this update, the ONLY enforcement point --
+a single node that itself ran unbounded (network hang, spawned-agent stall) could sail straight
+past the ceiling with nothing but an EXTERNAL hard kill (e.g. a CI job's own `timeout-minutes`)
+to stop it, leaving `checkpoint.json` at `run_state: in_flight` with no honest classification.
+Live evidence: run 33337401367 (2026-08-30) sat 89 minutes inside one author node past a 19800s
+fuse; only the CI job's `timeout-minutes: 360` eventually killed it, 20+ minutes over its own
+ceiling. The engine now ALSO bounds the node's own await by the REMAINING budget at node start
+(computed once, at dispatch time -- not re-checked continuously inside the node), so the fuse is
+enforced at node granularity, not just between nodes. This is a behavior-surface update to this
+same extension, not a new one: the attribute, its name, its milliseconds unit, its
+`failure_reason`/message, and the between-step check are all unchanged.
+
 **Behavior:**
-- Checked before each step in the main execution loop (Step 0 in the engine's step dispatch).
+- Checked before each step in the main execution loop (Step 0 in the engine's step dispatch) --
+  unchanged.
+- ALSO bounds the node's own handler execution: at node dispatch, the engine computes the
+  remaining budget (`max_pipeline_duration` minus elapsed-so-far) and awaits the node bounded by
+  `min(remaining_fuse_budget, node's own timeout=)` when both apply -- the tighter of the two
+  governs the await, and its identity governs which outcome fires on expiry (the graph-level
+  fuse always wins a tie, since its whole-pipeline termination must never be masked as an
+  ordinary per-node `timeout=` the graph could route around).
+- On mid-node expiry: the node's task is cancelled, with a bounded grace window
+  (`PipelineEngine._FUSE_CANCEL_GRACE_S`, 5s) for its own cancellation cleanup to finish before
+  the engine gives up waiting on it and proceeds -- the engine's own forward progress is never
+  held hostage to a handler that does not cooperate promptly with cancellation. The interrupted
+  node's `status.json` is written HONESTLY (FAIL, same `failure_reason`), but the node is
+  deliberately NOT added to `completed_nodes` -- it never finished, so a resume of an earlier
+  checkpoint would (correctly) re-execute it fresh. No new checkpoint is written for the
+  interrupted node; the on-disk checkpoint already reflects the last node that genuinely
+  completed, and `run()`/`resume()` unconditionally flip its `run_state` to `completed` once this
+  path's Outcome returns -- never left `in_flight` even though the ENGINE (not an external killer)
+  is what noticed the ceiling.
 - Measured via `time.monotonic()` (elapsed milliseconds since pipeline start).
-- Terminates the pipeline without executing the current step if the limit is exceeded.
+- Terminates the pipeline without executing the current step if the limit is exceeded (between
+  steps), or without waiting for the current step to finish (mid-node).
 - The termination outcome carries `failure_reason="max_pipeline_duration_exceeded"` and a
-  human-readable `notes` message showing the configured limit.
+  human-readable `notes` message showing the configured limit -- IDENTICAL text at both the
+  between-step and mid-node call sites (external consumers, including this repo's own lane
+  workflow classify steps, grep the literal substring "exceeded max duration").
+- **Decision (scope, stated not silently expanded):** mid-node fuse termination exits directly,
+  exactly like the pre-existing between-step path -- it does NOT route through any
+  recovery/postmortem machinery. The known gap ("fuse exit bypasses the recover wall") is
+  unchanged by this update.
 
 **Implementation locations:**
-- `engine.py:280–291` — enforcement logic (Step 0 duration check)
-- `graph.py:301` — `max_pipeline_duration: int | None` field on the `Graph` model (milliseconds)
-- `dot_parser.py:444` — promotes the DOT graph-block attribute to `graph_fields`, coercing to `int`
+- `engine.py` -- `_run_loop`'s Step 0 (between-step check, unchanged) and Step 2 node dispatch
+  (node-granularity bounding, new); `PipelineEngine._await_node_bounded` (bounded-grace
+  cancellation helper); `PipelineEngine._terminate_fuse_mid_node` (mid-node termination path)
+- `graph.py` -- `max_pipeline_duration: int | None` field on the `Graph` model (milliseconds,
+  unchanged)
+- `dot_parser.py` -- promotes the DOT graph-block attribute to `graph_fields`, coercing to `int`
+  (unchanged)
+- Tests: `modules/loop-pipeline/tests/test_fuse_node_granularity.py` (RED-proofed: hangs/overruns
+  on the pre-fix engine, terminates near budget on the fix)
 
 **Compatibility:** Additive. Pipelines that do not set `max_pipeline_duration` are unaffected
-(the attribute defaults to `None` and the check is skipped). The attribute name does not collide
-with any upstream spec-defined graph attribute.
+(the attribute defaults to `None` and both checks are skipped). The attribute name does not
+collide with any upstream spec-defined graph attribute. A pipeline that previously relied on a
+single node running past `max_pipeline_duration` without being cut off (i.e. depended on the
+pre-fix gap) is, by definition, the incident this update closes -- there is no conformant reason
+to depend on that gap.
 
 ---
 

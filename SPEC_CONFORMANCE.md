@@ -258,6 +258,78 @@ are the current state; these are the reasoning behind it.
 
 ## Changelog
 
+### 2026-08-31 — attractor-674: max_pipeline_duration enforced at NODE granularity, not just between nodes
+
+**Classification:** implementor-level extension hardening, NOT a conformance fix and NOT a new
+divergence. `attractor-spec-canonical.md` is silent on `max_pipeline_duration` in full — grepped
+for `max_pipeline_duration|fuse|duration.ceiling|pipeline.*duration` and the only hits are
+unrelated (`Section 6.5` human-interviewer `timeout_seconds`, per-node `timeout` in Appendix A,
+and the `PipelineCompleted(duration, ...)`/`PipelineFailed(error, duration)` event fields — none
+of them the graph-level wall-clock ceiling). The attribute is a pure addition in a spec-silent
+area (`specs/EXTENSIONS.md` §15), so this is a fix to THIS repo's own extension's implementation
+against its OWN documented behavior/intent, not a spec-conformance gap.
+
+**Gap:** §15 documented the fuse as checked "before each step" only — i.e. between nodes. Live
+evidence (tracker item attractor-674): run 33337401367 (2026-08-30) sat 89 minutes inside one
+author node PAST the 19800s fuse; only the CI job's `timeout-minutes: 360` eventually killed it,
+20+ minutes over its own ceiling, leaving `checkpoint.json` at `run_state: in_flight` with no
+honest classification (contrast: another run the same night fuse-fired cleanly at a node
+boundary). A single node running unbounded could defeat the fuse's own stated purpose ("an
+independent wall-clock safety bound... useful for production deployments with SLA
+requirements") with nothing but an external hard kill to stop it.
+
+**Fix:** `engine.py`'s node dispatch (Step 2) now computes the remaining `max_pipeline_duration`
+budget at node start and bounds the node's own await by
+`min(remaining_fuse_budget, node's own timeout=)` — the tighter of the two governs, and a tie
+favors the fuse (its whole-pipeline termination must never be masked as an ordinary per-node
+`timeout=` the graph could route around). New `PipelineEngine._await_node_bounded` drives
+cancellation explicitly: on expiry it cancels the node's task and waits up to
+`_FUSE_CANCEL_GRACE_S` (5s) for cleanup to finish before giving up on the wait — the engine's own
+forward progress is never held hostage to a handler that does not cooperate promptly with
+cancellation. New `PipelineEngine._terminate_fuse_mid_node` produces the SAME
+`failure_reason="max_pipeline_duration_exceeded"` / "exceeded max duration" message the
+pre-existing between-node path uses (the lane workflows' classify step greps that literal
+string — unchanged) and writes an HONEST per-node `status.json` for the interrupted node without
+adding it to `completed_nodes` (it never finished; a resume re-executes it fresh). No new
+checkpoint write is needed: the on-disk checkpoint already reflects the last node that genuinely
+completed, and `run()`/`resume()`'s existing unconditional `_mark_run_completed()` flips its
+`run_state` to `completed` — never left `in_flight`, because the ENGINE now notices the ceiling
+itself instead of relying on an external kill.
+
+**Decision (stated, not silently expanded):** mid-node fuse termination exits directly, exactly
+like the pre-existing between-node path — it does NOT route through any recovery/postmortem
+machinery. The known gap ("fuse exit bypasses the recover wall") is unchanged by this fix;
+closing it is out of scope here.
+
+**Ledger note:** `specs/EXTENSIONS.md` §15 updated in place (not a new section) — the documented
+behavior surface changed (fuse now also fires mid-node), so per this file's own "How to use this
+file" rule 2, the extension's existing entry is updated to describe the real behavior, mirroring
+how CAL-10's changelog entry left EXTENSIONS.md untouched specifically because that fix restored
+already-documented behavior with no surface change; this one changes the surface, so it updates
+§15 instead.
+
+**Tests (RED-proofed):** `modules/loop-pipeline/tests/test_fuse_node_granularity.py` (7 tests) —
+a slow-stub-handler fixture that outlives the remaining budget hangs/overruns on the pre-fix
+engine and terminates near budget on the fix (verified both ways by toggling the engine.py diff
+under an unchanged test file); boundary cases for a node finishing within budget, the fuse
+already expired before node start (between-node path still fires first, handler never invoked —
+proven deterministically via a `pipeline_start_time` set far in the past rather than racing a
+real-time budget), a node's own `timeout=` still governing when tighter than the fuse (existing
+per-node-timeout routing behavior unchanged), cancellation leaving valid `status.json`/
+`checkpoint.json` with `run_state=completed`, the fuse-killed checkpoint being cleanly refused by
+the resume ladder (`CheckpointAlreadyCompletedError`, rung 4 — consistent with every other
+terminal engine outcome, which is what "resumable per the resume rules" means for a
+`run_state=completed` checkpoint: refusal is clean and deterministic, never ambiguous or a
+crash), and the bounded-grace cancellation window itself (a stubborn handler that ignores one
+cancellation and cleans up past the grace window never blocks the engine's own forward
+progress).
+
+**Suites:** `loop-pipeline` full suite (`--extra remote`, no API keys): 2089 passed, 222 skipped.
+`pipeline-runner`: 154 passed, 1 skipped. Ledger/matrix guards
+(`test_extensions_ledger_integrity.py` + `test_spec_conformance_matrix.py`): 210 passed, 25
+skipped. `ruff check`/`ruff format` clean on all touched files (one pre-existing, unrelated
+`F401` in `engine.py` — present on `main` before this change — left untouched).
+
 ### 2026-08-31 — ATX-8/ATX-9 REMOVED: response_schema mechanism deleted (Lane 1b, `feat/extensions-walkback-2`)
 
 **What:** continuing the WAVE 5 spec-repair posture (same ruling that removed `report_outcome`),

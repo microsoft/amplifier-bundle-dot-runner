@@ -11,6 +11,7 @@ Spec coverage: EXEC-001–018, CHKP-004–006, EVT-001–008, DIR-001, STAT-001�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -890,21 +891,73 @@ class PipelineEngine:
                     outcome = _requires_fail
                 else:
                     # Per-node timeout enforcement: wrap handler execution with
-                    # asyncio.timeout when the node declares a timeout attribute.
-                    # The DOT parser stores all node-timeout durations as
-                    # milliseconds (see dot_parser._DURATION_UNITS): suffixed values
-                    # like "300s" via _try_parse_duration, and BARE integers like
-                    # "300" via dot_parser._SECONDS_IF_BARE_DURATION_ATTRS (seconds
-                    # -> ms at parse time). Divide by 1000 to get seconds for
-                    # asyncio.timeout. (Graph-level max_pipeline_duration is also in
-                    # ms and is compared against elapsed_ms — do not change that
-                    # path.)
+                    # asyncio.timeout when the node declares a timeout attribute,
+                    # AND/OR when the graph-level max_pipeline_duration fuse has
+                    # a remaining budget. The DOT parser stores all node-timeout
+                    # durations as milliseconds (see dot_parser._DURATION_UNITS):
+                    # suffixed values like "300s" via _try_parse_duration, and
+                    # BARE integers like "300" via
+                    # dot_parser._SECONDS_IF_BARE_DURATION_ATTRS (seconds -> ms
+                    # at parse time). Divide by 1000 to get seconds for
+                    # asyncio.timeout. (Graph-level max_pipeline_duration is
+                    # also in ms and is compared against elapsed_ms — do not
+                    # change that path.)
+                    #
+                    # attractor-674: the Step 0 fuse check above previously
+                    # fired only BETWEEN nodes. A single node that itself ran
+                    # unbounded (network hang, spawned-agent stall) could sail
+                    # straight past max_pipeline_duration with nothing but an
+                    # EXTERNAL hard kill (e.g. the CI job's own
+                    # timeout-minutes) to stop it — leaving checkpoint.json at
+                    # run_state=in_flight with no honest classification (live
+                    # evidence: run 33337401367 sat 89 minutes past a 19800s
+                    # fuse inside one node). Bounding the node's own await with
+                    # the REMAINING fuse budget closes that gap: the engine
+                    # itself always regains control by the ceiling, in
+                    # process, whether or not the node declares its own
+                    # timeout=.
                     node_timeout_raw = current_node.timeout
-                    if node_timeout_raw:
-                        timeout_s = float(node_timeout_raw) / 1000.0
+                    node_timeout_s = (
+                        float(node_timeout_raw) / 1000.0 if node_timeout_raw else None
+                    )
+
+                    fuse_remaining_s: float | None = None
+                    if self.graph.max_pipeline_duration:
+                        elapsed_at_node_start_ms = (
+                            node_start_time - pipeline_start_time
+                        ) * 1000
+                        fuse_remaining_s = max(
+                            0.0,
+                            (
+                                self.graph.max_pipeline_duration
+                                - elapsed_at_node_start_ms
+                            )
+                            / 1000.0,
+                        )
+
+                    # Whichever bound is smaller governs the actual await;
+                    # its identity governs which outcome fires on expiry (a
+                    # node's own declared timeout= vs the graph-level fuse).
+                    # A tie favors the fuse: an equally-tight graph ceiling is
+                    # still the ceiling, and the whole-pipeline termination it
+                    # carries must never be masked as an ordinary per-node
+                    # timeout the graph could route around.
+                    effective_timeout_s: float | None
+                    fuse_is_binding: bool
+                    if fuse_remaining_s is None:
+                        effective_timeout_s = node_timeout_s
+                        fuse_is_binding = False
+                    elif node_timeout_s is None:
+                        effective_timeout_s = fuse_remaining_s
+                        fuse_is_binding = True
+                    else:
+                        fuse_is_binding = fuse_remaining_s <= node_timeout_s
+                        effective_timeout_s = min(node_timeout_s, fuse_remaining_s)
+
+                    if effective_timeout_s is not None:
                         try:
-                            async with asyncio.timeout(timeout_s):
-                                outcome = await execute_with_retry(
+                            outcome, _fuse_timed_out = await self._await_node_bounded(
+                                execute_with_retry(
                                     handler,
                                     current_node,
                                     self.context,
@@ -913,7 +966,9 @@ class PipelineEngine:
                                     retry_policy,
                                     hooks=self.hooks,
                                     engine=self,
-                                )
+                                ),
+                                timeout_s=effective_timeout_s,
+                            )
                         except ChildDotResolutionError as _child_dot_exc:
                             # Issue #200 -- see the sibling handler below.
                             return await self._terminate_child_dot_resolution(
@@ -923,8 +978,17 @@ class PipelineEngine:
                                 pipeline_start_time=pipeline_start_time,
                                 execution_index=execution_index,
                             )
-                        except asyncio.TimeoutError:
-                            node_duration_ms = (time.monotonic() - node_start_time) * 1000
+                        if _fuse_timed_out:
+                            node_duration_ms = (
+                                time.monotonic() - node_start_time
+                            ) * 1000
+                            if fuse_is_binding:
+                                return await self._terminate_fuse_mid_node(
+                                    node_id=current_node.id,
+                                    node_duration_ms=node_duration_ms,
+                                    execution_index=execution_index,
+                                    pipeline_start_time=pipeline_start_time,
+                                )
                             _ap = current_node.attrs.get("allow_partial")
                             _timeout_status = (
                                 StageStatus.PARTIAL_SUCCESS
@@ -933,7 +997,10 @@ class PipelineEngine:
                             )
                             outcome = Outcome(
                                 status=_timeout_status,
-                                notes=f"Node '{current_node.id}' timed out after {timeout_s}s",
+                                notes=(
+                                    f"Node '{current_node.id}' timed out after "
+                                    f"{node_timeout_s}s"
+                                ),
                                 failure_reason="timeout",
                             )
                             await self._emit(
@@ -2017,6 +2084,131 @@ class PipelineEngine:
         )
         await self._emit_complete(fail_outcome, pipeline_start_time)
         return fail_outcome
+
+    # -- Node-granularity max_pipeline_duration enforcement (attractor-674) -
+
+    # Bounded grace window for cancellation cleanup after the fuse cancels a
+    # node mid-execution. task.cancel() is never revoked by this timing out
+    # -- the cancelled task is left to keep unwinding (subprocess teardown,
+    # ``finally`` blocks, context-manager ``__aexit__``) on its own -- this
+    # constant only bounds how long the ENGINE's own forward progress waits
+    # on that unwind before moving on to honest bookkeeping and termination.
+    _FUSE_CANCEL_GRACE_S: float = 5.0
+
+    async def _await_node_bounded(
+        self,
+        coro: Any,
+        *,
+        timeout_s: float,
+    ) -> tuple[Outcome | None, bool]:
+        """Await a node's handler execution bounded by ``timeout_s``.
+
+        Returns ``(outcome, timed_out)``: ``(outcome, False)`` on ordinary
+        completion, ``(None, True)`` if ``timeout_s`` elapsed first.
+
+        Unlike a bare ``asyncio.wait_for(coro, timeout_s)`` (whose own wait
+        for the cancelled task to finish unwinding is itself unbounded), this
+        wraps the coroutine in its own ``Task`` and shields it from
+        ``wait_for``'s cancellation on timeout so cancellation can be driven
+        explicitly: request it once (``task.cancel()``), then wait up to
+        ``_FUSE_CANCEL_GRACE_S`` for the unwind to actually finish before
+        giving up on the wait.  A handler exception raised before the
+        deadline (e.g. ``ChildDotResolutionError``) propagates through
+        unchanged -- only expiry is translated into ``(None, True)``.
+        """
+        task: asyncio.Task[Outcome] = asyncio.ensure_future(coro)
+        try:
+            outcome = await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
+            return outcome, False
+        except asyncio.TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(task, timeout=self._FUSE_CANCEL_GRACE_S)
+            return None, True
+
+    async def _terminate_fuse_mid_node(
+        self,
+        *,
+        node_id: str,
+        node_duration_ms: float,
+        execution_index: int,
+        pipeline_start_time: float,
+    ) -> Outcome:
+        """Terminate the pipeline when max_pipeline_duration expires DURING a
+        node's own execution (attractor-674), not only between nodes.
+
+        Live evidence: run 33337401367 sat 89 minutes past a 19800s fuse
+        inside one author node because the fuse (Step 0 above) only ever
+        fired BETWEEN nodes; only the CI job's own ``timeout-minutes: 360``
+        eventually killed the process, 20+ minutes over its own ceiling,
+        leaving checkpoint.json at ``run_state: in_flight`` with no honest
+        classification. This path closes that gap in-process.
+
+        The failing outcome carries the EXACT SAME message/failure_reason as
+        the pre-existing between-node fuse check
+        (``max_pipeline_duration_exceeded`` / "exceeded max duration") --
+        the lane workflows' classify step greps that literal string, and it
+        must never diverge by call site.
+
+        The interrupted node is recorded HONESTLY: a per-node status.json is
+        written showing it was cut off by the fuse, but it is deliberately
+        NOT added to ``completed_nodes`` / ``node_outcomes`` -- it never
+        completed, so a resume must re-execute it fresh rather than being
+        told it finished. No new checkpoint is written here: the on-disk
+        checkpoint.json already reflects the last node that genuinely
+        completed (or does not exist yet, if this is the very first node),
+        which is the correct resume point. ``run()``/``resume()`` flip that
+        checkpoint's ``run_state`` to ``completed`` unconditionally once this
+        method's Outcome propagates back up through ``_run_loop`` -- so the
+        checkpoint is never left ``in_flight`` even though the engine (unlike
+        the external-hard-kill path this replaces) was the one that noticed
+        its own ceiling and terminated itself.
+
+        Decision (scope, stated rather than silently expanded): this exits
+        directly, exactly like the pre-existing between-node fuse path --
+        it does NOT route through any recovery/postmortem machinery. The
+        known gap ("fuse exit bypasses the recover wall") is unchanged by
+        this fix; closing it is out of scope here.
+        """
+        duration_outcome = Outcome(
+            status=StageStatus.FAIL,
+            notes=(
+                f"Pipeline exceeded max duration of "
+                f"{self.graph.max_pipeline_duration}ms"
+            ),
+            failure_reason="max_pipeline_duration_exceeded",
+        )
+        interrupted_node_outcome = Outcome(
+            status=StageStatus.FAIL,
+            notes=(
+                f"Node '{node_id}' interrupted: pipeline exceeded max "
+                f"duration of {self.graph.max_pipeline_duration}ms while "
+                f"this node was still executing"
+            ),
+            failure_reason="max_pipeline_duration_exceeded",
+        )
+        self._write_node_status(node_id, interrupted_node_outcome, node_duration_ms)
+        await self._emit(
+            PIPELINE_NODE_COMPLETE,
+            {
+                "node_id": node_id,
+                "status": "fuse_exceeded",
+                "duration_ms": node_duration_ms,
+                "notes": interrupted_node_outcome.notes,
+                "failure_reason": interrupted_node_outcome.failure_reason,
+                "session_id": None,
+                "execution_index": execution_index,
+            },
+        )
+        logger.error(
+            "Pipeline max_pipeline_duration (%dms) exceeded DURING node "
+            "'%s' (node ran %.0fms before cancellation); terminating",
+            self.graph.max_pipeline_duration,
+            node_id,
+            node_duration_ms,
+        )
+        await self._emit_complete(duration_outcome, pipeline_start_time)
+        return duration_outcome
 
     def _no_matching_edge_reason(self, node_id: str, outcome: Outcome) -> str:
         """Build a diagnostic 'no matching edge' message that traces back.
