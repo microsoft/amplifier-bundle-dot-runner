@@ -157,9 +157,20 @@ def test_build_prepared_bare_never_loads_a_named_bundle(monkeypatch, tmp_path):
 
 
 def test_run_pipeline_bare_registers_no_spawn_capability(monkeypatch, tmp_path):
-    """`run_pipeline()` with no `bundle=` never registers `session.spawn` --
+    """`run_pipeline(worker="llm-direct")` never registers `session.spawn` --
     the mechanism that makes the `direct` worker the ONLY reachable path
-    (no implicit profile resolution attempted)."""
+    (no implicit profile resolution attempted).
+
+    NOTE (fix/library-seam-default-worker, WAVE 8): this test used to call
+    `run_pipeline()` completely bare (no `worker=` at all) and still expect
+    this exact shape -- that was the wiki-weaver-incident bug: a bare call
+    silently landed on `llm-direct` instead of applying the same
+    default-worker ladder the CLI applies. A bare call's NEW behavior is
+    covered in test_library_seam_default_worker.py; this test now pins the
+    llm-direct shape via an EXPLICIT, deliberate `worker="llm-direct"` --
+    still a fully legal, reachable configuration (requirement: 'explicit
+    llm-direct stays legal'), just no longer the silent default.
+    """
     _patch_bare_base_bundle(monkeypatch)
     calls = _forbid_load_named_bundle(monkeypatch)
 
@@ -185,6 +196,7 @@ def test_run_pipeline_bare_registers_no_spawn_capability(monkeypatch, tmp_path):
     result = asyncio.run(
         runner_mod.run_pipeline(
             "digraph T { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }",
+            worker="llm-direct",
             cwd=tmp_path / "work",
             logs_root=tmp_path / "logs",
         )
@@ -196,7 +208,7 @@ def test_run_pipeline_bare_registers_no_spawn_capability(monkeypatch, tmp_path):
     assert "session.spawn" not in captured["coordinator"].registered
     # Zero implicit profile fallback.
     assert captured["profiles"] == {}
-    # Bare default worker resolves to "llm-direct" when unspecified.
+    # Explicit llm-direct resolves to "llm-direct", exactly as requested.
     assert captured["default_worker"] == "llm-direct"
 
 
@@ -267,46 +279,36 @@ def test_run_pipeline_bundle_registers_spawn_and_honors_declared_defaults(
     assert captured["default_worker"] == "spawn"
 
 
-def test_run_pipeline_bundle_explicit_worker_overrides_declared(monkeypatch, tmp_path):
-    """An explicit `worker=` always wins over the loaded bundle's own
-    declared default."""
-    declared_bundle = FakeBundle(
-        session={"orchestrator": {"config": {"worker": "spawn"}}}
-    )
+def test_run_pipeline_worker_and_bundle_both_given_raises_value_error(
+    monkeypatch, tmp_path
+):
+    """`worker=` and `bundle=` are mutually exclusive (fix/library-seam-
+    default-worker, WAVE 8, maintainer ruling: "ONE behavior on both
+    seams"). This REPLACES the pre-WAVE-8 test of the same call shape,
+    which used to assert that an explicit `worker=` silently overrode a
+    loaded bundle's own declared default -- that silent-override behavior
+    is exactly what the new ruling forbids: pass one or the other, never
+    both.
+    """
 
-    async def fake_load_named_bundle(ref):
-        return declared_bundle
-
-    monkeypatch.setattr(runner_mod, "_load_named_bundle", fake_load_named_bundle)
-
-    captured: dict = {}
-
-    async def fake_drive_engine(dot_source, coordinator, **kwargs):
-        captured["default_worker"] = kwargs.get("default_worker")
-
-        class _Outcome:
-            class _Status:
-                value = "success"
-
-            status = _Status()
-            notes = ""
-            failure_reason = None
-
-        return _Outcome()
-
-    monkeypatch.setattr(runner_mod, "drive_engine", fake_drive_engine)
-
-    asyncio.run(
-        runner_mod.run_pipeline(
-            "digraph T { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }",
-            cwd=tmp_path / "work",
-            logs_root=tmp_path / "logs",
-            bundle="git+https://example.invalid/some-bundle.yaml",
-            worker="llm-direct",
+    def _forbid_load(ref):
+        raise AssertionError(
+            "a bundle must never be loaded once the mutual-exclusivity "
+            "guard has fired"
         )
-    )
 
-    assert captured["default_worker"] == "llm-direct"
+    monkeypatch.setattr(runner_mod, "_load_named_bundle", _forbid_load)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        asyncio.run(
+            runner_mod.run_pipeline(
+                "digraph T { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }",
+                cwd=tmp_path / "work",
+                logs_root=tmp_path / "logs",
+                bundle="git+https://example.invalid/some-bundle.yaml",
+                worker="llm-direct",
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -235,6 +235,56 @@ been built (an upstream, public-seam ask -- tracked, not silently dropped).
 If a node's prompt assumes a custom pipeline-declared tool will be
 available to the LLM, it will not reach amplifier-agent's Engine this way.
 
+### Library seam: `run_pipeline()` / `resume_pipeline()` get the SAME default-worker story (fix/library-seam-default-worker)
+
+`modules/pipeline-runner` is also a reusable library -- e.g.
+`from amplifier_module_pipeline_runner import run_pipeline`
+(microsoft/amplifier-app-wiki-weaver consumes it exactly this way). Calling
+it bare (no `bundle=`, no `worker=`) now applies the **exact same**
+default-worker ladder the CLI applies: amplifier-agent, unconditionally,
+via the same internal synthesis (`default_worker.py`) -- fail loud, never a
+silent degrade, if that install is broken.
+
+**Incident this closes (2026-08-30, proven live in a DTU):** before this
+fix, a bare `run_pipeline()` call hardcoded `worker="llm-direct"` whenever
+the caller made no explicit choice. A spawn-path DOT graph (one whose box
+nodes expect a real tool-calling agent) then ran silently on the
+TEXT-ONLY `llm-direct` worker: the model emitted tool calls as prose,
+nothing executed, and a step burned its whole retry budget (137
+iterations / 16 minutes of paid LLM calls) before failing to converge. The
+CLI never had this bug -- `cli.py` always resolves the default worker
+before calling `run_pipeline`. Now both seams share the identical ladder.
+
+```python
+from amplifier_module_pipeline_runner import run_pipeline
+
+# Bare call: resolves to amplifier-agent (spawn + real tool loop),
+# exactly like `dot-runner run pipeline.dot` with no --worker flag.
+# Fails loud (raises `default_worker.WorkerResolutionError`) if that
+# install is broken -- never silently falls back to a text-only worker.
+result = await run_pipeline(dot_source)
+
+# Explicit choice always wins -- same three names as `--worker`, and the
+# bare, text-only loop remains fully available, deliberately, by asking
+# for it:
+result = await run_pipeline(dot_source, worker="llm-direct")
+result = await run_pipeline(dot_source, worker="coding-agent")
+result = await run_pipeline(dot_source, worker="amplifier-agent")
+```
+
+`worker=` mirrors `--worker` exactly: an unrecognized name fails loud
+downstream (the engine's own worker registry, naming every registered
+worker); a retired name (`direct`/`loop-agent`) fails loud immediately with
+a migration hint. `worker=` and `bundle=` (the pre-existing mechanism for
+loading an explicit, opinionated bundle -- e.g. attractor's own) are
+**mutually exclusive** -- passing both raises `ValueError` immediately. An
+explicit `bundle=` caller's behavior is completely unchanged by this fix.
+
+The ONE difference from the CLI: a fail-loud case on this library seam
+raises `default_worker.WorkerResolutionError` (a normal, catchable
+exception) rather than calling `sys.exit(1)` -- a library caller's host
+process must never be killed out from under it.
+
 ### Subscription providers: `github-copilot` / `openai-chatgpt` (spawn workers only)
 
 `llm_provider="github-copilot"` and `llm_provider="openai-chatgpt"` on a box
