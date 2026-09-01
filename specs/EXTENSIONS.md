@@ -784,6 +784,30 @@ avoids brittle full-stdout matching (the canonical "prose-vs-JSON" hazard).
 
 **Compatibility:** Additive — `tool.output` and existing tool routing are unchanged.
 
+### 20.1 `tool_env` name sanitization (2026-09-01)
+
+**What:** Each `tool_env` name is exported to the subprocess under **two** names: the
+uppercased raw name (as before) and a shell-safe sanitized name with dots replaced by
+underscores. `tool_env="human.gate.text"` exports both `HUMAN.GATE.TEXT` and
+`HUMAN_GATE_TEXT`. For a name without dots the two forms are identical and a single entry is
+exported, exactly as before.
+
+**Why:** `tool_command` runs through `/bin/sh` (`create_subprocess_shell`). An environment
+entry whose name is not a valid POSIX identifier — anything with a dot — is dropped by dash
+before the command is exec'd, so a dotted `tool_env` value never reached the command while the
+node still reported SUCCESS. Silent data loss; see
+microsoft-amplifier/amplifier-support#506 and #507 for two production instances. Note the
+shell asymmetry that hid this: **bash preserves** such entries, **dash drops** them, so the
+behavior depends on what `/bin/sh` points at.
+
+**Why both names:** consuming `.dot` pipeline files are versioned independently of this
+engine. Emitting both means neither an older file (reading the raw name) nor a newer one
+(reading the sanitized name) breaks during the rollout window. The raw name costs nothing and
+remains correct for non-shell consumers.
+
+**Compatibility:** Additive and behavior-neutral for every dot-free `tool_env` name. Only
+dotted names change behavior, and only from "silently absent" to "present".
+
 ## 21. Variable Expansion Beyond `$goal`: `$param` and `${key}`
 
 **What:** Prompt/attribute substitution supports `$param` and `${key}` forms in addition to the

@@ -14,6 +14,12 @@ Tests:
 - test_injects_single_var_as_env_var: single var from context injected as env var
 - test_injects_multiple_vars: multiple comma-separated vars all injected
 - test_uppercase_conversion: snake_case context key becomes UPPER_CASE env var
+- test_dotted_context_key_reaches_command: DOTTED key reaches the command via its
+  sanitized name (regression: support#506/#507 -- /bin/sh drops non-identifier names)
+- test_production_dotted_keys_sanitized_names: the exact dotted keys from those bugs
+  land under HUMAN_GATE_TEXT / DELIVERY_PR_URL / DELIVERY_RESULT
+- test_dotless_key_exports_single_unchanged_entry: dot-free key still exports exactly one entry
+- test_dotted_key_also_exports_legacy_raw_name: legacy raw name is still handed to the subprocess
 - test_missing_context_var_skipped: missing context var causes no crash (silently skipped)
 - test_whitespace_trimmed_from_var_names: leading/trailing whitespace around names trimmed
 - test_without_tool_env_does_not_inject: without tool_env, context vars NOT injected
@@ -24,6 +30,9 @@ Tests:
 """
 
 from __future__ import annotations
+
+import asyncio
+from unittest import mock
 
 import pytest
 
@@ -43,6 +52,30 @@ def _make_graph() -> Graph:
 
 def _make_context() -> PipelineContext:
     return PipelineContext()
+
+
+async def _capture_subprocess_env(
+    handler, node, ctx, graph, logs_root
+) -> dict[str, str]:
+    """Run the handler, returning the env mapping it hands to the subprocess.
+
+    Used only where the assertion cannot be made from command output -- an env
+    name that is not a valid POSIX identifier is stripped by /bin/sh before the
+    command can observe it. The real subprocess still runs; only the env dict is
+    intercepted on the way past.
+    """
+    captured: dict[str, str] = {}
+    real = asyncio.create_subprocess_shell
+
+    async def _spy(*args, **kwargs):
+        env = kwargs.get("env")
+        if env is not None:
+            captured.update(env)
+        return await real(*args, **kwargs)
+
+    with mock.patch.object(asyncio, "create_subprocess_shell", _spy):
+        await handler.execute(node, ctx, graph, logs_root)
+    return captured
 
 
 class TestToolEnv:
@@ -138,6 +171,155 @@ class TestToolEnv:
         assert "make all" in tool_output, (
             f"Expected BUILD_COMMAND='make all' in subprocess env (uppercase), "
             f"got tool.output={tool_output!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dotted_context_key_reaches_command(self, tmp_path):
+        """REGRESSION: a DOTTED context key must reach the command.
+
+        A context key containing dots (e.g. "human.gate.text") uppercases to
+        HUMAN.GATE.TEXT, which is not a valid POSIX shell identifier. The
+        command is run via /bin/sh, and dash drops env entries whose names are
+        not valid identifiers before exec'ing the child -- so the value was
+        silently discarded while the node still reported SUCCESS.
+
+        The handler therefore also exports the sanitized name (dots ->
+        underscores): HUMAN_GATE_TEXT.
+
+        Refs microsoft-amplifier/amplifier-support#506, #507.
+        """
+        ctx = _make_context()
+        ctx.set("human.gate.text", "THE REFINED CONDITION")
+
+        node = Node(
+            id="tool_node",
+            attrs={
+                # `|| echo MISSING` keeps the command exit status 0 either way,
+                # so this test fails on the VALUE, not on the node status --
+                # which is exactly the bug: silent data loss under SUCCESS.
+                "tool_command": "printenv HUMAN_GATE_TEXT || echo MISSING",
+                "tool_env": "human.gate.text",
+            },
+        )
+        handler = ToolHandler()
+        outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+
+        assert outcome.status == StageStatus.SUCCESS, (
+            f"Expected SUCCESS, got {outcome.status!r}: {outcome.failure_reason!r}"
+        )
+        tool_output = ctx.get("tool.output", "")
+        assert "THE REFINED CONDITION" in tool_output, (
+            f"Dotted tool_env key 'human.gate.text' did not reach the command. "
+            f"Expected the value under the sanitized name HUMAN_GATE_TEXT; the "
+            f"raw name HUMAN.GATE.TEXT is not a valid POSIX identifier and is "
+            f"dropped by /bin/sh. got tool.output={tool_output!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_production_dotted_keys_sanitized_names(self, tmp_path):
+        """The exact dotted keys from the filed bugs land under sanitized names.
+
+        Pins the interface contract consumed by pipeline `.dot` files, which
+        are versioned in a separate repo: human.gate.text -> HUMAN_GATE_TEXT,
+        delivery.pr_url -> DELIVERY_PR_URL, delivery.result -> DELIVERY_RESULT.
+        """
+        ctx = _make_context()
+        ctx.set("human.gate.text", "refined-condition")
+        ctx.set("delivery.pr_url", "https://example.invalid/pr/1")
+        ctx.set("delivery.result", "promoted")
+
+        node = Node(
+            id="tool_node",
+            attrs={
+                "tool_command": (
+                    "echo $HUMAN_GATE_TEXT $DELIVERY_PR_URL $DELIVERY_RESULT"
+                ),
+                "tool_env": "human.gate.text,delivery.pr_url,delivery.result",
+            },
+        )
+        handler = ToolHandler()
+        outcome = await handler.execute(node, ctx, _make_graph(), str(tmp_path))
+
+        assert outcome.status == StageStatus.SUCCESS, (
+            f"Expected SUCCESS, got {outcome.status!r}: {outcome.failure_reason!r}"
+        )
+        tool_output = ctx.get("tool.output", "")
+        for expected in (
+            "refined-condition",
+            "https://example.invalid/pr/1",
+            "promoted",
+        ):
+            assert expected in tool_output, (
+                f"Expected {expected!r} in subprocess env under its sanitized "
+                f"name, got tool.output={tool_output!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_dotless_key_exports_single_unchanged_entry(self, tmp_path):
+        """A dot-free key is exported exactly once, unchanged.
+
+        For a name without dots the sanitized and raw forms are identical, so
+        the dual export must collapse to a single entry with the same value --
+        no double-write, no changed name. Guards every existing dot-free
+        tool_env call site against this change.
+        """
+        captured: dict[str, str] = {}
+        node = Node(
+            id="tool_node",
+            attrs={
+                "tool_command": "printenv BUILD_COMMAND || echo MISSING",
+                "tool_env": "build_command",
+            },
+        )
+        ctx = _make_context()
+        ctx.set("build_command", "make all")
+
+        handler = ToolHandler()
+        captured = await _capture_subprocess_env(
+            handler, node, ctx, _make_graph(), str(tmp_path)
+        )
+
+        injected = {k: v for k, v in captured.items() if "BUILD_COMMAND" in k}
+        assert injected == {"BUILD_COMMAND": "make all"}, (
+            f"Expected exactly one env entry BUILD_COMMAND='make all' for the "
+            f"dot-free key 'build_command', got {injected!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dotted_key_also_exports_legacy_raw_name(self, tmp_path):
+        """The legacy uppercased RAW name is still exported alongside.
+
+        Both names are emitted so that pipeline files in the separate consuming
+        repo keep working across the rollout window in either version order.
+
+        This assertion inspects the env mapping handed to the subprocess rather
+        than the command's output, because the raw dotted name is unobservable
+        from inside a /bin/sh command by construction -- dash strips it before
+        the command runs. That is the bug under test; here we prove the entry is
+        still HANDED to the subprocess.
+        """
+        ctx = _make_context()
+        ctx.set("human.gate.text", "THE REFINED CONDITION")
+
+        node = Node(
+            id="tool_node",
+            attrs={
+                "tool_command": "true",
+                "tool_env": "human.gate.text",
+            },
+        )
+        handler = ToolHandler()
+        captured = await _capture_subprocess_env(
+            handler, node, ctx, _make_graph(), str(tmp_path)
+        )
+
+        assert captured.get("HUMAN.GATE.TEXT") == "THE REFINED CONDITION", (
+            f"Legacy raw env name HUMAN.GATE.TEXT was not handed to the "
+            f"subprocess; got {captured.get('HUMAN.GATE.TEXT')!r}"
+        )
+        assert captured.get("HUMAN_GATE_TEXT") == "THE REFINED CONDITION", (
+            f"Sanitized env name HUMAN_GATE_TEXT was not handed to the "
+            f"subprocess; got {captured.get('HUMAN_GATE_TEXT')!r}"
         )
 
     @pytest.mark.asyncio

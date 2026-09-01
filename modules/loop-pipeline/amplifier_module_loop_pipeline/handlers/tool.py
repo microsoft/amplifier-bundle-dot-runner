@@ -9,7 +9,15 @@ Supported attributes:
                      inject each key-value into context and context_updates;
                      on JSONDecodeError logs WARNING and continues (SUCCESS)
     tool_env       — Comma-separated list of context variable names to expose
-                     as uppercase environment variables to the subprocess
+                     as uppercase environment variables to the subprocess.
+                     Each name is exported TWICE: under the uppercased raw
+                     name, and under a shell-safe sanitized name with dots
+                     replaced by underscores ("human.gate.text" ->
+                     HUMAN.GATE.TEXT and HUMAN_GATE_TEXT). The sanitized name
+                     is the one a shell command can actually read; /bin/sh
+                     (dash) silently drops env entries whose names are not
+                     valid POSIX identifiers. For names without dots the two
+                     forms are identical and a single entry is exported.
 
 Routing via tool.last_line:
     The last non-empty line of stdout is extracted and stored in context as ``tool.last_line``.
@@ -113,7 +121,26 @@ class ToolHandler:
             for var_name in var_names:
                 value = context.get(var_name)
                 if value is not None:
-                    env[var_name.upper()] = str(value)
+                    # A dotted context key (e.g. "human.gate.text") yields the env
+                    # name HUMAN.GATE.TEXT, which is not a valid POSIX shell
+                    # identifier. The command runs through /bin/sh (see
+                    # create_subprocess_shell below); dash drops such entries
+                    # before exec'ing the child, so the command never sees the
+                    # value and the node still reports success. Emit the
+                    # sanitized name (dots -> underscores) as well.
+                    #
+                    # BOTH names are emitted: the consuming .dot pipeline files
+                    # are versioned in a separate repo, so during the rollout
+                    # window neither an old file (reading the raw name) nor a new
+                    # one (reading the sanitized name) breaks. The raw name costs
+                    # nothing and preserves the documented contract for non-shell
+                    # consumers -- bash, unlike dash, does preserve it.
+                    #
+                    # For a key with no dots the two names are identical, so this
+                    # writes a single entry with the same value as before.
+                    str_value = str(value)
+                    env[var_name.upper()] = str_value
+                    env[var_name.upper().replace(".", "_")] = str_value
 
         # Resolve working directory: prefer context.target_dir (the session's
         # project directory where pipeline output files are created), then fall
