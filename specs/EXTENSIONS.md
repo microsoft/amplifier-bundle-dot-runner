@@ -3348,16 +3348,19 @@ handler already returned, treats it as the winning verdict:
   node's execution-start wall clock, so a stale file from an earlier attempt/iteration is never
   picked up as if just written.
 - **Malformed ⇒ loud FAIL, never silent.** Invalid JSON, non-object JSON, a missing/invalid
-  `outcome` field, or a wrong-typed `preferred_label` / `context_updates` / `notes` fails the node
-  (`is_explicit=True` FAIL) regardless of what the handler returned — a broken contract is a
-  definitive signal, mirroring §27's `must_write=` fail-closed treatment. `suggested_next_ids` is
-  validated only as "a list" (not "a list of strings"): §34 already gives `edge_selection.py`'s
+  `outcome` field, a fresh divergent external `outcome="skipped"`, or a wrong-typed
+  `preferred_label` / `context_updates` / `notes` fails the node (`is_explicit=True` FAIL)
+  regardless of what the handler returned — a broken contract is a definitive signal,
+  mirroring §27's `must_write=` fail-closed treatment. `suggested_next_ids` is validated only as
+  "a list" (not "a list of strings"): §34 already gives `edge_selection.py`'s
   `_coerce_suggested_id` a documented int/float coercion policy, and re-validating item types
-  here would duplicate — and could conflict with — that decided policy. The `outcome` field
-  accepts every `StageStatus` value including `"skipped"`, even though Appendix C's illustrative
-  comment only lists four: the engine's own writers already serialize `"skipped"` as a normal
-  value, and rejecting it here would treat a handler's own routine audit-trail write (e.g. an
-  upstream-skip-propagated node) as malformed.
+  here would duplicate — and could conflict with — that decided policy. Worker/external
+  writers may author exactly the four Appendix C outcomes taught by `status_contract.py`:
+  `success`, `fail`, `partial_success`, and `retry`. `skipped` is engine-authored only. The read
+  order preserves the engine's existing SKIPPED audit compatibility: stale files are ignored
+  before parsing, and a fresh parsed SKIPPED file that exactly matches the handler-returned
+  SKIPPED outcome is the routine audit no-op. Only a fresh DIVERGENT SKIPPED file reaches the
+  malformed/fail-closed branch.
 
 ### Precedence — §25's fail-closed ladder, and ordering vs §35's `report_outcome`
 
@@ -3390,9 +3393,9 @@ and is explicitly NOT done here — `report_outcome` is unchanged.
 Additive and non-interfering (`SPEC_CONFORMANCE.md` compat-doctrine rule 3): a conformant graph
 whose nodes never write `status.json` themselves observes IDENTICAL behavior (the override is
 divergence-gated and a no-op with no file present). The full `loop-pipeline` suite (2206 tests)
-passes unchanged; three RED-only regressions surfaced during development (int-coerced
-`suggested_next_ids` already governed by §34, and `"skipped"` already used by the engine's own
-writers) were fixed to match existing decided policy, not worked around.
+passes unchanged. Engine-authored SKIPPED audit compatibility is preserved by read order:
+stale files are ignored, matching fresh audit records are no-ops, and only a fresh divergent
+external SKIPPED assertion fails closed. Focused `SF-008e`–`SF-008h` tests pin all three cases.
 
 ### Implementation locations
 
@@ -3408,7 +3411,8 @@ writers) were fixed to match existing decided policy, not worked around.
   additive `preferred_label` key
 - `modules/loop-pipeline/tests/test_status_file_contract.py` — RED-proof (fixture fails without
   the read side, passes with it), goal_gate interaction (SF-006/SF-007), and unit-level
-  `read_status_override()` coverage
+  `read_status_override()` coverage, including the worker-vs-engine SKIPPED boundary
+  (SF-008e–SF-008h)
 - `specs/conformance/attractor-matrix.yaml` — row `ATX-M-041`
 
 ### WAVE 4 cross-reference (2026-08-29)
@@ -3756,3 +3760,92 @@ fails loud before attempting it, naming the fix -- an explicit concrete id, or o
   invariant), `modules/loop-pipeline/tests/test_subscription_provider_direct_worker.py`,
   `test_sole_mounted_provider_default.py`,
   `modules/loop-agent/tests/test_subscription_provider_prompt_profile.py`
+
+---
+
+## 45. `session.spawn` Metadata Export: Host-Authorizable, Boundary-Validated `status_file_path`
+
+**Classification: implementor-level extensibility, NOT a spec divergence.** The spec's
+status-file contract (Sec 4.5 / Appendix C, entry 41 above) is unchanged: nothing about
+what a node must write, where it writes it, or how the engine reads it back is altered by
+this entry. This is a NEW, additive metadata channel on the `session.spawn` call itself,
+alongside the already-shipped instruction-text contract (WAVE 4, entry 35's dated RETCON
+note) -- it teaches a HOST APPLICATION (not the spawned child) the exact path, so the host
+can choose to act on it.
+
+**The gap this closes.** WAVE 4 taught a spawned child its exact absolute `status.json`
+path via instruction text (`status_contract.build_status_file_contract`, appended to the
+spawn instruction). That assumes the spawned child's write-tool can actually reach that
+path. A host application that spawns child sessions with their filesystem tools sandboxed
+to a project-workspace root DISTINCT from this engine's own coordination directory (the
+`logs_root` a `PipelineEngine` is constructed with) has no way to narrowly authorize
+exactly the one file the instruction asks the child to write, because it has no
+machine-readable way to learn that path ahead of the spawn call -- only a human reading
+the rendered instruction text would know it.
+
+**What changed.** `amplifier_module_loop_pipeline.status_contract.resolve_spawn_status_file_path()`
+computes, boundary-validates, and returns the SAME absolute path already injected into the
+instruction text -- or `None` when there is nothing to export. `backend.py::_run_with_spawn`
+attaches it to `spawn_kwargs["status_file_path"]` whenever not `None`. A host application
+reading this key MAY use it to grant the spawned child's write-tool access to exactly this
+one file (e.g. an allow-list entry naming the exact path, not its parent directory or the
+coordination directory as a whole) -- this module does not do that itself, does not know
+whether any host acts on the key at all, and grants nothing merely by exporting it.
+
+**★ Boundary validation, not blind pass-through.** `handlers/codergen.py` builds each
+node's stage directory as `os.path.join(logs_root, node.id)`. The current DOT parser's
+identifier grammar does not accept path-shaped node ids, but the public programmatic
+`Graph`/`Node` construction seam stores `Node.id` as an unrestricted string. A caller using
+that seam can therefore supply an absolute or `..`-laden id; Python path joining and
+normalization can then place the resulting "stage directory" outside `logs_root`.
+Exporting that result as host-authorizable metadata without checking containment would be
+unsafe. Every export is validated against `current_node_logs_root` (set alongside
+`current_node_status_path` by `handlers/codergen.py`, same ContextVar pattern) before it is
+returned:
+
+1. Both `current_node_status_path` and `current_node_logs_root` must be set (else: same
+   "nothing to inject" no-op as WAVE 4 already has for the instruction-text side).
+2. Both must be absolute.
+3. Both must ALREADY be lexically normalized (`os.path.normpath(p) == p`) -- refuses
+   rather than silently normalizes-and-trusts an unnormalized value, since normalizing a
+   `<logs_root>/../../etc/status.json`-shaped value would collapse it BEFORE the boundary
+   check below ever saw the escape.
+4. The path's basename must be exactly `status.json`.
+5. The path must be contained STRICTLY BENEATH `current_node_logs_root` (`os.path.commonpath`
+   equals the boundary, and the path is not itself equal to the boundary).
+
+Any failure degrades to `None` -- identical to "no current status path" -- never raises.
+The metadata export is best-effort on top of a fully independent, already-working
+instruction-text channel; a validation failure here must never fail the node.
+
+**★ What this does NOT do.** This entry does not implement, request, or configure any
+filesystem-tool allow-list, sandbox, or permission grant. It exports one engine-validated
+string. A host application that acts on `spawn_kwargs["status_file_path"]` MUST
+independently validate the path against the host's own FIXED, trusted coordination root
+before granting access. Containment beneath `current_node_logs_root` is necessary but not
+sufficient for that host decision: `logs_root` is supplied to the engine for the current
+execution and may itself be a nested/scoped stage path. The intended host action is to
+authorize exactly this pathname -- never the surrounding stage directory, never
+`logs_root` itself -- after that independent validation.
+
+**Compatibility.** The instruction-text contract (WAVE 4) is unchanged byte-for-byte and
+the metadata value is additive for `session.spawn` capabilities that already accept either
+an optional `status_file_path` keyword or arbitrary unknown `**kwargs`. It is NOT
+backward-compatible with a strict callback whose signature enumerates every accepted
+keyword and does not include `status_file_path`: such a callback must add an optional
+`status_file_path: str | None = None` parameter (and may ignore it). Once accepted, a host
+that ignores the value observes no further behavior change. The instruction and metadata
+channels coexist, making the SAME path byte-identically available through human-readable
+and machine-readable surfaces.
+
+**Implementation locations:**
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/status_contract.py` --
+  `current_node_logs_root` (new ContextVar), `resolve_spawn_status_file_path()` (new)
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/handlers/codergen.py` --
+  `current_node_logs_root.set()`/`.reset()` alongside the existing
+  `current_node_status_path` pair
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/backend.py` --
+  `_run_with_spawn`, `spawn_kwargs["status_file_path"]`
+- `modules/loop-pipeline/tests/test_status_file_contract.py` -- `SF-009` extended to assert
+  instruction/metadata byte identity; new coverage for no-context omission, traversal/
+  absolute-node-id rejection, wrong-basename rejection, and concurrent ContextVar isolation

@@ -50,10 +50,14 @@ transport):
   ``report_outcome`` call.
 
   A malformed override (invalid JSON, non-object JSON, missing/invalid
-  ``outcome`` field, or a wrong-typed ``suggested_next_ids`` /
+  ``outcome`` field, a fresh divergent external ``outcome=skipped``
+  (engine-authored only), or a wrong-typed ``suggested_next_ids`` /
   ``context_updates`` / ``preferred_label`` / ``notes``) is NEVER silently
   ignored: it fails the node loudly (``is_explicit=True`` FAIL), regardless
-  of what the handler itself returned. See EXTENSIONS.md Sec 41.
+  of what the handler itself returned. A stale SKIPPED audit file is ignored
+  at the freshness gate, and a fresh SKIPPED file exactly matching an
+  engine-returned SKIPPED outcome remains the routine audit no-op. See
+  EXTENSIONS.md Sec 41.
 """
 
 from __future__ import annotations
@@ -67,18 +71,29 @@ from .outcome import Outcome, StageStatus
 
 logger = logging.getLogger(__name__)
 
-# Every StageStatus value is accepted on read, including the "skipped"
-# value -- even though Appendix C's illustrative JSON comment
-# (attractor-spec-canonical.md:2059) only enumerates
-# "success | retry | fail | partial_success". The engine's OWN writers
-# (engine.py: _write_node_status, handlers/codergen.py: _write_status)
-# already serialize "skipped" as a normal outcome.status.value for a
-# SKIPPED node execution -- rejecting it here would treat the handler's
-# own routine audit-trail write as malformed and regress SKIPPED /
-# auto_status handling (Appendix C's auto_status promotion). Mirrors
-# backend.py's _STATUS_MAP convention (every StageStatus value, keyed
-# by its serialized form).
-_ALLOWED_OUTCOME_VALUES: dict[str, StageStatus] = {s.value: s for s in StageStatus}
+# Parse every StageStatus value, including "skipped", before divergence
+# classification. This is deliberate: the engine's OWN audit writers
+# (engine.py: _write_node_status, handlers/codergen.py: _write_status) already
+# serialize SKIPPED, and an identical fresh file must remain a no-op rather
+# than being misclassified as a malformed external verdict. Freshness is
+# checked even earlier, so a stale engine-authored SKIPPED audit file is also
+# ignored before parsing.
+#
+# Worker/external writers have the narrower Appendix C verdict vocabulary
+# taught by status_contract.py: success, fail, partial_success, retry. Once a
+# fresh candidate is parsed and found to DIVERGE from handler_outcome, a
+# candidate SKIPPED is therefore malformed and fails closed. The read order is
+# load -> validate envelope -> build candidate -> matching engine-audit no-op ->
+# reject divergent SKIPPED -> honor other divergent worker verdicts.
+_RECOGNIZED_OUTCOME_VALUES: dict[str, StageStatus] = {s.value: s for s in StageStatus}
+_WORKER_OUTCOME_VALUES = frozenset(
+    {
+        StageStatus.SUCCESS.value,
+        StageStatus.FAIL.value,
+        StageStatus.PARTIAL_SUCCESS.value,
+        StageStatus.RETRY.value,
+    }
+)
 
 
 def read_status_override(
@@ -97,12 +112,16 @@ def read_status_override(
 
     Returns an explicit ``FAIL`` ``Outcome`` (``is_explicit=True``) when a
     fresh ``status.json`` exists but is malformed -- a spec Appendix C
-    contract violation, never silently ignored.
+    contract violation, never silently ignored. This includes a divergent
+    external ``outcome=skipped``: SKIPPED is reserved for engine-authored
+    audit state. A stale SKIPPED file is ignored by the freshness rule, and
+    a fresh SKIPPED file exactly matching ``handler_outcome`` is the engine's
+    routine audit no-op.
 
     Returns the file-derived ``Outcome`` (``is_explicit=True``) when a
-    fresh, well-formed file diverges from ``handler_outcome`` -- the
-    node/external tool's explicit verdict wins (see module docstring for
-    the precedence rationale).
+    fresh, well-formed worker outcome (success/fail/partial_success/retry)
+    diverges from ``handler_outcome`` -- the node/external tool's explicit
+    verdict wins (see module docstring for the precedence rationale).
     """
     status_path = os.path.join(logs_root, node.id, "status.json")
     if not os.path.exists(status_path):
@@ -141,7 +160,7 @@ def read_status_override(
 
     outcome_value = data["outcome"]
     status = (
-        _ALLOWED_OUTCOME_VALUES.get(outcome_value)
+        _RECOGNIZED_OUTCOME_VALUES.get(outcome_value)
         if isinstance(outcome_value, str)
         else None
     )
@@ -149,7 +168,7 @@ def read_status_override(
         return _malformed(
             node,
             "status.json 'outcome' must be one of "
-            f"{sorted(_ALLOWED_OUTCOME_VALUES)}, got {outcome_value!r}",
+            f"{sorted(_WORKER_OUTCOME_VALUES)}, got {outcome_value!r}",
         )
 
     suggested_next_ids = data.get("suggested_next_ids")
@@ -183,8 +202,25 @@ def read_status_override(
         is_explicit=True,
     )
 
+    # Engine-owned audit compatibility comes first: the engine legitimately
+    # writes SKIPPED into status.json, so a fresh file that exactly mirrors a
+    # handler-returned SKIPPED outcome is the routine audit no-op. A stale file
+    # was already ignored above at the freshness gate.
     if _matches(candidate, handler_outcome):
         return None
+
+    # Appendix C and the spawned-worker instruction contract intentionally
+    # limit worker-authored outcomes to success/fail/partial_success/retry.
+    # SKIPPED means the engine decided the node did not execute; an external
+    # writer cannot assert that state. Reaching this branch proves the fresh
+    # file differs from the handler's own outcome/audit record, so treat a
+    # divergent SKIPPED as malformed and fail closed rather than honoring it.
+    if candidate.status == StageStatus.SKIPPED:
+        return _malformed(
+            node,
+            "status.json 'outcome' value 'skipped' is engine-authored only; "
+            f"worker-authored outcomes must be one of {sorted(_WORKER_OUTCOME_VALUES)}",
+        )
 
     logger.info(
         "Node %s: status.json diverges from the handler-returned outcome "

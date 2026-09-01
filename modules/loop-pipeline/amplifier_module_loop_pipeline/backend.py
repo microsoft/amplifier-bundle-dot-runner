@@ -61,7 +61,11 @@ from .fidelity import (
 from .graph import Edge, Graph, Node, resolve_bool_attr
 from .outcome import Outcome, StageStatus
 from .pipeline_events import MODEL_RESOLVED
-from .status_contract import build_status_file_contract, current_node_status_path
+from .status_contract import (
+    build_status_file_contract,
+    current_node_status_path,
+    resolve_spawn_status_file_path,
+)
 
 # NOTE: `.workers` is imported LAZILY inside `AmplifierBackend.__init__`
 # (not here at module level). `workers/direct_worker.py` imports several
@@ -711,6 +715,31 @@ class AmplifierBackend:
                 if v is not None
             },
         }
+
+        # WAVE 4b (status_contract.py): in addition to the instruction-text
+        # contract above, export the SAME absolute status.json path as
+        # explicit session.spawn metadata -- boundary-validated so a host
+        # application (e.g. a platform embedding this engine) can choose to
+        # narrowly authorize a spawned child's write-tool for exactly this
+        # one file, without granting the whole coordination directory. The
+        # host MUST independently validate the path against its own fixed,
+        # trusted coordination root before granting access; this engine-side
+        # check proves containment only beneath the current `logs_root`,
+        # which may itself be a nested/scoped stage path. This never widens
+        # or narrows what the instruction text already asks
+        # for; a host that ignores the metadata is unaffected. Omitted
+        # entirely (never set to None) when there is nothing to export --
+        # either no current status path (same condition that skips the
+        # instruction-text append above) or a validation failure (e.g. a
+        # node id crafted to escape `logs_root` -- see
+        # `resolve_spawn_status_file_path`'s own docstring). Byte-identical
+        # to `_status_path` above whenever both are present: this resolver
+        # reads the same ContextVar and only ever returns it unchanged or
+        # refuses it, never a rewritten value.
+        _status_file_path_for_spawn = resolve_spawn_status_file_path()
+        if _status_file_path_for_spawn is not None:
+            spawn_kwargs["status_file_path"] = _status_file_path_for_spawn
+
         if model:
             # provider_preferences carries the resolved concrete `model`: foundation's
             # apply_provider_preferences_with_resolution promotes the matching provider

@@ -45,11 +45,21 @@ Coverage:
           with plain prose and NO external status.json override still
           fails closed (Sec 25 is unaffected by this change).
   SF-008  unit-level coverage of read_status_override(): stale mtime, no
-          file, wrong-typed fields.
+          file, wrong-typed fields, and the engine-owned SKIPPED boundary
+          (stale/matching audit records are no-ops; a fresh divergent
+          external SKIPPED verdict is malformed and fails explicitly).
+  SF-009  spawn path: the absolute status.json path is injected into the
+          spawned child's instruction AND exported as session.spawn
+          metadata (status_file_path), byte-identical (WAVE 4b).
+  SF-012  unit-level coverage of resolve_spawn_status_file_path() (WAVE 4b):
+          no-context omission, boundary/traversal/absolute-node-id
+          rejection, wrong-basename rejection, unnormalized-input
+          rejection, and concurrent ContextVar isolation.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shlex
@@ -63,6 +73,11 @@ from amplifier_module_loop_pipeline.graph import Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.status_contract import (
+    current_node_logs_root,
+    current_node_status_path,
+    resolve_spawn_status_file_path,
+)
 from amplifier_module_loop_pipeline.status_file import read_status_override
 from amplifier_module_loop_pipeline.validation import validate_or_raise
 
@@ -482,12 +497,10 @@ def test_sf008d_invalid_outcome_enum_value_is_malformed(tmp_path):
     assert result.is_explicit is True
 
 
-def test_sf008e_skipped_is_a_recognized_value_not_malformed(tmp_path):
-    """ "skipped" is accepted on read (the engine's own writers legitimately
-    serialize it), even though Appendix C's illustrative comment only
-    enumerates success/retry/fail/partial_success. A handler-authored
-    status.json reporting SKIPPED, matching what the handler itself
-    returned, must be a no-op -- not a malformed-file FAIL.
+def test_sf008e_matching_engine_skipped_audit_is_noop(tmp_path):
+    """A fresh SKIPPED status.json exactly matching the handler-returned
+    SKIPPED outcome is the engine's own routine audit record. It must remain
+    a no-op -- not be mistaken for a worker-authored malformed verdict.
     """
     node = _node("n")
     stage_dir = tmp_path / "n"
@@ -497,8 +510,65 @@ def test_sf008e_skipped_is_a_recognized_value_not_malformed(tmp_path):
     handler_outcome = Outcome(status=StageStatus.SKIPPED)
     result = read_status_override(node, str(tmp_path), 0.0, handler_outcome)
     assert result is None, (
-        "a matching SKIPPED status.json must be a no-op, not malformed"
+        "a matching engine-authored SKIPPED audit must be a no-op, not malformed"
     )
+
+
+def test_sf008f_stale_skipped_audit_is_ignored_before_validation(tmp_path):
+    """A stale SKIPPED audit from an earlier attempt/iteration remains ignored
+    at the freshness gate, even when the current handler outcome differs.
+    This pins read order: freshness precedes external-verdict validation.
+    """
+    node = _node("n")
+    stage_dir = tmp_path / "n"
+    stage_dir.mkdir()
+    status_path = stage_dir / "status.json"
+    status_path.write_text(json.dumps({"outcome": "skipped"}))
+    future_floor = os.path.getmtime(status_path) + 3600
+    handler_outcome = Outcome(status=StageStatus.SUCCESS)
+    result = read_status_override(node, str(tmp_path), future_floor, handler_outcome)
+    assert result is None
+
+
+def test_sf008g_fresh_divergent_external_skipped_is_malformed_fail(tmp_path):
+    """Workers/external writers may author only Appendix C's four outcomes.
+    A fresh SKIPPED file that diverges from the handler result is therefore
+    malformed and fails closed explicitly; it is never honored as SKIPPED.
+    """
+    node = _node("n")
+    stage_dir = tmp_path / "n"
+    stage_dir.mkdir()
+    status_path = stage_dir / "status.json"
+    status_path.write_text(json.dumps({"outcome": "skipped"}))
+    handler_outcome = Outcome(status=StageStatus.SUCCESS)
+    result = read_status_override(node, str(tmp_path), 0.0, handler_outcome)
+
+    assert result is not None
+    assert result.status == StageStatus.FAIL
+    assert result.is_explicit is True
+    assert "'skipped' is engine-authored only" in (result.failure_reason or "")
+    assert result.notes == "status.json contract violation (Appendix C) -- fail-closed"
+
+
+def test_sf008h_divergent_skipped_cannot_masquerade_as_engine_audit(tmp_path):
+    """Matching means the whole envelope, not merely outcome=SKIPPED. A fresh
+    file with SKIPPED plus external notes diverges from the engine audit and
+    must be rejected as worker-authored, even when the handler also skipped.
+    """
+    node = _node("n")
+    stage_dir = tmp_path / "n"
+    stage_dir.mkdir()
+    status_path = stage_dir / "status.json"
+    status_path.write_text(
+        json.dumps({"outcome": "skipped", "notes": "worker claims it skipped"})
+    )
+    handler_outcome = Outcome(status=StageStatus.SKIPPED)
+    result = read_status_override(node, str(tmp_path), 0.0, handler_outcome)
+
+    assert result is not None
+    assert result.status == StageStatus.FAIL
+    assert result.is_explicit is True
+    assert "engine-authored only" in (result.failure_reason or "")
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +650,10 @@ async def test_sf009_spawn_node_status_json_override_wins(tmp_path):
         assert status_path == os.path.abspath(
             os.path.join(logs_root, "implement", "status.json")
         )
+        # WAVE 4b: the SAME path must also be exported as session.spawn
+        # metadata, byte-identical to what was injected into the
+        # instruction text -- see status_contract.resolve_spawn_status_file_path.
+        assert kwargs.get("status_file_path") == status_path
         os.makedirs(os.path.dirname(status_path), exist_ok=True)
         with open(status_path, "w") as f:
             json.dump(
@@ -628,3 +702,200 @@ async def test_sf009_spawn_node_status_json_override_wins(tmp_path):
 # working for the spawn path; when BOTH channels are present, status.json
 # (the strictly later, out-of-band, filesystem channel) wins (Sec 41).
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# SF-012: resolve_spawn_status_file_path() -- WAVE 4b host-authorization
+# metadata export. Unit-level: exercises the ContextVar pair directly rather
+# than going through a full engine run, since the property under test is
+# path-validation logic, not pipeline routing (that's covered end-to-end by
+# SF-009 above).
+# ---------------------------------------------------------------------------
+
+
+def _set_status_contextvars(status_path, logs_root):
+    """Set both WAVE 4 / WAVE 4b ContextVars; returns (path_token, root_token)."""
+    return (
+        current_node_status_path.set(status_path),
+        current_node_logs_root.set(logs_root),
+    )
+
+
+def _reset_status_contextvars(tokens) -> None:
+    path_token, root_token = tokens
+    current_node_status_path.reset(path_token)
+    current_node_logs_root.reset(root_token)
+
+
+def test_sf012a_no_context_returns_none():
+    """SF-012a: neither ContextVar set (the default) -- omission, not a crash."""
+    assert current_node_status_path.get() is None
+    assert current_node_logs_root.get() is None
+    assert resolve_spawn_status_file_path() is None
+
+
+def test_sf012b_path_set_but_boundary_unset_returns_none(tmp_path):
+    """SF-012b: a caller that sets the path ContextVar without also setting the
+    boundary (e.g. a test double, or a future code path that forgets the
+    WAVE 4b pairing) must not export unvalidated metadata."""
+    logs_root = str(tmp_path / "logs")
+    status_path = os.path.abspath(os.path.join(logs_root, "n1", "status.json"))
+    token = current_node_status_path.set(status_path)
+    try:
+        assert current_node_logs_root.get() is None
+        assert resolve_spawn_status_file_path() is None
+    finally:
+        current_node_status_path.reset(token)
+
+
+def test_sf012c_valid_path_beneath_boundary_is_returned_unchanged(tmp_path):
+    """SF-012c: the normal, conforming case -- exactly what
+    handlers/codergen.py produces for a well-behaved node id. Byte-identical
+    round-trip: what goes in comes back out unchanged."""
+    logs_root = os.path.abspath(str(tmp_path / "logs"))
+    status_path = os.path.abspath(os.path.join(logs_root, "implement", "status.json"))
+    tokens = _set_status_contextvars(status_path, logs_root)
+    try:
+        assert resolve_spawn_status_file_path() == status_path
+    finally:
+        _reset_status_contextvars(tokens)
+
+
+def test_sf012d_absolute_node_id_escapes_boundary_and_is_rejected(tmp_path):
+    """SF-012d: a node id that itself looks like an absolute path makes
+    ``os.path.join(logs_root, node_id)`` DISCARD logs_root entirely (documented
+    Python os.path.join behavior) -- the resulting "stage directory" lands
+    outside the engine's coordination tree. This is exactly the shape a
+    crafted node id (reachable via the Graph/Node API even where the DOT
+    parser's identifier regex would refuse it -- graph.py's Node.id is a
+    plain ``str`` field, unrestricted) could produce. Must be rejected, not
+    exported for a host to authorize."""
+    logs_root = os.path.abspath(str(tmp_path / "logs"))
+    malicious_node_id = "/etc/cron.d/evil"
+    stage_dir = os.path.join(logs_root, malicious_node_id)
+    status_path = os.path.abspath(os.path.join(stage_dir, "status.json"))
+    # Confirm the premise: os.path.join really did discard logs_root.
+    assert not status_path.startswith(logs_root)
+
+    tokens = _set_status_contextvars(status_path, logs_root)
+    try:
+        assert resolve_spawn_status_file_path() is None
+    finally:
+        _reset_status_contextvars(tokens)
+
+
+def test_sf012e_traversal_via_dotdot_node_id_is_rejected(tmp_path):
+    """SF-012e: a node id containing ``..`` segments, after
+    ``os.path.abspath`` collapses them, resolves outside logs_root."""
+    logs_root = os.path.abspath(str(tmp_path / "logs"))
+    malicious_node_id = "../../../etc"
+    stage_dir = os.path.join(logs_root, malicious_node_id)
+    status_path = os.path.abspath(os.path.join(stage_dir, "status.json"))
+    assert not status_path.startswith(logs_root)
+
+    tokens = _set_status_contextvars(status_path, logs_root)
+    try:
+        assert resolve_spawn_status_file_path() is None
+    finally:
+        _reset_status_contextvars(tokens)
+
+
+def test_sf012f_unnormalized_path_input_is_rejected_not_silently_normalized(tmp_path):
+    """SF-012f: a path string that still contains a literal ``..`` component
+    (not pre-collapsed by the caller) must be refused outright -- normalizing
+    it ourselves and THEN checking the boundary would accept exactly the kind
+    of escape SF-012e proves is dangerous, just via a different input shape."""
+    logs_root = os.path.abspath(str(tmp_path / "logs"))
+    unnormalized_path = os.path.join(logs_root, "..", "evil", "status.json")
+    # Sanity: this really is unnormalized (differs from its own normpath).
+    assert os.path.normpath(unnormalized_path) != unnormalized_path
+
+    tokens = _set_status_contextvars(unnormalized_path, logs_root)
+    try:
+        assert resolve_spawn_status_file_path() is None
+    finally:
+        _reset_status_contextvars(tokens)
+
+
+def test_sf012g_wrong_basename_is_rejected(tmp_path):
+    """SF-012g: only a file literally named status.json may ever be exported --
+    this metadata channel is that one file, not "wherever the path currently
+    points."""
+    logs_root = os.path.abspath(str(tmp_path / "logs"))
+    status_path = os.path.abspath(os.path.join(logs_root, "n1", "notstatus.json"))
+    tokens = _set_status_contextvars(status_path, logs_root)
+    try:
+        assert resolve_spawn_status_file_path() is None
+    finally:
+        _reset_status_contextvars(tokens)
+
+
+def test_sf012h_path_equal_to_boundary_is_rejected(tmp_path):
+    """SF-012h: the path must be STRICTLY beneath the boundary, not equal to
+    it -- logs_root itself is never a valid status.json path (it also fails
+    the basename check, but this pins the "beneath, not equal" requirement
+    independently in case the basename ever matched by coincidence)."""
+    logs_root = os.path.abspath(str(tmp_path / "logs" / "status.json"))
+    tokens = _set_status_contextvars(logs_root, logs_root)
+    try:
+        assert resolve_spawn_status_file_path() is None
+    finally:
+        _reset_status_contextvars(tokens)
+
+
+def test_sf012i_relative_inputs_are_rejected(tmp_path):
+    """SF-012i: a relative path or boundary is never trusted -- a spawned
+    child's cwd is not guaranteed to match the engine's (same reasoning
+    WAVE 4's instruction-text injection already documents for why it always
+    uses os.path.abspath)."""
+    tokens = _set_status_contextvars(
+        os.path.join("relative", "n1", "status.json"), "relative"
+    )
+    try:
+        assert resolve_spawn_status_file_path() is None
+    finally:
+        _reset_status_contextvars(tokens)
+
+
+@pytest.mark.asyncio
+async def test_sf012j_concurrent_contextvar_isolation(tmp_path):
+    """SF-012j: two concurrent node executions (as would happen under real
+    engine parallelism, e.g. a fan-out/parallel node group) must never see
+    each other's status path or boundary through this ContextVar pair --
+    the same isolation guarantee WAVE 4's current_node_status_path already
+    relies on, extended to the new current_node_logs_root companion.
+    """
+    logs_root_a = os.path.abspath(str(tmp_path / "logs_a"))
+    logs_root_b = os.path.abspath(str(tmp_path / "logs_b"))
+    path_a = os.path.abspath(os.path.join(logs_root_a, "node_a", "status.json"))
+    path_b = os.path.abspath(os.path.join(logs_root_b, "node_b", "status.json"))
+
+    results: dict[str, str | None] = {}
+
+    async def _run(
+        name: str, path: str, boundary: str, delay_before: float, delay_after: float
+    ):
+        await asyncio.sleep(delay_before)
+        tokens = _set_status_contextvars(path, boundary)
+        try:
+            # Yield control while both contexts are "in flight" simultaneously,
+            # so a ContextVar implementation bug (e.g. accidentally module-global
+            # state instead of a real contextvars.ContextVar) would leak here.
+            await asyncio.sleep(delay_after)
+            results[name] = resolve_spawn_status_file_path()
+        finally:
+            _reset_status_contextvars(tokens)
+
+    await asyncio.gather(
+        _run("a", path_a, logs_root_a, delay_before=0.0, delay_after=0.02),
+        _run("b", path_b, logs_root_b, delay_before=0.01, delay_after=0.01),
+    )
+
+    assert results["a"] == path_a
+    assert results["b"] == path_b
+    assert results["a"] != results["b"]
+
+    # Outside both tasks, the ContextVars are back to unset.
+    assert current_node_status_path.get() is None
+    assert current_node_logs_root.get() is None
+    assert resolve_spawn_status_file_path() is None

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 from ..context import PipelineContext
 from ..graph import Graph, Node, resolve_bool_attr
 from ..outcome import Outcome, StageStatus
-from ..status_contract import current_node_status_path
+from ..status_contract import current_node_logs_root, current_node_status_path
 from ..status_file import read_status_override
 from ..transforms import expand_goal_variable, expand_params
 from ..worker_observability import current_worker_sessions_dir
@@ -148,6 +148,13 @@ class CodergenHandler:
             status_path_token = current_node_status_path.set(
                 os.path.abspath(os.path.join(stage_dir, "status.json"))
             )
+            # WAVE 4b (status_contract.py): set alongside the path above so
+            # `resolve_spawn_status_file_path()` can prove that path is
+            # actually contained beneath THIS run's coordination boundary
+            # before backend.py exports it as session.spawn metadata. Same
+            # absolute-regardless-of-configured-relativity reasoning as
+            # above.
+            logs_root_token = current_node_logs_root.set(os.path.abspath(logs_root))
             try:
                 result = await self._backend.run(
                     node, prompt, context, incoming_edge=None, graph=graph
@@ -155,6 +162,7 @@ class CodergenHandler:
             finally:
                 current_worker_sessions_dir.reset(sessions_token)
                 current_node_status_path.reset(status_path_token)
+                current_node_logs_root.reset(logs_root_token)
             if isinstance(result, Outcome):
                 # EXTENSIONS.md §26: write response.md from the full text carried
                 # on the Outcome (set by _parse_outcome before any truncation).
