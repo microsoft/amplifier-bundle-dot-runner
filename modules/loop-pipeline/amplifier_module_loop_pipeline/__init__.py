@@ -350,7 +350,17 @@ class PipelineOrchestrator:
             load_remote_or_local_graph,
         )  # lazy: keeps import net-free
 
-        graph, _source_cleanup = await load_remote_or_local_graph(dot_source)
+        # PARAMS MUST BE READ BEFORE THE PARSE (EXTENSIONS.md entry 43). A
+        # graph-level "$name" attribute (today max_pipeline_duration) is
+        # resolved at PARSE time from this mapping, and parse_dot() fails loud
+        # when it is absent -- so reading config["params"] only at step 3
+        # below (where it seeds execution-time $param expansion, entry 21) put
+        # this mounted entry point in the one state where a param'd graph
+        # attribute could never resolve. Read once here; step 3 reuses it.
+        params = self.config.get("params") or {}
+        graph, _source_cleanup = await load_remote_or_local_graph(
+            dot_source, params=params
+        )
         # A file-backed root graph carries the directory it was read from, so
         # relative dot_file= children resolve beside the pipeline rather than
         # falling through resolve_dot_path()'s precedence chain to
@@ -368,8 +378,9 @@ class PipelineOrchestrator:
             if prompt:
                 pipeline_context.set("graph.goal", prompt)
 
-            # Set params for $param expansion in transforms
-            params = self.config.get("params")
+            # Set params for $param expansion in transforms (entry 21). Same
+            # mapping the parse above already used, so the two mechanisms
+            # cannot see different values.
             if params:
                 pipeline_context.set("graph.params_values", params)
 
