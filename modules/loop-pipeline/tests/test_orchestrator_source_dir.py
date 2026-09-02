@@ -195,8 +195,12 @@ async def test_execute_never_clobbers_an_already_set_source_dir(tmp_path, monkey
     real_load = remote_dot_mod.load_remote_or_local_graph
     captured_graph: dict = {}
 
-    async def _load_and_pin_source_dir(source):
-        graph, cleanup = await real_load(source)
+    # The orchestrator now threads params= into the loader (graph-level $name
+    # resolution at parse time, EXTENSIONS.md entry 43), so this double must
+    # accept and forward it -- not silently drop it, which would let a
+    # regression on that path pass this test.
+    async def _load_and_pin_source_dir(source, params=None):
+        graph, cleanup = await real_load(source, params=params)
         graph.source_dir = "/already/materialized/view"
         captured_graph["graph"] = graph
         return graph, cleanup

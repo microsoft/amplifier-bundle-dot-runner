@@ -340,8 +340,21 @@ class ManagerLoopHandler:
             )
 
         # Parse DOT source
+        # PARAMS CROSS THE CHILD BOUNDARY (EXTENSIONS.md entry 43 + entry 21).
+        # A child graph may carry a graph-level "$name" attribute (today
+        # max_pipeline_duration), which parse_dot() resolves at PARSE time and
+        # fails loud on when absent. The parent's params already reach the
+        # child at EXECUTION time -- child_context carries the parent's own,
+        # which is where `graph.params_values` lives, so node-level $param
+        # expansion has always worked in children. Passing the same mapping
+        # here makes the two mechanisms symmetric: a child sees the same
+        # params its own nodes will expand. Without it a child graph is the
+        # ONE place a "$name" graph attribute can never resolve, no matter what
+        # the caller supplies.
         try:
-            child_graph = parse_dot(dot_source)
+            child_graph = parse_dot(
+                dot_source, params=child_context.get("graph.params_values") or {}
+            )
         except ValueError as exc:
             return Outcome(
                 status=StageStatus.FAIL,
