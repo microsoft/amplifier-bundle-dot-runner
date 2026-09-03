@@ -46,7 +46,9 @@ async def test_cleanup_called_when_parse_fails_after_materialize(tmp_path, monke
     # Accepts and forwards `params` rather than dropping it -- the same
     # discipline PR #42 applied to test_orchestrator_source_dir's loader
     # double. A double that swallows the kwarg lets a regression pass.
-    async def _fake_materialize(dot_source: str, *, params: dict[str, str] | None = None):
+    async def _fake_materialize(
+        dot_source: str, *, params: dict[str, str] | None = None
+    ):
         return entry_path, _cleanup
 
     def _raising_parse_dot(_source: str, params: dict[str, str] | None = None):
