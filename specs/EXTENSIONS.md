@@ -3606,6 +3606,80 @@ story.
 
 ---
 
+**Addendum (2026-09-02, fix/params-diagnostic-ledger-guard): the parse-site sweep, the
+boundary decision, and the lesson.** Three things this entry left open, closed together.
+
+**(a) The sweep: every parse site now receives `params`.** The "Implementation locations"
+list above named `dot_parser.py`, `remote_dot.py`, and pipeline-runner's `runner.py` — the
+DIRECT-RUN path. It was not the whole set. PR #42 swept three more, and the all-call-sites
+guard added by this PR (below) found two beyond those. The full inventory, all threading
+`params` as of this addendum:
+
+| Call site | Path it serves | Closed by |
+| --- | --- | --- |
+| `modules/loop-pipeline/.../dot_parser.py` — `parse_dot()` | the mechanism itself | PR #32 (this entry) |
+| `modules/loop-pipeline/.../remote_dot.py` — `load_remote_or_local_graph()` (2 calls: remote entry, local text) | direct run, remote or local | PR #32 (this entry) |
+| `modules/pipeline-runner/.../runner.py` — `_load_graph()` / `drive_engine()` | CLI `run` / `resume` | PR #32 (this entry) |
+| `modules/loop-pipeline/.../handlers/pipeline.py` | a `shape=folder` / `dot_file=` CHILD graph | PR #42 |
+| `modules/loop-pipeline/.../handlers/manager_loop.py` | a manager-loop child dotfile | PR #42 |
+| `modules/loop-pipeline/.../__init__.py` — mounted `PipelineOrchestrator` (which additionally read `config["params"]` only AFTER its parse) | the mounted orchestrator | PR #42 |
+| `modules/loop-pipeline/.../remote_dot.py` — `extract_dot_file_refs()` | the MATERIALIZE-time tree walk | this PR |
+| `modules/pipeline-runner/.../cli.py` — `cmd_lint()` | `dot-runner lint` | this PR |
+
+The last two were both live faults, reproduced before being fixed. The remote tree walk
+parses every fetched `.dot` IN FULL to find its `dot_file=` refs (deliberately the real
+parser, not a regex), so a remote pipeline carrying `max_pipeline_duration="$max_duration"`
+died during materialization — strictly before `load_remote_or_local_graph`'s own
+params-aware parse of the entry could run — whatever the caller supplied. And `dot-runner
+lint` never grew the `--param` flag `run` and `resume` have, so **the three pipelines this
+entry shipped as its own first consumers could not be linted by this repo's own linter**;
+the engine's corpus sweeps had quietly worked around the same wall by feeding `parse_dot` a
+placeholder param directly (see this entry's Tests line), while the CLI had no such escape.
+`lint` now accepts `--param`; because lint executes nothing, any placeholder that parses
+suffices.
+
+This PR also **rewords the missing-param diagnostic**. It previously said `Pass --param
+<name>=<value>` — CLI vocabulary, fired on every path. It now names the mechanism per path:
+`--param name=value` on the CLI, `config["params"]` when the orchestrator is mounted, or the
+parent graph's own params when composed as a child. Where this entry's body above says the
+`ValueError` names "the missing `--param`", read it as "names the missing param, and the
+mechanism that supplies it on the path in use". The declarative-only contract is unchanged:
+no shell-style default, no built-in fallback, still a loud pre-model-call failure.
+
+**(b) The boundary decision (positive form): graph-level params CROSS the sub-pipeline
+boundary, by design.** Stated affirmatively here so it is a decision on the record rather
+than an accident of which sites happened to be swept, and deliberately in the shape of
+entry 11's opposite-signed ruling for sessions. A child graph — a `shape=folder` /
+`dot_file=` sub-pipeline (§9.4), or a manager-loop child dotfile (§4.11) — parses with **the
+same param mapping its own nodes expand at execution time** (`context`'s
+`graph.params_values`). This is symmetric with node-level `$param` expansion (entry 21),
+which has *always* crossed the boundary: `PipelineHandler.execute` clones the whole parent
+context, and the clone carries `graph.params_values` with it. Before the sweep, the
+parse-time half stopped at the boundary while the execution-time half crossed it, making a
+child graph the one place a `"$name"` graph attribute could never resolve — an asymmetry with
+no decision behind it. Note the contrast with entry 11 is real and intended: an LLM *session*
+does NOT cross this boundary (run-local, non-serializable, §5.3), while a param mapping does
+(declarative, serializable, resolved before any model call). **Any future graph-level param
+that must NOT cross this boundary requires its own ledger entry declaring so** — the default
+is now "crosses", and a non-crossing param is the exception that must be written down.
+
+**(c) The lesson: partial-coverage symmetry, again.** This is the same recurring class
+`AGENTS.md` (S4) names, and the *second* time it has been paid for across these exact
+sites. The `source_dir` fix walked the identical path: fixed on the standalone CLI path
+first, then found still-broken on the mounted `PipelineOrchestrator` (the "second of the two
+remaining sites" comment in `__init__.py`, and `test_orchestrator_source_dir.py`'s
+docstring), then again on the agent-facing `run_pipeline` tool. A mechanism added on the
+path its author was using is not shipped until every path that reaches the same code has it;
+"threaded through the caller I tested" reads exactly like "threaded through" right up until
+someone composes the graph. The structural response — rather than a fourth enumeration by
+hand — is `modules/loop-pipeline/tests/test_graph_param_child_inheritance.py`'s AST guard,
+which walks the package and asserts the invariant over the sites it *discovers*, so the next
+new call site either threads `params` or fails by name. Its first run is the argument for
+it: it found the `extract_dot_file_refs` site nobody had listed, which had survived both
+PR #32 and PR #42 unnoticed.
+
+---
+
 ## 44. Subscription-Provider Detection for Spawn Workers (`github-copilot` / `openai-chatgpt`)
 
 **Classification: implementor-level extensibility, NOT a spec divergence.** Canonical
