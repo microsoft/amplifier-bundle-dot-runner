@@ -172,6 +172,28 @@ SYNC_ROW: dict[str, Any] = ROWS[0]
 CONTRACT_PATH = BUNDLE_ROOT / SYNC_ROW["sync"]["file"]
 CONTRACT_TEXT = CONTRACT_PATH.read_text(encoding="utf-8")
 
+#: This ledger carries rows for MORE THAN ONE contract: the external nlspec
+#: above, and `contracts/engine-surface.v1.md` -- the contract this repo OWNS.
+#: Each contract is pinned by its own SYNC row, so "the synced contract" is a
+#: set, not a singleton. Every checker below resolves a row against the
+#: contract THAT ROW cites; a row citing a contract nothing pins is caught by
+#: test_tripwire_every_row_cites_a_synced_contract.
+SYNC_ROWS: list[dict[str, Any]] = [r for r in ROWS if "sync" in r]
+SYNC_ROW_BY_CONTRACT: dict[str, dict[str, Any]] = {
+    r["sync"]["file"]: r for r in SYNC_ROWS
+}
+CONTRACT_TEXTS: dict[str, str] = {
+    f: (BUNDLE_ROOT / f).read_text(encoding="utf-8")
+    for f in SYNC_ROW_BY_CONTRACT
+    if (BUNDLE_ROOT / f).exists()
+}
+
+#: A contract is EXTERNALLY governed when its bytes are vendored from
+#: elsewhere; only those owe a `sync.upstream` provenance string. An owned
+#: contract's provenance is this repo's own history, and inventing an
+#: `upstream:` for it would be decoration.
+EXTERNAL_CONTRACT_PREFIX = "contracts/external/"
+
 
 # ---------------------------------------------------------------------------
 # The flip message -- generated, never hand-written per row
@@ -322,6 +344,26 @@ def _normalize_block(text: str) -> str:
 
 _CONTRACT_NORMALIZED = _normalize_block(CONTRACT_TEXT)
 
+#: One normalized haystack per pinned contract. The default argument of
+#: ``quote_is_present`` stays the external nlspec so every existing caller --
+#: the row probes and the RED/GREEN self-tests below -- keeps its meaning.
+_NORMALIZED_BY_CONTRACT: dict[str, str] = {
+    f: _normalize_block(t) for f, t in CONTRACT_TEXTS.items()
+}
+
+
+def normalized_contract(contract_file: str) -> str:
+    """The normalized bytes of one pinned contract, by its repo-relative path."""
+    try:
+        return _NORMALIZED_BY_CONTRACT[contract_file]
+    except KeyError:  # pragma: no cover - exercised by the RED self-test
+        raise AssertionError(
+            "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
+            f"  no SYNC row pins {contract_file!r}, so its quotes are unpinned text:\n"
+            "  the contract could move without any row noticing. Add a SYNC row for\n"
+            "  that contract (LEDGER-FORMAT.md section 4) before rowing against it."
+        ) from None
+
 
 def quote_is_present(quote: str, haystack_normalized: str = _CONTRACT_NORMALIZED) -> bool:
     return _normalize_block(quote) in haystack_normalized
@@ -357,6 +399,27 @@ def module_symbols(path: Path) -> set[str]:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     names.add(f"{node.name}::{child.name}")
     return names
+
+
+#: Where the ledger's probe functions live. More than one module now: this file
+#: carries the external nlspec's probes, `test_engine_surface_matrix.py` carries
+#: `contracts/engine-surface.v1.md`'s.
+CHECKS_DIR = Path(__file__).resolve().parent
+
+
+def probe_definitions() -> dict[str, str]:
+    """Every ``test_row_*`` function defined anywhere under ``ledger/checks/``.
+
+    Returns ``{function_name: repo-relative path}``. Discovered by AST parse for
+    the same reason indexed cites are: a parse cannot be defeated by an import
+    error in an unrelated module, and it does not care which venv is active.
+    """
+    found: dict[str, str] = {}
+    for path in sorted(CHECKS_DIR.glob("test_*.py")):
+        for name in module_symbols(path):
+            if name.startswith("test_row_") and "::" not in name:
+                found[name] = str(path.relative_to(BUNDLE_ROOT))
+    return found
 
 
 def resolve_indexed_cite(cite: str) -> tuple[bool, str]:
@@ -516,8 +579,9 @@ def test_row_quote_is_verbatim_in_contract(row_id: str):
     if conflict:
         quotes.append(("contract.conflict", conflict["quote"]))
 
+    haystack = normalized_contract(row["contract"]["file"])
     for field, quote in quotes:
-        assert quote_is_present(quote), integrity_flip(
+        assert quote_is_present(quote, haystack), integrity_flip(
             row,
             observed=(
                 f"{field} is no longer present in {row['contract']['file']}: "
@@ -605,9 +669,14 @@ def test_row_probe_function_exists(row_id: str):
         pytest.skip("row is not probe-kind")
     probe = row["assertion"].get("ref")
     assert probe, f"row {row_id}: assertion.kind is 'probe' but no assertion.ref is named"
-    assert callable(getattr(sys.modules[__name__], probe, None)), integrity_flip(
+    here = callable(getattr(sys.modules[__name__], probe, None))
+    elsewhere = probe_definitions().get(probe)
+    assert here or elsewhere, integrity_flip(
         row,
-        observed=f"no probe function named {probe!r} in this module",
+        observed=(
+            f"no probe function named {probe!r} in this module or anywhere under "
+            f"{CHECKS_DIR.relative_to(BUNDLE_ROOT)}/"
+        ),
         expected="every probe-kind row names a probe function that exists and runs",
     )
 
@@ -628,6 +697,12 @@ def test_every_probe_function_is_claimed_by_a_row():
     A probe with no row asserts behavior nobody wrote down a disposition for --
     which is a test, but not a conformance claim, and it will not appear in the
     matrix a reviewer reads.
+
+    Scope widened with the second contract: probes for `engine-surface.v1` live
+    in their own sibling module, so this now sweeps EVERY ``test_row_*`` under
+    ``ledger/checks/`` rather than only this file's namespace. Nothing that was
+    caught before stops being caught -- this module's own probes are still read
+    from its live namespace, which also proves they import.
     """
     declared = {
         row["assertion"].get("ref")
@@ -639,7 +714,7 @@ def test_every_probe_function_is_claimed_by_a_row():
         name
         for name in dir(module)
         if name.startswith("test_row_") and callable(getattr(module, name))
-    }
+    } | set(probe_definitions())
     # Structural tests are parametrized over row ids and are not row probes.
     structural = {
         "test_row_schema_is_wellformed",
@@ -777,43 +852,89 @@ def test_tripwire_disposition_agrees_with_its_decision_record():
 
 
 def test_tripwire_sync_row_is_first_and_pins_the_contract():
-    """LEDGER-FORMAT.md section 4: the SYNC row is row 0 and pins path + hash."""
+    """LEDGER-FORMAT.md section 4: a SYNC row opens the list and pins path + hash.
+
+    Generalized to N contracts when this ledger grew rows for the repo's own
+    ``contracts/engine-surface.v1.md`` alongside the vendored nlspec. The
+    per-contract invariants are unchanged -- row 0 is still a SYNC row, a SYNC
+    row id still ends in ``-000``, a contract is still pinned at most once --
+    and one is ADDED: the recorded hash must actually match the file's bytes.
+    That is what turns "never a silent hash bump" from a convention in the
+    format doc into something a run can fail on.
+    """
     assert SYNC_ROW["id"].endswith("-000"), (
         "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
         f"  the first ledger row is {SYNC_ROW['id']!r}, not a '<PREFIX>-000' SYNC row.\n"
         "  LEDGER-FORMAT.md section 4 pins the SYNC row as a row IN the list, by\n"
         "  convention the first. Run metadata never sits above the list."
     )
-    sync = SYNC_ROW.get("sync") or {}
-    for field in ("file", "upstream", "sha256"):
-        assert sync.get(field), (
-            f"SYNC row {SYNC_ROW['id']}: sync.{field} is required -- the row pins the\n"
-            "contract file's path and content hash inline."
+    assert SYNC_ROWS, (
+        "no row in this ledger carries a `sync:` block, so every quote below is "
+        "unpinned text: the contract could move and no row would notice."
+    )
+
+    seen: dict[str, str] = {}
+    for sync_row in SYNC_ROWS:
+        rid = sync_row["id"]
+        assert rid.endswith("-000"), (
+            f"SYNC row {rid}: a SYNC row id ends in '-000' (LEDGER-FORMAT.md "
+            "section 4). One SYNC row per contract, each opening its own section."
         )
-    assert (BUNDLE_ROOT / sync["file"]).exists(), (
-        f"SYNC row {SYNC_ROW['id']}: sync.file {sync['file']!r} does not exist"
-    )
-    others = [r["id"] for r in ROWS[1:] if "sync" in r]
-    assert not others, (
-        f"rows {others} carry a `sync:` block. Exactly one row -- the SYNC row -- "
-        "pins the contract bytes."
-    )
+        sync = sync_row.get("sync") or {}
+        for field in ("file", "sha256"):
+            assert sync.get(field), (
+                f"SYNC row {rid}: sync.{field} is required -- the row pins the\n"
+                "contract file's path and content hash inline."
+            )
+        path = BUNDLE_ROOT / sync["file"]
+        assert path.exists(), (
+            f"SYNC row {rid}: sync.file {sync['file']!r} does not exist"
+        )
+        # `upstream:` is provenance for VENDORED bytes, and every external
+        # contract owes one -- it is the only record of where those bytes came
+        # from and what a re-sync would re-sync against. An OWNED contract has
+        # no upstream; fabricating one would be decoration.
+        if sync["file"].startswith(EXTERNAL_CONTRACT_PREFIX):
+            assert sync.get("upstream"), (
+                f"SYNC row {rid}: sync.upstream is required for a contract under "
+                f"{EXTERNAL_CONTRACT_PREFIX} -- without it nothing records where "
+                "those vendored bytes came from."
+            )
+        assert sync["file"] not in seen, (
+            f"SYNC rows {seen.get(sync['file'])} and {rid} both pin "
+            f"{sync['file']!r}. Exactly one SYNC row pins a contract's bytes."
+        )
+        seen[sync["file"]] = rid
+
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert actual == sync["sha256"], integrity_flip(
+            sync_row,
+            observed=(
+                f"{sync['file']} hashes to {actual}, but its SYNC row records "
+                f"{sync['sha256']}"
+            ),
+            expected=(
+                "the pinned hash matches the contract's bytes. LEDGER-FORMAT.md "
+                "section 4: a mismatch is a MANDATORY full-ledger re-review of every "
+                "row citing this contract -- never a silent hash bump. Re-read those "
+                "rows against the new text FIRST, then move the hash in the same "
+                "change."
+            ),
+        )
 
 
-def test_tripwire_every_row_cites_the_synced_contract():
-    """Every row's contract.file must be the file the SYNC row actually pins.
+def test_tripwire_every_row_cites_a_synced_contract():
+    """Every row's contract.file must be a file some SYNC row actually pins.
 
     A row quoting a contract whose bytes nothing pins is a row whose citation
-    cannot be trusted: the text could move without the SYNC row noticing.
+    cannot be trusted: the text could move without any SYNC row noticing.
     """
-    pinned = SYNC_ROW["sync"]["file"]
-    strays = sorted(
-        {r["id"] for r in ROWS if r["contract"]["file"] != pinned}
-    )
+    pinned = set(SYNC_ROW_BY_CONTRACT)
+    strays = sorted({r["id"] for r in ROWS if r["contract"]["file"] not in pinned})
     assert not strays, (
         "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY (coverage tripwire)\n"
-        f"  rows {strays} cite a contract file the SYNC row does not pin\n"
-        f"  (pinned: {pinned}).\n"
+        f"  rows {strays} cite a contract file no SYNC row pins\n"
+        f"  (pinned: {sorted(pinned)}).\n"
         "  Add a SYNC row for that contract before adding rows against it, or the\n"
         "  quotes below it are unpinned text."
     )
