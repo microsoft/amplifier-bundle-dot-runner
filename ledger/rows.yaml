@@ -1075,3 +1075,347 @@
     report_outcome transport -- REMOVED as of the 2026-08-30 WAVE 5 repair; see
     Sec 35's dated "status: REMOVED" note. status.json/returned-Outcome are the
     whole of the explicit-verdict story now).
+
+
+# ==========================================================================
+# --- contracts/engine-surface.v1 (DRAFT) ---
+#
+# Rows derived from `contracts/engine-surface.v1.md` -- the contract this repo
+# OWNS, covering engine behavior BEYOND the external nlspec above. Everything
+# above this banner answers to `contracts/external/attractor-spec-canonical.md`
+# (governed upstream); everything below answers to a contract whose owner is the
+# maintainer of this repo.
+#
+# Why these rows exist: `contracts/FREEZE-PACKET-engine-surface.v1.md` assessed
+# the Freeze Bar and found condition 2 (a machine-checkable conformance kit)
+# NOT MET -- "structural rather than a matter of writing more prose: this
+# contract has no conformance layer of its own yet." Its Recommendation step 2
+# is this section. Discriminating tests already existed for 15 of 17 clauses;
+# what did not exist was any JOIN binding them to THIS contract, so a clause
+# could drift and no failure message would name it. These rows are that join.
+#
+# READ THIS BEFORE TRUSTING THE SECTION -- two honest limits:
+#
+#   1. The contract is DRAFT, not FROZEN. `contracts/engine-surface.v1.md`
+#      states, in its own Conformance section, "No `ledger/rows.yaml` row
+#      derives from this contract yet, and none may until it is stamped."
+#      This section FALSIFIES that sentence. It was seeded anyway, on the
+#      owner's instruction and following the freeze packet's own recommended
+#      sequence -- but the contract sentence now needs an owner edit. That is
+#      recorded as a residual, not silently absorbed: nothing here stamps
+#      anything, and the contract remains DRAFT.
+#
+#   2. `assertion.kind: indexed` proves the cited test EXISTS (AST parse), not
+#      that it still asserts the claim (LEDGER-FORMAT.md section 8). Rows below
+#      cite the discriminating pair named in the freeze packet's per-clause
+#      table, including the counter-case, so the cite set is falsifiable by
+#      reading -- but a probe is stronger, and the rows that carry one say so.
+#
+# Row ids: `ESF-###`, stable forever, never renumbered, never reused. The SYNC
+# row is ESF-000 and pins this contract's bytes (LEDGER-FORMAT.md section 4).
+# One row per Core clause C1..C17; the clause id joins on the bare "C<n>" form
+# the contract itself uses.
+# ==========================================================================
+
+- id: ESF-000
+  title: engine-surface.v1 is byte-pinned at the sha these rows were seeded against
+  sync:
+    file: contracts/engine-surface.v1.md
+    # No `upstream:` -- this contract is OWNED by this repo, not vendored. The
+    # external nlspec's SYNC row (ATX-M-000) carries one because its bytes come
+    # from strongdm/attractor; ours come from this tree's own history.
+    # Recomputed ONLY as part of a deliberate re-review, never a silent bump.
+    sha256: "7a67caaea71cff095a92d1972c6be1d0d39793e6db02373eb724645fb3e3fe62"
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "Header"
+    heading: "CONTRACT: engine surface beyond the nlspec, v1"
+    quote: |
+      **id:** `CONTRACT-engine-surface.v1` · **version:** 1.0.0 · **status:** **DRAFT** · **date:** 2026-09-02
+    line: 8
+  disposition: CONFORMS
+  assertion:
+    kind: probe
+    ref: test_row_esf_000
+  notes: >
+    Two tripwires in one row, deliberately. The sha256 fires on ANY edit to the
+    contract; the quote fires specifically when the version, the date, or the
+    DRAFT status moves. The second is the readable one: the day the owner stamps
+    FROZEN, this row goes red and names the reason, which is the mandatory
+    full-ledger re-review LEDGER-FORMAT.md section 4 requires -- not a defect,
+    and not something to fix by bumping the hash.
+
+- id: ESF-001
+  title: unrecognized worker name fails loud, naming every known worker
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C1"
+    heading: "Worker names, `worker=` selection, and the default ladder"
+    quote: |
+      An unrecognized name — on a node or as a run default — raises `ValueError` **naming every known worker**; never a silent fallback. A retired name (`direct`, `loop-agent`) fails loud with a `renamed: '<old>' -> '<new>'` hint, which is an error message, not a working alias.
+    line: 41
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_worker_selection.py::TestSelectionPrecedence::test_unknown_node_worker_attr_raises_loud_error
+      - modules/loop-pipeline/tests/test_worker_selection.py::TestSelectionPrecedence::test_unknown_default_worker_raises_at_construction_time
+      - modules/loop-pipeline/tests/test_worker_selection.py::TestDefaultBehaviorUnchanged::test_a_community_dot_with_no_worker_attribute_runs_via_direct_unchanged
+  notes: >
+    The control cite is the discriminating half: a graph with no `worker=` still runs unchanged, so the refusal cannot be satisfied by refusing everything.
+
+- id: ESF-002
+  title: a divergent status.json envelope wins and carries is_explicit=True
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C2"
+    heading: "`status.json` is the outermost verdict channel; the lifecycle envelope is never a verdict"
+    quote: |
+      Precedence is divergence-gated: an envelope identical to the handler's outcome is a no-op; a **differing** well-formed envelope **wins**, carrying `is_explicit=True` — so it can satisfy a `goal_gate=true` node that bare prose would fail closed (C12).
+    line: 52
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_status_file_contract.py::test_sf009_spawn_node_status_json_override_wins
+      - modules/loop-pipeline/tests/test_status_file_contract.py::test_sf005_matching_status_json_is_noop_not_promoted_to_explicit
+      - modules/loop-pipeline/tests/test_status_file_contract.py::test_sf006_goal_gate_satisfied_via_status_json_override
+      - modules/loop-pipeline/tests/test_status_file_contract.py::test_sf003_tool_node_malformed_status_json_loud_fail
+  notes: >
+    SF-005 is the no-op half of the divergence gate; SF-006 is the C12 interaction the clause names explicitly. ledger row ATX-M-041 asserts the same behavior as a clause of the EXTERNAL nlspec -- this row is the owned-contract join, not a duplicate assertion.
+
+- id: ESF-003
+  title: must_write violation consumes a retry attempt and then FAILs loudly
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C3"
+    heading: "`must_write=` is a fail-closed artifact contract"
+    quote: |
+      A completed attempt that violates the contract consumes a retry attempt exactly like RETRY; a never-writing node invokes its handler exactly `1 + max_retries` times, then FAILs loudly with a `failure_reason` naming the violated axis, routed through normal failure edges.
+    line: 65
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_engine_must_write.py::test_max_retries_retries_must_write_violation_in_place
+      - modules/loop-pipeline/tests/test_engine_must_write.py::test_case1_narration_no_write_fails
+      - modules/loop-pipeline/tests/test_engine_must_write.py::test_case6_no_attribute_control
+      - modules/loop-pipeline/tests/test_engine_must_write.py::test_case3b_equality_boundary_fails
+  notes: >
+    test_case6_no_attribute_control is the discriminating counter-case (no `must_write=` -> unchanged); test_case3b pins the strict-inequality boundary the clause states in as many words.
+
+- id: ESF-004
+  title: a $name with no supplied param raises before any model call
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C4"
+    heading: "Graph-level `$name` params resolve at parse time, and cross the sub-pipeline boundary"
+    quote: |
+      A `$name` with no supplied param raises **before any model call**, naming the missing param **and the mechanism that supplies it on the path in use**: `--param name=value` on the CLI, `config["params"]` when the orchestrator is mounted, or the parent graph's own params when composed as a child. There is no shell-style default and none is planned — an absent fuse value must never become "no fuse".
+    line: 75
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_graph_param_child_inheritance.py::TestParseContract::test_absent_param_fails_loud
+      - modules/loop-pipeline/tests/test_graph_param_child_inheritance.py::TestParseContract::test_supplied_param_resolves
+      - modules/loop-pipeline/tests/test_graph_param_child_inheritance.py::TestDiagnosticNamesTheMechanismPerPath::test_names_the_cli_mechanism
+      - modules/loop-pipeline/tests/test_graph_param_child_inheritance.py::TestDiagnosticNamesTheMechanismPerPath::test_names_the_composed_child_mechanism
+  notes: >
+    The per-path mechanism tests are what make 'naming the mechanism that supplies it on the path in use' checkable rather than aspirational.
+
+- id: ESF-005
+  title: the intent rule -- generic GitHub tokens count only with an explicit ask
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C5"
+    heading: "Provider resolution: subscription providers, the intent rule, and the rung-4 default model"
+    quote: |
+      **Intent rule.** Copilot-specific env names carry intent by their name and always count. Generic GitHub tokens carry none, and count only when some node in the raw DOT source declares `llm_provider="github-copilot"` — detected by a conservative regex scan over the source, because worker resolution runs before the graph is parsed. `openai-chatgpt` needs no such rule: it is configured iff a non-empty OAuth cache exists at its documented path, whose existence already means a human completed a login flow.
+    line: 87
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/pipeline-runner/tests/test_provider_detection.py::test_github_copilot_not_configured_from_gh_token_alone
+      - modules/pipeline-runner/tests/test_provider_detection.py::test_github_copilot_generic_token_counts_with_explicit_ask
+      - modules/pipeline-runner/tests/test_provider_detection.py::test_high_intent_token_counts_even_without_explicit_ask
+      - modules/pipeline-runner/tests/test_provider_detection.py::test_openai_chatgpt_has_no_intent_ambiguity
+  notes: >
+    Asserted in both directions: the generic token alone does NOT configure, and the same token WITH a declared ask does.
+
+- id: ESF-006
+  title: each node dispatch is bounded by min(remaining fuse, node timeout), fuse wins a tie
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C6"
+    heading: "The wall-clock fuse is enforced at node granularity"
+    quote: |
+      Enforcement is not only between steps: each node dispatch is bounded by `min(remaining fuse budget, the node's own timeout=)`. The tighter wins, and the fuse wins a tie — whole-pipeline termination must never be masked as an ordinary node timeout.
+    line: 99
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_fuse_node_granularity.py::test_fuse_fires_during_node_execution_not_just_between_nodes
+      - modules/loop-pipeline/tests/test_fuse_node_granularity.py::test_node_own_timeout_still_governs_when_tighter_than_fuse
+      - modules/loop-pipeline/tests/test_fuse_node_granularity.py::test_node_finishing_within_budget_completes_normally
+  notes: >
+    The mid-node half is the load-bearing one: an implementation that only checks between nodes passes the other two.
+
+- id: ESF-007
+  title: preflight failure names every failing node; zero nodes execute
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C7"
+    heading: "Provider preflight refuses before the first node"
+    quote: |
+      A failure names **each** failing node, its provider, and the missing credential. Zero nodes execute; zero budget is spent.
+    line: 109
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_provider_preflight.py::test_refusal_names_node_provider_and_credential
+      - modules/loop-pipeline/tests/test_provider_preflight.py::test_refusal_lists_every_failing_node_in_one_error
+      - modules/loop-pipeline/tests/test_provider_preflight.py::test_orchestrator_execute_refuses_at_startup_before_any_node
+      - modules/pipeline-runner/tests/test_provider_preflight_drive_engine.py
+  notes: >
+    'on BOTH entry points' is why the pipeline-runner cite is here and not only the engine's own.
+
+- id: ESF-008
+  title: an unknown node shape hard-fails at dispatch, listing the supported shapes
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C8"
+    heading: "Refusal, not degradation, at dispatch and at routing"
+    quote: |
+      An unknown node shape hard-fails at dispatch, naming the shape, the node id, the complete supported-shape list, and the remedy. The nlspec's default-to-codergen fallback is deliberately absent.
+    line: 119
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_no_silent_fallback.py::test_unknown_shape_raises_value_error
+      - modules/loop-pipeline/tests/test_no_silent_fallback.py::test_unknown_shape_error_lists_supported_shapes
+      - modules/loop-pipeline/tests/test_no_silent_fallback.py::test_known_shapes_still_dispatch_correctly
+  notes: >
+    The nlspec's default-to-codergen fallback is the behavior this clause deletes; ledger rows ATX-M-F01 and ATX-M-011 carry the external-contract side of the same departure.
+
+- id: ESF-009
+  title: child-dot resolution is lazy and fails at node entry, routable
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C9"
+    heading: "Sub-pipeline nodes: `shape=folder` / `dot_file=`"
+    quote: |
+      Resolution is lazy — `validate()` performs no existence check — and an unresolvable child fails at **node entry** with `error_type="child_dot_resolution"`, routable through normal failure edges rather than crashing the run.
+    line: 132
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_child_dot_resolution.py::TestChildDotResolutionErrorAtNodeEntry::test_missing_child_raises_resolution_error_naming_every_candidate
+      - modules/loop-pipeline/tests/test_child_dot_resolution.py::TestWriteThenRunCompositionStillWorks::test_admission_does_not_check_existence
+      - modules/loop-pipeline/tests/test_folder_node_failure_routing.py::TestFolderNodeFailEdgeFires::test_folder_fail_edge_routes_to_handler_not_graph_target
+  notes: >
+    'validate() performs no existence check' is asserted directly -- the write-then-run composition depends on it.
+
+- id: ESF-011
+  title: Node.reasoning_effort defaults to None and the parser injects nothing
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C11"
+    heading: "`reasoning_effort` has no engine-injected default"
+    quote: |
+      `Node.reasoning_effort` defaults to `None` and the parser injects nothing. Appendix A's `"high"` does not hold here.
+    line: 150
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_attribute_passthrough.py::test_direct_backend_reasoning_effort_defaults_to_none
+      - modules/loop-pipeline/tests/test_attribute_passthrough.py::test_spawn_reasoning_effort_defaults_to_none
+      - modules/loop-pipeline/tests/test_attribute_passthrough.py::test_tool_loop_reasoning_effort_defaults_to_none
+      - modules/loop-pipeline/tests/test_doc_consistency.py::test_authoring_guide_reasoning_effort_default_matches_engine
+  notes: >
+    An absence claim: the assertion is that no key appears, on all three paths. ledger row ATX-M-F04 carries the external-contract side (Appendix A's "high").
+
+- id: ESF-012
+  title: a goal_gate node is satisfied only when its outcome is successful AND explicit
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C12"
+    heading: "The goal gate is fail-closed"
+    quote: |
+      A `goal_gate=true` node is satisfied only when its outcome is both successful **and** explicit.
+    line: 160
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_fail_closed_outcomes.py::test_fc001_goal_gate_plain_prose_returns_retry
+      - modules/loop-pipeline/tests/test_fail_closed_outcomes.py::test_fc002_non_goal_gate_plain_prose_returns_success
+      - modules/loop-pipeline/tests/test_fail_closed_outcomes.py::test_fc010_goal_gate_plain_prose_does_not_exit_success
+      - modules/loop-pipeline/tests/test_goal_gates.py::test_satisfied_goal_gates_allow_exit
+  notes: >
+    FC-002 is the scoping control: the fail-closed rung applies to goal_gate nodes ONLY, which is what keeps the divergence non-interfering for community graphs.
+
+- id: ESF-013
+  title: outcome= resolves preferred_label first, falling back to status
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C13"
+    heading: "`outcome=` resolves `preferred_label` first"
+    quote: |
+      In an edge `condition="outcome=<x>"`, the `outcome` key resolves to `outcome.preferred_label` when one is set, falling back to `outcome.status`.
+    line: 168
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_conditions.py::test_preferred_label_equals
+      - modules/loop-pipeline/tests/test_conditions.py::test_outcome_resolves_status_when_no_preferred_label
+      - modules/loop-pipeline/tests/test_conditions.py::test_outcome_equals
+  notes: >
+    Both rungs pinned: label-present and label-absent.
+
+- id: ESF-015
+  title: per-iteration records, $iteration context keys, and an append-only trace.jsonl
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C15"
+    heading: "The run directory is the audit trail"
+    quote: |
+      **Per-iteration records** (§24): `logs_root/iteration_N/<node_id>/status.json` alongside the flat path; context keys `$iteration` / `$loop_count`; an append-only `trace.jsonl` of `{iteration, node_id, status, preferred_label, duration_ms, ts}`, readable via the `trace` subcommand.
+    line: 187
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_convergence_observability.py::TestPerIterationNodeRecords::test_iteration_dirs_created
+      - modules/loop-pipeline/tests/test_convergence_observability.py::TestTraceJsonl::test_trace_jsonl_has_required_fields
+      - modules/loop-pipeline/tests/test_convergence_observability.py::TestIterationSubstitution::test_iteration_seeded_in_context_at_start
+      - modules/loop-pipeline/tests/test_run_directory.py::TestManifest::test_manifest_has_honest_engine_provenance
+  notes: >
+    The provenance cite covers item 3's "unknown" rule -- engine_version is never fabricated. Items 2 and 4 of this clause are covered by suites named in the freeze packet but are not separately rowed; this row's quote is item 1.
+
+- id: ESF-016
+  title: validate() refuses a graph the nlspec would admit -- tool_command on a non-tool handler
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C16"
+    heading: "Admission-time validation is narrower than the nlspec, and lint is a separate entry point"
+    quote: |
+      `validate()` rejects a node carrying `tool_command` whose effective handler is not the tool handler. This **refuses a graph the nlspec would admit and run**; the narrowing is recorded as a narrowing, not as "tightening validation".
+    line: 198
+  disposition: CONFORMS
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_validation.py::test_tool_command_on_non_tool_handler_is_error
+      - modules/loop-pipeline/tests/test_validation.py::test_negative_effective_retry_budget_is_error
+      - modules/loop-pipeline/tests/test_validation.py::test_registered_custom_handler_with_tool_command_is_not_blocked
+      - modules/loop-pipeline/tests/test_topological_lint.py::TestFolderDotFileAbsent::test_severity_is_warning_never_error
+  notes: >
+    The custom-handler cite is the discriminating counter-case: the narrowing refuses a real mismatch, not every tool_command. The lint cite pins item 4's WARNING-never-blocks half.
