@@ -88,7 +88,13 @@ def parse_dot(source: str, params: dict[str, str] | None = None) -> Graph:
             substitution at PARSE time: there is no shell-style default, and
             a graph attribute referencing a param absent from this mapping
             raises ``ValueError`` immediately (a loud parse failure), never a
-            silent fallback. Node-level ``$param`` expansion (in prompts /
+            silent fallback. The mapping reaches this parser by one of three
+            mechanisms, depending on the entry path -- the CLI's ``--param``
+            flag, the mounted orchestrator's ``config["params"]``, or a
+            parent graph's own params when this graph is parsed as a composed
+            CHILD (``shape=folder`` / ``dot_file=``, or a manager-loop child).
+            The raised diagnostic names all three rather than assuming the
+            CLI. Node-level ``$param`` expansion (in prompts /
             ``tool_command``) is unaffected by this argument -- it continues
             to resolve later, at execution time, from
             ``context.get("graph.params_values")`` (see
@@ -497,10 +503,17 @@ def _resolve_graph_duration_attr(val: Any, params: dict[str, str], attr_name: st
             if name not in params:
                 raise ValueError(
                     f"Graph attribute '{attr_name}' references parameter "
-                    f"'${name}' but no --param {name}=<value> was supplied. "
+                    f"'${name}' but no value for '{name}' was supplied. "
                     f"Graph-level parameters are declarative-only -- there is "
-                    f"no shell-style default for a missing one. Pass "
-                    f"--param {name}=<value> (e.g. --param {name}=19800s)."
+                    f"no shell-style default for a missing one and no built-in "
+                    f"fallback. Supply '{name}' by the mechanism for the path "
+                    f"in use: `--param {name}=<value>` on the CLI (e.g. "
+                    f"--param {name}=19800s); `config[\"params\"][\"{name}\"]` "
+                    f"when the orchestrator is mounted; inherited from the "
+                    f"parent graph's params when this graph is composed as a "
+                    f"child (shape=folder / dot_file=, or a manager-loop "
+                    f"child) -- a child parses with its parent's mapping, so "
+                    f"supply it at the PARENT's entry point, not here."
                 )
             val = params[name]
     if isinstance(val, int):
