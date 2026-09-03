@@ -13,6 +13,15 @@
 > **Paused by owner decision, 2026-09-01.** Until those three land and the owner stamps the status
 > line above, nothing in this file governs anything: no `ledger/rows.yaml` row derives from it, and
 > no lane is held to it. Its clause text below is the proposal, not a ruling.
+>
+> **Vocabulary note.** The clause text was authored 2026-09-01, before the ledger was reshaped to
+> the Converge format. Its planned-row table still speaks the old matrix vocabulary
+> (`CONFORM`, `EXTENSION`, `ledger.extensions:`). The current vocabulary is
+> `CONFORMS` / `DIVERGED` / `GAP` / `VIOLATION` / `OPEN-PINNED` / `NOT-ASSERTABLE` / `EXCLUDED`
+> with `decision.extensions:` — and `EXTENSION` is no longer a disposition at all, because an
+> extension is not a clause of the external contract (see `ledger/rows.yaml`'s header). The
+> proposal text is left as the owner wrote it rather than silently modernised; translating it is
+> part of the work this contract still owes before it can be stamped.
 
 ---
 
@@ -23,7 +32,7 @@
 - **owner:** maintainer
 - **repo at freeze time:** `microsoft/amplifier-bundle-dot-runner` (ships as `contracts/recipe-substrate.v1.md`; was `CONTRACT-recipe-substrate.v1.md` at repo root before the Converge layout landed)
 - **scope:** clauses C1–C5 (five engine changes) + the wave-close reconcile event (§3.6). Nothing else.
-- **spec baseline:** `contracts/external/attractor-spec-canonical.md` @ `strongdm/attractor` `fb57a55` (2090 lines). Every `§x.y:NNN` below is a line in THAT file, verified 2026-09-01. Ledger = `specs/EXTENSIONS.md` (currently §1–§44). Ledger = `ledger/rows.yaml` (checks `ledger/checks/test_spec_conformance_matrix.py`; highest id in use `ATX-M-124`).
+- **spec baseline:** `contracts/external/attractor-spec-canonical.md` @ `strongdm/attractor` `fb57a55` (2090 lines). Every `§x.y:NNN` below is a line in THAT file, verified 2026-09-01. Decision records = `specs/EXTENSIONS.md` (currently §1–§44). Conformance ledger = `ledger/rows.yaml` (checks `ledger/checks/test_spec_conformance_matrix.py`; highest id in use `ATX-M-124`).
 
 **Why.** The committed comparison harness (`recipe-ports/`, run `20260901T023905Z`) measured the dot-runner engine against the recipes engine over four ported flows and found exactly three substrate gaps, not a missing product: no native fan-out (pair 3, B 70.0s vs A 50.7s, sequential counter-cycle), no scoped child context (pair 4, `PARENT_ONLY_SECRET` reached both children — RESULTS.md §3.2, "the one clear recipes win"), and headless gate ergonomics that require a held-open FIFO to park (RESULTS.md §3.4). The maintainer decision recorded in work item `attractor-4c7` (2026-09-01) is therefore: **defer the recipes-wrapper, land five spec-verified engine changes.** This contract is what the build lanes are held to.
 
@@ -106,7 +115,7 @@
 
 - *Given* a graph whose node has `max_retries=2` and a backend stub that returns HTTP 429 once, *When* run with the limiter enabled at concurrency 1, *Then* the node still records exactly the same attempt count as with the limiter disabled, and no `.dot` attribute was required to enable it.
 - *Given* a `component` node fanning out 6 branches with limiter concurrency 2, *Then* observed max in-flight backend calls ≤ 2 and the run still completes.
-- *Guard:* `git grep` over `specs/canonical/…:2004-2033` shows no new Appendix-A row from this clause; matrix row disposition is `EXTENSION` with `assertion.kind: absence` for graph-surface leakage.
+- *Guard:* `git grep` over `contracts/external/…:2004-2033` shows no new Appendix-A row from this clause; the ledger row asserts `assertion.kind: absence` for graph-surface leakage.
 
 ---
 
