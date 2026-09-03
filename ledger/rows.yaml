@@ -1455,11 +1455,17 @@
       - modules/loop-pipeline/tests/test_param_expansion.py::test_expand_custom_param
       - modules/loop-pipeline/tests/test_param_expansion.py::test_unknown_param_left_alone
       - modules/loop-pipeline/tests/test_retry.py::test_allow_partial_on_exhaustion
+      - modules/loop-pipeline/tests/test_pipeline_events.py::TestTimeoutAllowPartialContinuation::test_timeout_with_allow_partial_continues
       - modules/loop-pipeline/tests/test_parallel_policies.py::TestFailFastErrorPolicy::test_fail_fast_cancels_remaining_on_failure
       - modules/loop-pipeline/tests/test_human.py
   work: "microsoft/amplifier-bundle-dot-runner#47"
   notes: >
-    The quote is item 4, but the GAP is the CLAUSE's own load-bearing claim, stated in its heading and its Probe line: each addition is additive -- "the same graph with each attribute removed" behaves exactly as canonical. That control half is asserted for the section 21 and section 18 sub-items only; section 14 (allow_partial on timeout) and section 19 (wait.human freeform / attachments) have behavior coverage with no removed-attribute control. The cites index the feature half that DOES exist, so the row shows exactly how far the coverage reaches.
+    The quote is item 4, but the GAP is the CLAUSE's own load-bearing claim, stated in its heading and its Probe line: each addition is additive -- "the same graph with each attribute removed" behaves exactly as canonical. That control half is asserted for the section 21 and section 18 sub-items only; section 14 (allow_partial on timeout) and section 19 (wait.human freeform / attachments) have behavior coverage with no removed-attribute control. The cites index the feature half that DOES exist, so the row shows exactly how far the
+    coverage reaches -- including one the freeze packet's C14 line missed:
+    TestTimeoutAllowPartialContinuation pins the section 14 timeout trigger at integration
+    level, in BOTH DOT spellings, which is the clause's "accepts `True` and `\"true\"` alike"
+    half. What is still unpinned is the same graph WITHOUT the attribute: nothing asserts a
+    node timeout FAILs when allow_partial is absent, so the additive claim rests on reading.
 
 - id: ESF-017
   title: bundle composition -- the artifacts this clause governs are not in this repo
