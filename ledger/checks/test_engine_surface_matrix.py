@@ -30,6 +30,8 @@ from __future__ import annotations
 import hashlib
 import re
 
+import yaml
+
 from test_spec_conformance_matrix import (
     BUNDLE_ROOT,
     ROWS,
@@ -90,6 +92,132 @@ def test_row_esf_000():
         "  contract FROZEN, both this probe and ESF-000's quote go red. That is the\n"
         "  re-review firing exactly when it should. Do the re-review, then re-pin.\n"
         "  Doing neither means main carries a ledger that lies. That is drift."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Behavioral probes
+# ---------------------------------------------------------------------------
+
+
+def _bundle_frontmatter(path):
+    """The YAML frontmatter of an Amplifier bundle `.md`, or {} if it has none."""
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    if end == -1:
+        return {}
+    return yaml.safe_load(text[4:end]) or {}
+
+
+def _self_pinned_sources(node, path=()):
+    """Every `source:` value self-pinning THIS repo, with its key path.
+
+    Yields ``(key_path, value)``. A self-pin is a `git+…amplifier-bundle-dot-runner@<ref>`
+    source -- the shape `specs/EXTENSIONS.md` section 37 made ref-free wherever
+    foundation's resolution semantics allowed, and deliberately KEPT for
+    `session.orchestrator` sources, which resolve against the composed root.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if (
+                key == "source"
+                and isinstance(value, str)
+                and "amplifier-bundle-dot-runner@" in value
+            ):
+                yield path + (key,), value
+            else:
+                yield from _self_pinned_sources(value, path + (str(key),))
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            yield from _self_pinned_sources(value, path + (str(i),))
+
+
+def test_row_esf_017():
+    """OPEN-PINNED: pin today's bundle-composition reality in all three directions.
+
+    C17's three items name a root bundle with a `context:` key, an
+    `agents/attractor-expert.md` registered by `behaviors/attractor-core.yaml`,
+    and ref-free same-repo module/skill sources. None of those artifacts is in
+    THIS repo -- they are the attractor bundle's, and the split left them there.
+    This probe asserts that state rather than asserting the clause, because
+    which of the three exits to take (re-scope / move / drop) is a contract
+    edit, and PROTOCOL.md section 5 makes that the owner's call.
+
+    The point of pinning it: the ruling cannot be quietly pre-empted. Port the
+    expert agent in, add a `context:` key, or let a module source re-acquire a
+    self-pinned ref, and this row goes red naming issue #48.
+    """
+    r = row("ESF-017")
+    issue = r["decision"]["issue"]
+    header = (
+        f'SPEC-CONFORMANCE LEDGER FLIP -- row {r["id"]} "{r["title"]}"\n'
+        f"  contract:    {CONTRACT_FILE}  clause C17\n"
+        f"  disposition: OPEN-PINNED -- decision pending at issue #{issue}\n"
+        "  direction:   UNDECIDED-MOVEMENT\n"
+    )
+    tail = (
+        "\n"
+        "  This row pins a state, not a behavior the contract requires. It moved.\n"
+        "  Two legal exits -- in THIS change, not a follow-up:\n"
+        f"    1. Revert the move, and take the ruling at issue #{issue} first.\n"
+        "    2. Keep the move AND close the ruling with it: edit C17 (owner), then\n"
+        "       re-row this clause against whatever C17 then says.\n"
+        "  There is no third exit: re-pointing this probe at the new state without\n"
+        "  the ruling silently decides an owner question a lane may not decide.\n"
+        "  Doing neither means main carries a ledger that lies. That is drift."
+    )
+
+    # C17.1 -- this repo's root bundle serves no always-on guidance.
+    root_bundle = BUNDLE_ROOT / "bundle.md"
+    assert root_bundle.exists(), f"{header}  observed: bundle.md is gone entirely{tail}"
+    front = _bundle_frontmatter(root_bundle)
+    assert not front.get("context"), (
+        f"{header}"
+        f"  observed:    bundle.md now carries a `context:` key: {front.get('context')!r}\n"
+        "  expected:    no `context:` key -- the always-on guidance C17.1 describes\n"
+        "               belongs to the attractor bundle's root, not this one\n"
+        f"{tail}"
+    )
+    assert not front.get("agents"), (
+        f"{header}"
+        f"  observed:    bundle.md now registers agents: {front.get('agents')!r}\n"
+        "  expected:    no `agents:` key on this repo's root bundle\n"
+        f"{tail}"
+    )
+
+    # C17.2 -- neither the expert agent nor the core behavior lives here.
+    for missing in ("agents/attractor-expert.md", "behaviors/attractor-core.yaml"):
+        assert not (BUNDLE_ROOT / missing).exists(), (
+            f"{header}"
+            f"  observed:    {missing} now exists in this repo\n"
+            "  expected:    absent -- C17.2's subject is the attractor bundle's\n"
+            "               registration, and that file was left in that repo by the split\n"
+            f"{tail}"
+        )
+
+    # C17.3 -- every same-repo self-pin still confined to session.orchestrator,
+    # the one class section 37 keeps deliberately.
+    pins: list[tuple[str, str]] = []
+    bundle_files = [root_bundle, *sorted((BUNDLE_ROOT / "behaviors").glob("*.yaml"))]
+    for path in bundle_files:
+        doc = (
+            _bundle_frontmatter(path)
+            if path.suffix == ".md"
+            else yaml.safe_load(path.read_text(encoding="utf-8"))
+        )
+        for key_path, value in _self_pinned_sources(doc):
+            if key_path[-3:-1] != ("session", "orchestrator"):
+                pins.append((f"{path.relative_to(BUNDLE_ROOT)}:{'.'.join(key_path)}", value))
+    assert not pins, (
+        f"{header}"
+        f"  observed:    same-repo `@ref` self-pin outside a session.orchestrator\n"
+        f"               source: {pins}\n"
+        "  expected:    module and skill sources stay ref-free (C17.3). A self-pin at\n"
+        "               @main makes a BRANCH install serve main's bytes, which is what\n"
+        "               made branch regression-testing of guidance impossible.\n"
+        f"{tail}"
     )
 
 

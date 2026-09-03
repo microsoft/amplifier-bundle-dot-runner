@@ -1419,3 +1419,64 @@
       - modules/loop-pipeline/tests/test_topological_lint.py::TestFolderDotFileAbsent::test_severity_is_warning_never_error
   notes: >
     The custom-handler cite is the discriminating counter-case: the narrowing refuses a real mismatch, not every tool_command. The lint cite pins item 4's WARNING-never-blocks half.
+
+- id: ESF-010
+  title: thread_id is branch-local across sibling parallel branches
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C10"
+    heading: "Session and thread scoping"
+    quote: |
+      `thread_id` is **branch-local**. The same explicit `thread_id` in two sibling branches shares no history — the nlspec's §3.8 isolation is given precedence over its §5.4 thread reuse. Sequential same-`thread_id` reuse is unchanged.
+    line: 141
+  disposition: GAP
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_isolation_boundary_preferred_label.py::test_parallel_branch_clone_starts_without_preferred_label
+      - modules/loop-pipeline/tests/test_backend_clone.py::TestAmplifierBackendClone::test_clone_has_empty_mutable_state
+  work: "microsoft/amplifier-bundle-dot-runner#46"
+  notes: >
+    GAP, not CONFORMS, and the indexed cites are why: they pin clone-level and unit-level isolation, which is a NEARBY claim, not this one. Nothing runs two sibling branches declaring the SAME explicit thread_id and proves neither sees the other's history, and nothing pins the sequential-reuse control that the clause holds unchanged. The freeze packet reached the same reading ("Exactly what is missing", item 3: one-sided). Rowing this CONFORMS on the strength of the cites below would be the ledger lying by adjacency.
+
+- id: ESF-014
+  title: additive vocabulary leaves the canonical baseline untouched
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C14"
+    heading: "Additive graph vocabulary"
+    quote: |
+      **`allow_partial` on timeout** (§14): the canonical attribute gains a second trigger — a node timeout yields `PARTIAL_SUCCESS` rather than FAIL. Call sites accept `True` and `"true"` alike.
+    line: 179
+  disposition: GAP
+  assertion:
+    kind: indexed
+    indexed:
+      - modules/loop-pipeline/tests/test_param_expansion.py::test_expand_custom_param
+      - modules/loop-pipeline/tests/test_param_expansion.py::test_unknown_param_left_alone
+      - modules/loop-pipeline/tests/test_retry.py::test_allow_partial_on_exhaustion
+      - modules/loop-pipeline/tests/test_parallel_policies.py::TestFailFastErrorPolicy::test_fail_fast_cancels_remaining_on_failure
+      - modules/loop-pipeline/tests/test_human.py
+  work: "microsoft/amplifier-bundle-dot-runner#47"
+  notes: >
+    The quote is item 4, but the GAP is the CLAUSE's own load-bearing claim, stated in its heading and its Probe line: each addition is additive -- "the same graph with each attribute removed" behaves exactly as canonical. That control half is asserted for the section 21 and section 18 sub-items only; section 14 (allow_partial on timeout) and section 19 (wait.human freeform / attachments) have behavior coverage with no removed-attribute control. The cites index the feature half that DOES exist, so the row shows exactly how far the coverage reaches.
+
+- id: ESF-017
+  title: bundle composition -- the artifacts this clause governs are not in this repo
+  contract:
+    file: contracts/engine-surface.v1.md
+    clause: "C17"
+    heading: "Bundle composition"
+    quote: |
+      `agents/attractor-expert.md` is registered as `attractor:attractor-expert` by the core behavior and the root bundle.
+    line: 209
+  disposition: OPEN-PINNED
+  decision:
+    issue: 48
+  assertion:
+    kind: probe
+    ref: test_row_esf_017
+  justification: >
+    Not merely untested: as written, C17's subject is ANOTHER repository's bundle. It derives from specs/EXTENSIONS.md section 37, whose three changes landed on the attractor bundle -- a root bundle.md that gained a `context:` key, `agents/attractor-expert.md` registered by `behaviors/attractor-core.yaml`, and same-repo tools:/hooks:/skills sources made ref-free. After the repo split NONE of those artifacts exist here: this repo's root bundle.md has no `context:` key at all, there is no agents/ directory, and its only bundle file with a same-repo self-pin is a session.orchestrator source -- exactly the class section 37 says it keeps deliberately. Whether C17 should be re-scoped to this repo's real bundle surface, moved to the contract governing amplifier-bundle-attractor, or dropped is a contract edit, and PROTOCOL.md section 5 makes that the owner's call, not a lane's. OPEN-PINNED rather than VIOLATION because the clause's referent is genuinely ambiguous post-split -- calling it a violation would be this lane deciding the ruling by choosing a reading.
+  notes: >
+    The probe pins TODAY's state in all three of the clause's directions, so the ruling cannot be pre-empted by a silent change: if the expert agent is ported in, or the root bundle gains a `context:` key, or a module/skill source acquires a self-pinned ref, this row goes red and the owner's ruling is forced then rather than skipped. This is the pin half of "pinning behavior is not the same as deciding it".
