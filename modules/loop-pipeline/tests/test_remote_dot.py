@@ -416,7 +416,7 @@ async def test_load_remote_forwards_params_to_materialize(tmp_path, monkeypatch)
 
     entry_path = tmp_path / "main.dot"
     entry_path.write_text(
-        'digraph G { s [shape=Mdiamond]; d [shape=Msquare]; s -> d }',
+        "digraph G { s [shape=Mdiamond]; d [shape=Msquare]; s -> d }",
         encoding="utf-8",
     )
     seen: list[dict[str, str] | None] = []
