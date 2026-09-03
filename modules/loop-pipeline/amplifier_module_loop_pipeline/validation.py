@@ -2128,8 +2128,8 @@ def _check_inert_evidence_gate(graph: Graph, diags: list[Diagnostic]) -> None:
 # `preferred_label` FIRST and falls back to `status.value` only when no label
 # is set (`conditions.py::_resolve_key`).  That divergence is deliberate,
 # load-bearing (it is how a node steers its own routing through
-# `report_outcome`) and ledgered — `specs/EXTENSIONS.md` §22, `SPEC_CONFORMANCE`
-# ATX-5 (disposition DIVERGE, decided).  The ledger is explicit that it is not
+# `report_outcome`) and ledgered — `specs/EXTENSIONS.md` §22, `ledger/rows.yaml`
+# row ATX-M-022 (disposition DIVERGED, decided; record ATX-5).  The ledger is explicit that it is not
 # behaviour-neutral.  What it has never had is a way for an author to find out
 # they walked into it (issue #226).
 #
@@ -2308,7 +2308,7 @@ def _check_outcome_label_shadowing(graph: Graph, diags: list[Diagnostic]) -> Non
                     f"status words ({condition_written}) while also steering "
                     f"itself by label ({label_written}). 'outcome' resolves "
                     f"preferred_label BEFORE status (EXTENSIONS.md §22 / "
-                    f"SPEC_CONFORMANCE ATX-5) - not status alone, as canonical "
+                    f"ATX-M-022 / ATX-5) - not status alone, as canonical "
                     f"§10.4 defines it. {overlap} Neither case is logged: the "
                     f"condition is well-formed and the graph is otherwise clean "
                     f"(TOPO-009)."

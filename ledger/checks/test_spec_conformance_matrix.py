@@ -1,33 +1,35 @@
-"""The spec conformance matrix runner -- Layer 2 of the drift defense.
+"""The conformance ledger checks -- Layer 2 of the drift defense.
 
 Guards the incident class: **the ledger quietly becoming a lie.**
 
-`SPEC_CONFORMANCE.md` and `specs/EXTENSIONS.md` are human-maintained records of
-every decided divergence from the canonical upstream nlspec.  They have had no
-executable teeth: nothing failed when the engine moved away from what they say,
-and -- the half people forget -- nothing failed when the engine moved *back
-toward the spec* at a point where the ledger says we deliberately do not
-conform.  Both directions leave `main` carrying a record that does not describe
-the shipped engine.  That is drift.
+`docs/SPEC_CONFORMANCE_HISTORY.md` and `specs/EXTENSIONS.md` are human-maintained
+decision records of every decided divergence from the vendored upstream nlspec
+(the EXTERNAL contract at ``contracts/external/``).  They have had no executable
+teeth: nothing failed when the engine moved away from what they say, and -- the
+half people forget -- nothing failed when the engine moved *back toward the
+contract* at a point where the ledger says we deliberately do not conform.  Both
+directions leave `main` carrying a record that does not describe the shipped
+engine.  That is drift.
 
-This module makes the ledger load-bearing.  It reads
-``specs/conformance/attractor-matrix.yaml`` -- a reviewed document, one row per
-normative statement cluster -- and for every row:
+This module makes the ledger load-bearing.  It reads ``ledger/rows.yaml`` -- a
+reviewed document in the Converge ledger format (`docs/LEDGER-FORMAT.md`), a
+top-level LIST of rows, one per normative statement cluster -- and for every row:
 
-1. **Structural integrity** (parametrized per row): the row's VERBATIM spec
-   quote is still present in the byte-pinned canonical file; the ledger entry
+1. **Structural integrity** (parametrized per row): the row's VERBATIM contract
+   quote is still present in the byte-pinned contract file; the decision record
    it cites still exists; every existing test it indexes still exists.
 2. **Behavioral probes** (named ``test_row_<id>`` functions): in-process engine
    runs against backend doubles.  Deterministic, no LLM, no network, no
-   subprocess.  A DIVERGE-DECIDED row proves BOTH that our ledgered behavior
-   occurs AND that the spec's behavior does not -- the second half is what
-   makes a silent re-alignment loud.
-3. **The SYNC row**: the canonical file's sha256 matches the recorded pin, so a
-   re-vendor becomes a demanded full-matrix re-review instead of a quiet commit.
+   subprocess.  A DIVERGED row proves BOTH that our ledgered behavior occurs AND
+   that the contract's behavior does not -- the second half is what makes a
+   silent re-alignment loud.
+3. **The SYNC row** (`ATX-M-000`, first in the list, carrying ``sync:`` inline):
+   the contract file's sha256 matches the recorded pin, so a re-vendor becomes a
+   demanded full-ledger re-review instead of a quiet commit.
 4. **The coverage tripwire**: every DIVERGES-bannered ``EXTENSIONS.md`` section
-   and every DIVERGE-disposition ``ATX-*`` ledger row must be cited by at least
-   one matrix row.  A future divergence cannot be ledgered without also being
-   asserted.
+   and every DIVERGE-disposition ``ATX-*`` row in the retired-but-frozen
+   `docs/SPEC_CONFORMANCE_HISTORY.md` must be cited by at least one ledger row.
+   A decided divergence cannot be recorded without also being asserted.
 
 Every failure -- behavioral or structural -- renders through one flip-message
 helper, so ``grep "SPEC-CONFORMANCE MATRIX FLIP"`` over a CI log finds every
@@ -44,11 +46,11 @@ Honest limits (inherited from the Layer 1 guard precedents):
   asserts what the row claims.  The paired suite's own green carries that.  A
   renamed test fails the cite check loudly -- that is designed, not incidental.
 - Absence assertions are grep-shaped.  They prove the identifier does not appear
-  in the named source roots, which is the same bar `SPEC_CONFORMANCE.md` ATX-3
-  itself uses ("grep `tool_hooks`=0").
-- The matrix file is NOT optional.  Unlike the doc guards' skip-if-absent
-  discipline for optional docs, a missing or unparseable matrix is a hard
-  failure here: a silently-skipped matrix is a matrix that is not load-bearing.
+  in the named source roots, which is the same bar `ATX-3` itself uses
+  ("grep `tool_hooks`=0").
+- The ledger file is NOT optional.  Unlike the doc guards' skip-if-absent
+  discipline for optional docs, a missing or unparseable ledger is a hard
+  failure here: a silently-skipped ledger is a ledger that is not load-bearing.
 
 Retirement condition: none for the mechanism.  Individual ROWS retire when
 upstream absorbs the divergence (the EXTENSIONS "ABSORBED UPSTREAM" banner
@@ -79,28 +81,37 @@ from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
 from amplifier_module_loop_pipeline.pipeline_events import PIPELINE_ERROR
 from amplifier_module_loop_pipeline.validation import SHAPE_TO_HANDLER, validate_or_raise
 
-BUNDLE_ROOT = Path(__file__).parent.parent.parent.parent
-MATRIX_PATH = BUNDLE_ROOT / "specs" / "conformance" / "attractor-matrix.yaml"
+# ledger/checks/<this file> -> ledger/checks -> ledger -> repo root
+BUNDLE_ROOT = Path(__file__).parent.parent.parent
+LEDGER_PATH = BUNDLE_ROOT / "ledger" / "rows.yaml"
+EXTENSIONS_LEDGER = BUNDLE_ROOT / "specs" / "EXTENSIONS.md"
+#: The retired human ledger, frozen: still the dated decision record every
+#: ATX-* / ULM-* / CAL-* id lives in, and still cited by rows via decision.history.
+HISTORY_LEDGER = BUNDLE_ROOT / "docs" / "SPEC_CONFORMANCE_HISTORY.md"
 
+#: PROTOCOL.md section 3.3's vocabulary, plus LEDGER-FORMAT.md section 3's
+#: `DIVERGED` -- legal here ONLY because this contract is externally governed.
 VALID_DISPOSITIONS = frozenset(
     {
-        "CONFORM",
-        "DIVERGE-DECIDED",
-        "EXTENSION",
+        "CONFORMS",
+        "DIVERGED",
+        "GAP",
+        "VIOLATION",
         "OPEN-PINNED",
-        "NOT-IMPLEMENTED-DECIDED",
         "NOT-ASSERTABLE",
+        "EXCLUDED",
     }
 )
 VALID_ASSERTION_KINDS = frozenset({"probe", "indexed", "absence", "none"})
 
-#: Dispositions whose rows MUST cite a ledger entry (or, for a row this matrix
-#: itself surfaced, the issue that carries the pending decision).
-LEDGER_REQUIRED = frozenset(
-    {"DIVERGE-DECIDED", "EXTENSION", "OPEN-PINNED", "NOT-IMPLEMENTED-DECIDED"}
-)
+#: Dispositions whose rows MUST cite a decision record (or, for a row this
+#: ledger itself surfaced, the issue that carries the pending decision).
+DECISION_REQUIRED = frozenset({"DIVERGED", "OPEN-PINNED", "EXCLUDED"})
 #: Dispositions whose rows MUST carry a written justification.
 JUSTIFICATION_REQUIRED = frozenset({"OPEN-PINNED", "NOT-ASSERTABLE"})
+#: Dispositions whose rows MUST carry a tracker ref -- a red row with no filed
+#: item is a ledger that lies (LEDGER-FORMAT.md section 2).
+WORK_REQUIRED = frozenset({"GAP", "VIOLATION"})
 
 
 # ---------------------------------------------------------------------------
@@ -108,52 +119,58 @@ JUSTIFICATION_REQUIRED = frozenset({"OPEN-PINNED", "NOT-ASSERTABLE"})
 # ---------------------------------------------------------------------------
 
 
-def _load_matrix() -> dict[str, Any]:
-    """Load the matrix. A missing or malformed matrix is a HARD failure.
+def _load_ledger() -> list[dict[str, Any]]:
+    """Load the ledger. A missing or malformed ledger is a HARD failure.
 
-    The guard-test precedents skip when an OPTIONAL doc is absent.  The matrix
-    is not optional: silently skipping it would leave the ledger unguarded
-    while CI stayed green, which is the exact condition this module exists to
-    make impossible.
+    The guard-test precedents skip when an OPTIONAL doc is absent.  The ledger
+    is not optional: silently skipping it would leave every decided divergence
+    unasserted while CI stayed green, which is the exact condition this module
+    exists to make impossible.
+
+    Shape is enforced here, not merely assumed: LEDGER-FORMAT.md section 2 pins
+    the top level as a LIST of rows with no wrapper mapping, because the first
+    live implementation of that format wrapped its rows in ``{meta, rows}`` and
+    the ambiguity was real.
     """
-    if not MATRIX_PATH.exists():
+    if not LEDGER_PATH.exists():
         raise AssertionError(
-            "SPEC-CONFORMANCE MATRIX FLIP -- MATRIX-INTEGRITY\n"
-            f"  The matrix file is missing: {MATRIX_PATH}\n"
+            "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
+            f"  The ledger file is missing: {LEDGER_PATH}\n"
             "  This file is NOT optional. It is the executable form of\n"
-            "  SPEC_CONFORMANCE.md and specs/EXTENSIONS.md; skipping it would\n"
-            "  leave every ledgered divergence unasserted while CI stayed green.\n"
-            "  Restore it, or -- if the matrix is being deliberately retired --\n"
-            "  remove this runner and docs/QUALITY_PROTOCOL.md's Layer 2 claim in\n"
-            "  the same PR.\n"
+            "  docs/SPEC_CONFORMANCE_HISTORY.md and specs/EXTENSIONS.md; skipping\n"
+            "  it would leave every ledgered divergence unasserted while CI stayed\n"
+            "  green. Restore it, or -- if the ledger is being deliberately\n"
+            "  retired -- remove these checks and docs/QUALITY_PROTOCOL.md's\n"
+            "  Layer 2 claim in the same PR.\n"
             "  Doing neither means main carries a ledger that lies. That is drift."
         )
     try:
-        doc = yaml.safe_load(MATRIX_PATH.read_text(encoding="utf-8"))
+        doc = yaml.safe_load(LEDGER_PATH.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:  # pragma: no cover - exercised by the RED self-test
         raise AssertionError(
-            "SPEC-CONFORMANCE MATRIX FLIP -- MATRIX-INTEGRITY\n"
-            f"  {MATRIX_PATH} does not parse as YAML: {exc}\n"
-            "  Fix the file. An unparseable matrix asserts nothing."
+            "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
+            f"  {LEDGER_PATH} does not parse as YAML: {exc}\n"
+            "  Fix the file. An unparseable ledger asserts nothing."
         ) from exc
-    if not isinstance(doc, dict) or "rows" not in doc or "canonical" not in doc:
+    if not isinstance(doc, list) or not doc:
         raise AssertionError(
-            "SPEC-CONFORMANCE MATRIX FLIP -- MATRIX-INTEGRITY\n"
-            f"  {MATRIX_PATH} is missing the required top-level keys "
-            "'canonical' and 'rows'."
+            "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
+            f"  {LEDGER_PATH} must parse as a NON-EMPTY top-level YAML LIST of\n"
+            f"  rows (LEDGER-FORMAT.md section 2), got {type(doc).__name__}.\n"
+            "  No wrapper mapping, no 'meta:' key, nothing above the list."
         )
     return doc
 
 
-MATRIX = _load_matrix()
-ROWS: list[dict[str, Any]] = MATRIX["rows"]
+ROWS: list[dict[str, Any]] = _load_ledger()
 ROWS_BY_ID: dict[str, dict[str, Any]] = {r["id"]: r for r in ROWS}
 ROW_IDS: list[str] = [r["id"] for r in ROWS]
 
-CANONICAL_PATH = BUNDLE_ROOT / MATRIX["canonical"]["path"]
-CANONICAL_TEXT = CANONICAL_PATH.read_text(encoding="utf-8")
-CONFORMANCE_LEDGER = BUNDLE_ROOT / MATRIX["ledgers"]["conformance"]
-EXTENSIONS_LEDGER = BUNDLE_ROOT / MATRIX["ledgers"]["extensions"]
+#: LEDGER-FORMAT.md section 4: the SYNC row is a row IN the list, by convention
+#: the first, and it carries the contract file's path + content hash inline.
+SYNC_ROW: dict[str, Any] = ROWS[0]
+CONTRACT_PATH = BUNDLE_ROOT / SYNC_ROW["sync"]["file"]
+CONTRACT_TEXT = CONTRACT_PATH.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -161,16 +178,18 @@ EXTENSIONS_LEDGER = BUNDLE_ROOT / MATRIX["ledgers"]["extensions"]
 # ---------------------------------------------------------------------------
 
 
-def _ledger_cites(row: dict[str, Any]) -> list[str]:
-    ledger = row.get("ledger") or {}
+def _decision_cites(row: dict[str, Any]) -> list[str]:
+    decision = row.get("decision") or {}
     cites: list[str] = []
-    if ledger.get("conformance"):
-        cites.append(f"{MATRIX['ledgers']['conformance']} {ledger['conformance']}")
-    if ledger.get("extensions") is not None:
-        cites.append(f"{MATRIX['ledgers']['extensions']} section {ledger['extensions']}")
-    if ledger.get("issue") is not None:
-        cites.append(f"issue #{ledger['issue']} (decision pending -- no ledger row yet)")
-    return cites or ["(none -- CONFORM rows need no ledger licence)"]
+    if decision.get("history"):
+        cites.append(
+            f"docs/SPEC_CONFORMANCE_HISTORY.md {decision['history']}"
+        )
+    if decision.get("extensions") is not None:
+        cites.append(f"specs/EXTENSIONS.md section {decision['extensions']}")
+    if decision.get("issue") is not None:
+        cites.append(f"issue #{decision['issue']} (decision pending -- no record yet)")
+    return cites or ["(none -- CONFORMS rows need no decision licence)"]
 
 
 def _indent(text: str, pad: str = "               ") -> str:
@@ -193,8 +212,8 @@ def flip(
     legal exits with the complete same-PR checklist, and the closing invariant.
     """
     disposition = row["disposition"]
-    spec = row["spec"]
-    cites = "; ".join(_ledger_cites(row))
+    spec = row["contract"]
+    cites = "; ".join(_decision_cites(row))
 
     direction_gloss = {
         "REGRESSION": (
@@ -207,43 +226,46 @@ def flip(
         "UNDECIDED-MOVEMENT": (
             "an OPEN-PINNED behavior moved BEFORE its disposition was decided."
         ),
-        "MATRIX-INTEGRITY": (
-            "the matrix row itself no longer resolves against the spec or the ledger."
+        "LEDGER-INTEGRITY": (
+            "the ledger row itself no longer resolves against the contract or the\n"
+            "               decision record."
         ),
     }.get(direction, "unclassified movement.")
 
     if disposition == "OPEN-PINNED":
         exit_two = (
-            "    2. Keep the change AND make it the DECISION: move the open ledger\n"
-            f"       item ({cites}) to a decided disposition with a dated changelog\n"
-            "       line, add or update the specs/EXTENSIONS.md entry if the decision\n"
-            "       is DIVERGE, and update this matrix row (disposition + assertion).\n"
+            "    2. Keep the change AND make it the DECISION: move the open record\n"
+            f"       ({cites}) to a decided disposition with a dated changelog line,\n"
+            "       add or update the specs/EXTENSIONS.md entry if the decision is\n"
+            "       DIVERGED, and update this ledger row (disposition + assertion).\n"
             "       Undecided is not the same as unpinned -- do not let an accident\n"
             "       become the decision by default."
         )
-    elif disposition in {"DIVERGE-DECIDED", "EXTENSION", "NOT-IMPLEMENTED-DECIDED"}:
+    elif disposition in {"DIVERGED", "EXCLUDED"}:
         exit_two = (
             "    2. Keep the change AND move the record with it, in THIS PR:\n"
-            f"       update {cites} (status + a dated Changelog line), rewrite the\n"
-            "       specs/EXTENSIONS.md entry body so it describes the new behavior,\n"
-            "       update this matrix row (disposition + assertion), and fix any\n"
-            "       paired doc guards named in the row's notes below."
+            f"       update {cites}, rewrite the specs/EXTENSIONS.md entry body so it\n"
+            "       describes the new behavior, update this ledger row (disposition +\n"
+            "       assertion), and fix any paired doc guards named in the row's notes\n"
+            "       below."
         )
     else:
         exit_two = (
             "    2. Keep the change AND record it as a deliberate divergence in THIS\n"
-            "       PR: add a SPEC_CONFORMANCE.md row and a specs/EXTENSIONS.md entry\n"
-            "       per the Compatibility doctrine (name the safety property, cite the\n"
-            "       evidence, fail loud), then update this matrix row's disposition.\n"
-            "       A conformance that stops conforming without a ledger entry is the\n"
-            "       unledgered-divergence class, which is how ATX-11 lived for months."
+            "       PR: add a specs/EXTENSIONS.md entry per the Compatibility doctrine\n"
+            "       in docs/VISION.md (name the safety property, cite the evidence,\n"
+            "       fail loud), then move this ledger row to DIVERGED citing it.\n"
+            "       A conformance that stops conforming without a decision record is\n"
+            "       the unledgered-divergence class, which is how ATX-11 lived for\n"
+            "       months."
         )
 
     parts = [
-        f'SPEC-CONFORMANCE MATRIX FLIP -- row {row["id"]} "{row["title"]}"',
-        f'  spec:        section {spec["section"]} {spec.get("heading", "")} --',
+        f'SPEC-CONFORMANCE LEDGER FLIP -- row {row["id"]} "{row["title"]}"',
+        f'  contract:    {spec["file"]}',
+        f'  clause:      {spec["clause"]} {spec.get("heading", "")} --',
         f"               {_indent(spec['quote'])}",
-        f"  disposition: {disposition}  (ledgered: {cites})",
+        f"  disposition: {disposition}  (decided: {cites})",
         f"  direction:   {direction} -- {direction_gloss}",
         f"  observed:    {observed}",
         f"  expected:    {expected}",
@@ -252,7 +274,7 @@ def flip(
     conflict = spec.get("conflict")
     if conflict:
         parts.append(
-            f'  spec conflict: section {conflict["section"]} says --\n'
+            f'  contract conflict: clause {conflict["clause"]} says --\n'
             f"               {_indent(conflict['quote'])}\n"
             f"               {_indent(conflict.get('note', ''))}"
         )
@@ -271,14 +293,14 @@ def flip(
     parts.append(exit_two)
     parts.append(
         "  There is no third exit. Editing this assertion to match the new behavior,\n"
-        "  without moving the ledger, is the failure this matrix exists to prevent."
+        "  without moving the record, is the failure this ledger exists to prevent."
     )
     parts.append("  Doing neither means main carries a ledger that lies. That is drift.")
     return "\n".join(parts)
 
 
 def integrity_flip(row: dict[str, Any], observed: str, expected: str) -> str:
-    return flip(row, observed, expected, direction="MATRIX-INTEGRITY")
+    return flip(row, observed, expected, direction="LEDGER-INTEGRITY")
 
 
 # ---------------------------------------------------------------------------
@@ -298,15 +320,15 @@ def _normalize_block(text: str) -> str:
     )
 
 
-_CANONICAL_NORMALIZED = _normalize_block(CANONICAL_TEXT)
+_CONTRACT_NORMALIZED = _normalize_block(CONTRACT_TEXT)
 
 
-def quote_is_present(quote: str, haystack_normalized: str = _CANONICAL_NORMALIZED) -> bool:
+def quote_is_present(quote: str, haystack_normalized: str = _CONTRACT_NORMALIZED) -> bool:
     return _normalize_block(quote) in haystack_normalized
 
 
-def conformance_ledger_ids(text: str) -> set[str]:
-    """Every ``ATX-*`` / ``ULM-*`` / ``CAL-*`` / ``SYNC-*`` row id in the ledger."""
+def history_ledger_ids(text: str) -> set[str]:
+    """Every ``ATX-*`` / ``ULM-*`` / ``CAL-*`` / ``SYNC-*`` row id in the record."""
     return {
         m.group(1)
         for m in re.finditer(r"^\|\s*((?:ATX|ULM|CAL|SYNC|DEAD)-\d+)\s*\|", text, re.M)
@@ -435,8 +457,22 @@ def test_row_schema_is_wellformed(row_id: str):
         f"Legal values: {sorted(VALID_ASSERTION_KINDS)}"
     )
     assert row.get("title"), f"row {row_id}: title is required (it names the flip banner)"
-    assert row["spec"].get("section"), f"row {row_id}: spec.section is required"
-    assert row["spec"].get("quote", "").strip(), f"row {row_id}: spec.quote is required"
+
+    # LEDGER-FORMAT.md section 2: the quote is THE binding anchor and must live
+    # nested under `contract:` -- a quote at row top level is malformed and
+    # dodges verification entirely (a live finding, not a hypothetical).
+    assert "quote" not in row, (
+        f"row {row_id}: `quote` must be nested under `contract:`, never at row "
+        "top level. A top-level quote is never verified against contract bytes, "
+        "so the row's citation is decorative."
+    )
+    contract = row["contract"]
+    assert contract.get("file"), f"row {row_id}: contract.file is required"
+    assert contract.get("clause"), f"row {row_id}: contract.clause is required"
+    assert contract.get("quote", "").strip(), f"row {row_id}: contract.quote is required"
+    assert (BUNDLE_ROOT / contract["file"]).exists(), (
+        f"row {row_id}: contract.file {contract['file']!r} does not exist"
+    )
 
     if kind == "none":
         assert row["disposition"] == "NOT-ASSERTABLE", (
@@ -445,12 +481,20 @@ def test_row_schema_is_wellformed(row_id: str):
             "behavior that asserts nothing is decoration."
         )
 
-    if row["disposition"] in LEDGER_REQUIRED:
-        ledger = row.get("ledger") or {}
-        assert any(ledger.get(k) is not None for k in ("conformance", "extensions", "issue")), (
-            f"row {row_id}: disposition {row['disposition']} requires a ledger cite "
-            "(SPEC_CONFORMANCE.md row, specs/EXTENSIONS.md section, or -- for a finding "
-            "this matrix surfaced -- the issue carrying the pending decision)."
+    if row["disposition"] in DECISION_REQUIRED:
+        decision = row.get("decision") or {}
+        assert any(decision.get(k) is not None for k in ("history", "extensions", "issue")), (
+            f"row {row_id}: disposition {row['disposition']} requires a decision "
+            "record cite (docs/SPEC_CONFORMANCE_HISTORY.md row, specs/EXTENSIONS.md "
+            "section, or -- for a finding this ledger surfaced -- the issue carrying "
+            "the pending decision). LEDGER-FORMAT.md section 3: a DIVERGED row "
+            "without a decision record asserts a decision nobody made."
+        )
+
+    if row["disposition"] in WORK_REQUIRED:
+        assert (row.get("work") or "").strip(), (
+            f"row {row_id}: disposition {row['disposition']} requires a `work` "
+            "tracker ref. A red row with no filed item is a ledger that lies."
         )
 
     if row["disposition"] in JUSTIFICATION_REQUIRED:
@@ -462,59 +506,60 @@ def test_row_schema_is_wellformed(row_id: str):
 
 
 @pytest.mark.parametrize("row_id", ROW_IDS)
-def test_row_quote_is_verbatim_in_canonical(row_id: str):
-    """The row's spec quote(s) must still exist in the byte-pinned canonical file."""
+def test_row_quote_is_verbatim_in_contract(row_id: str):
+    """The row's contract quote(s) must still exist in the byte-pinned contract file."""
     row = ROWS_BY_ID[row_id]
-    quotes: list[tuple[str, str]] = [("spec.quote", row["spec"]["quote"])]
-    for extra in row["spec"].get("also") or []:
-        quotes.append(("spec.also", extra["quote"]))
-    conflict = row["spec"].get("conflict")
+    quotes: list[tuple[str, str]] = [("contract.quote", row["contract"]["quote"])]
+    for extra in row["contract"].get("also") or []:
+        quotes.append(("contract.also", extra["quote"]))
+    conflict = row["contract"].get("conflict")
     if conflict:
-        quotes.append(("spec.conflict", conflict["quote"]))
+        quotes.append(("contract.conflict", conflict["quote"]))
 
     for field, quote in quotes:
         assert quote_is_present(quote), integrity_flip(
             row,
             observed=(
-                f"{field} is no longer present in {MATRIX['canonical']['path']}: "
+                f"{field} is no longer present in {row['contract']['file']}: "
                 f"{_normalize_block(quote)[:120]!r}"
             ),
             expected=(
-                "every matrix quote resolves verbatim against the canonical bytes "
+                "every ledger quote resolves verbatim against the contract bytes "
                 "(whitespace-normalized within lines)"
             ),
         )
 
 
 @pytest.mark.parametrize("row_id", ROW_IDS)
-def test_row_ledger_cites_exist(row_id: str):
-    """A row may not cite a ledger entry that has been deleted or renumbered."""
+def test_row_decision_cites_exist(row_id: str):
+    """A row may not cite a decision record that has been deleted or renumbered."""
     row = ROWS_BY_ID[row_id]
-    ledger = row.get("ledger") or {}
+    decision = row.get("decision") or {}
 
-    if ledger.get("conformance"):
-        known = conformance_ledger_ids(CONFORMANCE_LEDGER.read_text(encoding="utf-8"))
-        assert ledger["conformance"] in known, integrity_flip(
+    if decision.get("history"):
+        known = history_ledger_ids(HISTORY_LEDGER.read_text(encoding="utf-8"))
+        assert decision["history"] in known, integrity_flip(
             row,
             observed=(
-                f"{MATRIX['ledgers']['conformance']} has no row "
-                f"{ledger['conformance']!r}"
+                f"docs/SPEC_CONFORMANCE_HISTORY.md has no row "
+                f"{decision['history']!r}"
             ),
             expected=(
-                "the cited ledger row still exists. The ledger is append-only in "
-                "practice: rows change status, they do not vanish."
+                "the cited record still exists. That file is FROZEN and "
+                "append-only-in-practice: ids do not vanish. If a row here cites "
+                "an id that is gone, the absorption dropped a decision."
             ),
         )
 
-    if ledger.get("extensions") is not None:
+    if decision.get("extensions") is not None:
         known_sections = extensions_section_numbers(
             EXTENSIONS_LEDGER.read_text(encoding="utf-8")
         )
-        assert ledger["extensions"] in known_sections, integrity_flip(
+        assert decision["extensions"] in known_sections, integrity_flip(
             row,
             observed=(
-                f"{MATRIX['ledgers']['extensions']} has no "
-                f"'## {ledger['extensions']}.' heading"
+                f"specs/EXTENSIONS.md has no "
+                f"'## {decision['extensions']}.' heading"
             ),
             expected=(
                 "the cited EXTENSIONS section still exists. Renumbering or deleting an "
@@ -524,13 +569,14 @@ def test_row_ledger_cites_exist(row_id: str):
             ),
         )
 
-    if ledger.get("issue") is not None:
-        assert isinstance(ledger["issue"], int) and ledger["issue"] > 0, (
-            f"row {row_id}: ledger.issue must be a positive GitHub issue number"
+    if decision.get("issue") is not None:
+        assert isinstance(decision["issue"], int) and decision["issue"] > 0, (
+            f"row {row_id}: decision.issue must be a positive GitHub issue number"
         )
         assert row["disposition"] == "OPEN-PINNED", (
-            f"row {row_id}: ledger.issue is legal only on an OPEN-PINNED row. An issue "
-            "records a PENDING decision; a decided disposition owes a real ledger entry."
+            f"row {row_id}: decision.issue is legal only on an OPEN-PINNED row. An "
+            "issue records a PENDING decision; a decided disposition owes a real "
+            "decision record."
         )
 
 
@@ -544,9 +590,9 @@ def test_row_indexed_cites_exist(row_id: str):
             row,
             observed=f"indexed cite does not resolve -- {reason} (cite: {cite})",
             expected=(
-                "every indexed test still exists. The matrix INDEXES existing coverage "
+                "every indexed test still exists. The ledger INDEXES existing coverage "
                 "rather than duplicating it, so a renamed or deleted test silently "
-                "un-covers this spec statement unless this check catches it."
+                "un-covers this contract clause unless this check catches it."
             ),
         )
 
@@ -557,8 +603,8 @@ def test_row_probe_function_exists(row_id: str):
     row = ROWS_BY_ID[row_id]
     if row["assertion"]["kind"] != "probe":
         pytest.skip("row is not probe-kind")
-    probe = row["assertion"].get("probe")
-    assert probe, f"row {row_id}: assertion.kind is 'probe' but no probe is named"
+    probe = row["assertion"].get("ref")
+    assert probe, f"row {row_id}: assertion.kind is 'probe' but no assertion.ref is named"
     assert callable(getattr(sys.modules[__name__], probe, None)), integrity_flip(
         row,
         observed=f"no probe function named {probe!r} in this module",
@@ -584,7 +630,7 @@ def test_every_probe_function_is_claimed_by_a_row():
     matrix a reviewer reads.
     """
     declared = {
-        row["assertion"].get("probe")
+        row["assertion"].get("ref")
         for row in ROWS
         if row["assertion"]["kind"] == "probe"
     }
@@ -597,8 +643,8 @@ def test_every_probe_function_is_claimed_by_a_row():
     # Structural tests are parametrized over row ids and are not row probes.
     structural = {
         "test_row_schema_is_wellformed",
-        "test_row_quote_is_verbatim_in_canonical",
-        "test_row_ledger_cites_exist",
+        "test_row_quote_is_verbatim_in_contract",
+        "test_row_decision_cites_exist",
         "test_row_indexed_cites_exist",
         "test_row_probe_function_exists",
         "test_row_ids_are_unique",
@@ -606,9 +652,9 @@ def test_every_probe_function_is_claimed_by_a_row():
     }
     orphans = sorted(defined - declared - structural)
     assert not orphans, (
-        "SPEC-CONFORMANCE MATRIX FLIP -- MATRIX-INTEGRITY\n"
-        f"  probe functions with no matrix row: {orphans}\n"
-        "  Every probe must be claimed by a row, so the matrix a human reads is the\n"
+        "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
+        f"  probe functions with no ledger row: {orphans}\n"
+        "  Every probe must be claimed by a row, so the ledger a human reads is the\n"
         "  complete list of what is asserted. Add the row, or rename the function."
     )
 
@@ -620,17 +666,17 @@ def test_every_probe_function_is_claimed_by_a_row():
 
 def _cited_extension_sections() -> set[int]:
     return {
-        row["ledger"]["extensions"]
+        row["decision"]["extensions"]
         for row in ROWS
-        if (row.get("ledger") or {}).get("extensions") is not None
+        if (row.get("decision") or {}).get("extensions") is not None
     }
 
 
-def _cited_conformance_rows() -> set[str]:
+def _cited_history_rows() -> set[str]:
     return {
-        row["ledger"]["conformance"]
+        row["decision"]["history"]
         for row in ROWS
-        if (row.get("ledger") or {}).get("conformance")
+        if (row.get("decision") or {}).get("history")
     }
 
 
@@ -641,31 +687,80 @@ def test_tripwire_every_diverges_bannered_extension_is_asserted():
     )
     missing = sorted(bannered - _cited_extension_sections())
     assert not missing, (
-        "SPEC-CONFORMANCE MATRIX FLIP -- MATRIX-INTEGRITY (coverage tripwire)\n"
+        "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY (coverage tripwire)\n"
         f"  specs/EXTENSIONS.md sections {missing} carry a DIVERGES banner but no\n"
-        "  matrix row cites them.\n"
-        "  A divergence that is ledgered but not asserted is a promise with no\n"
-        "  enforcement: the engine can drift off it, or silently back onto spec,\n"
-        "  and CI stays green. Add a row to specs/conformance/attractor-matrix.yaml\n"
-        "  asserting BOTH halves -- that our documented behavior occurs, and that the\n"
-        "  spec's behavior does not.\n"
+        "  ledger row cites them.\n"
+        "  A divergence that is recorded but not asserted is a promise with no\n"
+        "  enforcement: the engine can drift off it, or silently back onto the\n"
+        "  contract, and CI stays green. Add a row to ledger/rows.yaml asserting\n"
+        "  BOTH halves -- that our documented behavior occurs, and that the\n"
+        "  contract's behavior does not.\n"
         "  Doing neither means main carries a ledger that lies. That is drift."
     )
 
 
 def test_tripwire_every_diverge_atx_row_is_asserted():
-    """An ``ATX-*`` row with a DIVERGE disposition must be cited by a matrix row."""
-    ledger_text = CONFORMANCE_LEDGER.read_text(encoding="utf-8")
-    diverging = diverge_disposition_atx_rows(ledger_text)
-    missing = sorted(diverging - _cited_conformance_rows())
+    """A DIVERGE-disposition ``ATX-*`` record must be cited by a ledger row.
+
+    Re-aimed (not weakened) at ``docs/SPEC_CONFORMANCE_HISTORY.md`` when
+    ``SPEC_CONFORMANCE.md`` was retired.  That file is frozen, which makes this a
+    permanent ABSORPTION check: every divergence the human ledger had decided is
+    still carried by a row here.  A dropped decision turns this red.
+    """
+    history_text = HISTORY_LEDGER.read_text(encoding="utf-8")
+    diverging = diverge_disposition_atx_rows(history_text)
+    missing = sorted(diverging - _cited_history_rows())
     assert not missing, (
-        "SPEC-CONFORMANCE MATRIX FLIP -- MATRIX-INTEGRITY (coverage tripwire)\n"
-        f"  SPEC_CONFORMANCE.md rows {missing} carry a DIVERGE disposition but no\n"
-        "  matrix row cites them.\n"
+        "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY (coverage tripwire)\n"
+        f"  docs/SPEC_CONFORMANCE_HISTORY.md rows {missing} carry a DIVERGE\n"
+        "  disposition but no ledger/rows.yaml row cites them.\n"
         "  Recording a divergence in prose and leaving it unasserted is how ATX-11\n"
         "  lived for months: correct, load-bearing, and invisible to CI. Add a row to\n"
-        "  specs/conformance/attractor-matrix.yaml in the same PR that ledgers it.\n"
+        "  ledger/rows.yaml in the same PR that decides it.\n"
         "  Doing neither means main carries a ledger that lies. That is drift."
+    )
+
+
+def test_tripwire_sync_row_is_first_and_pins_the_contract():
+    """LEDGER-FORMAT.md section 4: the SYNC row is row 0 and pins path + hash."""
+    assert SYNC_ROW["id"].endswith("-000"), (
+        "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
+        f"  the first ledger row is {SYNC_ROW['id']!r}, not a '<PREFIX>-000' SYNC row.\n"
+        "  LEDGER-FORMAT.md section 4 pins the SYNC row as a row IN the list, by\n"
+        "  convention the first. Run metadata never sits above the list."
+    )
+    sync = SYNC_ROW.get("sync") or {}
+    for field in ("file", "upstream", "sha256"):
+        assert sync.get(field), (
+            f"SYNC row {SYNC_ROW['id']}: sync.{field} is required -- the row pins the\n"
+            "contract file's path and content hash inline."
+        )
+    assert (BUNDLE_ROOT / sync["file"]).exists(), (
+        f"SYNC row {SYNC_ROW['id']}: sync.file {sync['file']!r} does not exist"
+    )
+    others = [r["id"] for r in ROWS[1:] if "sync" in r]
+    assert not others, (
+        f"rows {others} carry a `sync:` block. Exactly one row -- the SYNC row -- "
+        "pins the contract bytes."
+    )
+
+
+def test_tripwire_every_row_cites_the_synced_contract():
+    """Every row's contract.file must be the file the SYNC row actually pins.
+
+    A row quoting a contract whose bytes nothing pins is a row whose citation
+    cannot be trusted: the text could move without the SYNC row noticing.
+    """
+    pinned = SYNC_ROW["sync"]["file"]
+    strays = sorted(
+        {r["id"] for r in ROWS if r["contract"]["file"] != pinned}
+    )
+    assert not strays, (
+        "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY (coverage tripwire)\n"
+        f"  rows {strays} cite a contract file the SYNC row does not pin\n"
+        f"  (pinned: {pinned}).\n"
+        "  Add a SYNC row for that contract before adding rows against it, or the\n"
+        "  quotes below it are unpinned text."
     )
 
 
@@ -691,6 +786,19 @@ def test_selfcheck_quote_verification_is_whitespace_tolerant_not_content_toleran
     assert not quote_is_present("The graph is the workflow; nodes are chores")
 
 
+def test_selfcheck_ledger_shape_is_a_bare_top_level_list():
+    """LEDGER-FORMAT.md section 2, asserted rather than assumed."""
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(LEDGER_PATH.read_text(encoding="utf-8"))
+    assert isinstance(raw, list), (
+        f"ledger/rows.yaml parsed as {type(raw).__name__}, not a list. No wrapper "
+        "mapping, no 'meta:' key, nothing above the list."
+    )
+    assert all(isinstance(r, dict) and "id" in r for r in raw)
+    assert raw[0]["id"] == "ATX-M-000"
+
+
 def test_selfcheck_indexed_cite_resolution_rejects_dangling_cites():
     ok, _ = resolve_indexed_cite(
         "modules/loop-pipeline/tests/test_engine.py::test_no_matching_edge_returns_fail"
@@ -705,7 +813,7 @@ def test_selfcheck_indexed_cite_resolution_rejects_dangling_cites():
 
 
 def test_selfcheck_ledger_id_extraction_finds_real_rows_and_not_invented_ones():
-    ids = conformance_ledger_ids(CONFORMANCE_LEDGER.read_text(encoding="utf-8"))
+    ids = history_ledger_ids(HISTORY_LEDGER.read_text(encoding="utf-8"))
     assert {"ATX-11", "ATX-12", "ATX-5", "ATX-6"} <= ids
     assert "ATX-9999" not in ids
 
@@ -739,7 +847,7 @@ def test_selfcheck_diverges_banner_detection_is_precise():
 
 
 def test_selfcheck_diverge_atx_row_detection_reads_the_disposition_cell():
-    rows = diverge_disposition_atx_rows(CONFORMANCE_LEDGER.read_text(encoding="utf-8"))
+    rows = diverge_disposition_atx_rows(HISTORY_LEDGER.read_text(encoding="utf-8"))
     assert {"ATX-4", "ATX-5", "ATX-11", "ATX-12"} <= rows
     assert "ATX-1" not in rows  # disposition ALIGN
     assert "ATX-2" not in rows  # disposition ALIGN
@@ -754,10 +862,11 @@ def test_selfcheck_flip_message_carries_the_full_contract():
         expected="the spec-literal dead-end-to-SUCCESS behavior stays absent",
         direction="UN-DIVERGENCE",
     )
-    assert message.startswith("SPEC-CONFORMANCE MATRIX FLIP -- row ATX-M-011")
-    assert "section 3.2" in message
+    assert message.startswith("SPEC-CONFORMANCE LEDGER FLIP -- row ATX-M-011")
+    assert "contracts/external/attractor-spec-canonical.md" in message
+    assert "clause:      3.2" in message
     assert 'RETURN Outcome(status=SUCCESS, notes="Pipeline completed")' in message
-    assert "SPEC_CONFORMANCE.md ATX-11" in message
+    assert "docs/SPEC_CONFORMANCE_HISTORY.md ATX-11" in message
     assert "specs/EXTENSIONS.md section 33" in message
     assert "UN-DIVERGENCE" in message
     assert "observed:" in message and "expected:" in message
@@ -777,8 +886,9 @@ def test_selfcheck_open_pinned_flip_offers_the_decision_exit_not_the_ledger_exit
     )
     assert "make it the DECISION" in message
     assert "Undecided is not the same as unpinned" in message
-    assert "SPEC_CONFORMANCE.md ATX-6" in message
-    assert "section 11.5" in message  # the spec's self-contradiction is surfaced
+    assert "docs/SPEC_CONFORMANCE_HISTORY.md ATX-6" in message
+    # the contract's self-contradiction is surfaced
+    assert "clause 11.5" in message
 
 
 # ---------------------------------------------------------------------------
@@ -865,7 +975,7 @@ def test_row_absence_assertion_holds(row_id: str):
         ),
         direction=(
             "UN-DIVERGENCE"
-            if r["disposition"] == "NOT-IMPLEMENTED-DECIDED"
+            if r["disposition"] in {"DIVERGED", "EXCLUDED"}
             else "UNDECIDED-MOVEMENT"
         ),
     )
@@ -877,28 +987,31 @@ def test_row_absence_assertion_holds(row_id: str):
 
 
 def test_row_atx_m_000():
-    """SYNC: the canonical file's sha256 still matches the recorded pin."""
+    """SYNC: the contract file's sha256 still matches the recorded pin."""
     r = row("ATX-M-000")
-    actual = hashlib.sha256(CANONICAL_PATH.read_bytes()).hexdigest()
-    pinned = MATRIX["canonical"]["sha256"]
+    sync = r["sync"]
+    actual = hashlib.sha256((BUNDLE_ROOT / sync["file"]).read_bytes()).hexdigest()
+    pinned = sync["sha256"]
     assert actual == pinned, (
-        f"SPEC-CONFORMANCE MATRIX FLIP -- row {r['id']} \"{r['title']}\"\n"
-        f"  canonical:   {MATRIX['canonical']['path']}\n"
-        f"  pinned to:   {MATRIX['canonical']['upstream']}  sha256={pinned}\n"
+        f"SPEC-CONFORMANCE LEDGER FLIP -- row {r['id']} \"{r['title']}\"\n"
+        f"  contract:    {sync['file']}\n"
+        f"  pinned to:   {sync['upstream']}  sha256={pinned}\n"
         f"  actual:      sha256={actual}\n"
-        "  direction:   MATRIX-INTEGRITY -- the vendored spec has been re-synced.\n"
+        "  direction:   LEDGER-INTEGRITY -- the vendored contract has been re-synced.\n"
         "\n"
-        "  This is NOT a 'fix the hash' failure. Every row in\n"
-        "  specs/conformance/attractor-matrix.yaml quotes THIS file, so a re-sync is a\n"
-        "  FULL-MATRIX RE-REVIEW EVENT:\n"
+        "  This is NOT a 'fix the hash' failure. Every row in ledger/rows.yaml quotes\n"
+        "  THIS file, so a re-sync is a MANDATORY FULL-LEDGER RE-REVIEW EVENT\n"
+        "  (LEDGER-FORMAT.md section 4 -- never a silent hash bump):\n"
         "    1. Re-verify every row against the new upstream text -- the quote checks\n"
         "       will already have failed on exactly the rows whose normative text moved,\n"
         "       which is your targeted diff of what upstream touched.\n"
-        "    2. Update the dispositions and ledger entries the new text ABSORBS or\n"
+        "    2. Update the dispositions and decision records the new text ABSORBS or\n"
         "       INVALIDATES (see the specs/EXTENSIONS.md 'ABSORBED UPSTREAM' banner\n"
         "       protocol -- the fb57a55 sync retconned sections 1-7 that way, and found\n"
         "       section 18's k_of_n/quorum had been removed upstream entirely).\n"
-        "    3. THEN update `sha256:` and `upstream:` in the matrix header, in the same PR.\n"
+        "    3. THEN update `sha256:` and `upstream:` in the SYNC row, in the same PR.\n"
+        "  Quote verification proves the quoted text still exists; only the re-review\n"
+        "  confirms each row's READING of it is still correct.\n"
         "  Doing neither means main carries a ledger that lies. That is drift."
     )
 

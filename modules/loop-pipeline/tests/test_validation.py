@@ -1132,7 +1132,7 @@ def test_shape_to_handler_conforms_to_upstream_nlspec():
     """
     from amplifier_module_loop_pipeline.validation import SHAPE_TO_HANDLER
 
-    spec = (_repo_root() / "specs" / "canonical" / "attractor-spec-canonical.md").read_text()
+    spec = (_repo_root() / "contracts" / "external" / "attractor-spec-canonical.md").read_text()
     rows = re.findall(r"^\|\s*`([A-Za-z]+)`\s*\|\s*`([a-z_.]+)`", spec, re.M)
     upstream = {shape: handler for shape, handler in rows}
     assert upstream, "could not parse the §2.8 shape table from the canonical spec"

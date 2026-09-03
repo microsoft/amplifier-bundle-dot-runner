@@ -44,8 +44,11 @@ docs) lives in the repos that consume this one.
 | `modules/tool-pipeline-status` | Pipeline execution state query tool module. |
 | `contracts/external/` | Byte-pinned vendored copies of the upstream `strongdm/attractor`, `coding-agent-loop`, and `unified-llm` nlspecs. |
 | `specs/EXTENSIONS.md` | Append-only ledger of every place this implementation extends or deviates from the canonical specs. |
-| `specs/conformance/attractor-matrix.yaml` | The conformance matrix: one row per normative statement cluster, each runner-verified against canonical spec bytes. |
-| `SPEC_CONFORMANCE.md` | Compat doctrine + deviation ledger, human-readable. |
+| `contracts/recipe-substrate.v1.md` | Owned contract, **DRAFT/paused** — does not meet the Freeze Bar; governs nothing yet. |
+| `ledger/rows.yaml` | The conformance ledger ([Converge format](docs/VISION.md)): one row per normative statement cluster, each check-verified against contract bytes. |
+| `ledger/checks/` | The executable checks the ledger rows reference. Run inside `modules/loop-pipeline`'s own test job — no separate CI job. |
+| `docs/VISION.md` | Desired end state + the Compatibility doctrine that decides every disposition. |
+| `docs/SPEC_CONFORMANCE_HISTORY.md` | The retired `SPEC_CONFORMANCE.md`, frozen: the dated decision record for every `ATX-*`/`ULM-*`/`CAL-*` id. |
 | `.github/capsule-pipeline/` | Issue -> attractor -> PR pipeline (ported from `amplifier-bundle-attractor`): label an issue `ready:spec`/`ready:feature-spec` and an autonomous pipeline proposes a work capsule, then (on merge) a fix PR. See `.github/capsule-pipeline/README.md` and [docs/ISSUE_PIPELINE.md](docs/ISSUE_PIPELINE.md). |
 
 Python distribution and import names are unchanged from their original
@@ -78,8 +81,8 @@ engine for different, non-convergence-loop orchestration styles.
 That anchoring holds regardless of shape: a recipes-layer or other
 non-attractor consumer is bound to the same strongdm/attractor nlspec as
 this repo's own convergence-loop use, not a relaxed derivative of it. See
-the Compatibility doctrine in `SPEC_CONFORMANCE.md` (rule 5, "Anchoring
-survives scope") for how that bar is enforced.
+the Compatibility doctrine in [`docs/VISION.md`](docs/VISION.md) (rule 5,
+"Anchoring survives scope") for how that bar is enforced.
 
 If you're looking for `.dot` examples, authoring guides, agents, or the
 attractor-specific vision/contracts docs, see
@@ -92,12 +95,13 @@ to its pre-extraction form where testable:
 
 - `contracts/external/attractor-spec-canonical.md` — the byte-pinned
   `strongdm/attractor` snapshot this engine implements.
-- `specs/conformance/attractor-matrix.yaml` — 38 rows, each citing a
-  verbatim spec quote and an in-process engine probe against it. All 38
-  rows must pass, unmodified, in CI.
+- `ledger/rows.yaml` — 38 rows, each citing a verbatim contract quote and
+  an in-process engine probe against it. All 38 rows must pass,
+  unmodified, in CI. Checks live in `ledger/checks/` and run inside
+  `modules/loop-pipeline`'s test job.
 - `specs/EXTENSIONS.md` — every intentional extension beyond the canonical
-  spec, numbered and cross-referenced from the matrix and from
-  `SPEC_CONFORMANCE.md`.
+  spec, numbered and cross-referenced from the ledger. It is the repo's
+  decision-record store, pending promotion to an owned contract.
 
 ## History
 
@@ -105,7 +109,8 @@ This repo was extracted from `microsoft/amplifier-bundle-attractor` via
 `git filter-repo` (subtree extraction preserving commit history for the
 moved paths). See `HISTORY-MAP.tsv` for the old-SHA -> new-SHA mapping —
 useful for resolving any pre-extraction commit citation (council
-transcripts, `SPEC_CONFORMANCE.md` entries, code review comments) to its
+transcripts, `docs/SPEC_CONFORMANCE_HISTORY.md` entries, code review
+comments) to its
 corresponding commit here.
 
 ## Breaking changes (0.3.0)
