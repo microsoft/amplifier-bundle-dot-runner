@@ -164,3 +164,176 @@ class TestEveryParseSiteThreadsParams:
 
 def test_handlers_package_importable() -> None:
     assert handlers_pkg is not None
+
+
+# ---------------------------------------------------------------------------
+# The generalized guard: EVERY call site, discovered structurally.
+#
+# The class-per-site tests above pin the three sites PR #42 swept, by name.
+# That is the right shape for a regression pin and the wrong shape for a
+# standing invariant: it can only ever catch a regression at a site someone
+# already thought to enumerate. The sixth site this guard found on its first
+# run (`remote_dot.extract_dot_file_refs`, the MATERIALIZE-time parse -- see
+# entry 43's 2026-09-02 addendum) is the proof: it had been dropping `params=`
+# since entry 43 shipped, through the #42 sweep, unnoticed, because nobody had
+# listed it.
+#
+# So this walks the package with `ast` and asserts the invariant over whatever
+# it finds, rather than over a list a human maintains. A NEW call site that
+# threads params passes silently; a new one that does not fails by name.
+# ---------------------------------------------------------------------------
+
+import ast
+from pathlib import Path
+
+# Callees that take the graph-level `$name` mapping. `parse_dot` resolves it;
+# `load_remote_or_local_graph` is the shared materialize/parse hook that must
+# forward it.
+_PARAMS_TAKING_CALLEES = {"parse_dot", "load_remote_or_local_graph"}
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "amplifier_module_loop_pipeline"
+_MODULES_ROOT = Path(__file__).resolve().parents[2]
+_RUNNER_PACKAGE_ROOT = (
+    _MODULES_ROOT / "pipeline-runner" / "amplifier_module_pipeline_runner"
+)
+
+
+def _callee_name(node: ast.Call) -> str | None:
+    """Return the called NAME for both `parse_dot(...)` and `mod.parse_dot(...)`."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _find_param_taking_call_sites(package_root: Path) -> list[dict[str, object]]:
+    """Every call to a params-taking callee under ``package_root``.
+
+    Definitions are excluded structurally (a ``def`` is not an ``ast.Call``),
+    as are imports. Tests are excluded by scanning only the package directory.
+    """
+    sites: list[dict[str, object]] = []
+    for path in sorted(package_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = _callee_name(node)
+            if name not in _PARAMS_TAKING_CALLEES:
+                continue
+            keywords = {kw.arg for kw in node.keywords}
+            sites.append(
+                {
+                    "file": str(path.relative_to(package_root.parent)),
+                    "line": node.lineno,
+                    "callee": name,
+                    # `**kwargs` forwarding (kw.arg is None) counts: the mapping
+                    # is being passed through, just not by literal keyword.
+                    "threads_params": "params" in keywords or None in keywords,
+                }
+            )
+    return sites
+
+
+def _format(sites: list[dict[str, object]]) -> str:
+    return "\n".join(
+        f"  {'OK  ' if s['threads_params'] else 'MISS'} "
+        f"{s['file']}:{s['line']} {s['callee']}(...)"
+        for s in sites
+    )
+
+
+class TestEveryParamsTakingCallSiteThreadsParams:
+    """The standing invariant, over sites discovered rather than enumerated."""
+
+    def test_engine_package_has_call_sites_to_check(self) -> None:
+        """Anti-vacuous-pass: a scanner that finds nothing must not read green.
+
+        If a rename or a refactor moves these calls out from under the walk,
+        this fails instead of quietly asserting over an empty list.
+        """
+        sites = _find_param_taking_call_sites(_PACKAGE_ROOT)
+        assert len(sites) >= 5, (
+            "expected at least the five known params-taking call sites in "
+            f"amplifier_module_loop_pipeline/, found {len(sites)}:\n{_format(sites)}"
+        )
+
+    def test_every_engine_call_site_threads_params(self) -> None:
+        sites = _find_param_taking_call_sites(_PACKAGE_ROOT)
+        missing = [s for s in sites if not s["threads_params"]]
+        assert not missing, (
+            "these call sites drop the graph-level param mapping, so a "
+            '`max_pipeline_duration="$name"` graph reached through them can '
+            "never resolve, whatever the caller supplied (EXTENSIONS.md entry "
+            "43 + its 2026-09-02 addendum):\n"
+            f"{_format(missing)}\n\n"
+            f"all discovered sites:\n{_format(sites)}"
+        )
+
+    def test_every_runner_call_site_threads_params(self) -> None:
+        """The same invariant across the sibling pipeline-runner package.
+
+        pipeline-runner drives the engine through the same two callees. It is
+        a separate distribution, so it is scanned only when the sibling source
+        is present in the checkout (it is, in CI and in a normal clone).
+        """
+        if not _RUNNER_PACKAGE_ROOT.is_dir():
+            import pytest
+
+            pytest.skip(f"sibling package not in this checkout: {_RUNNER_PACKAGE_ROOT}")
+
+        sites = _find_param_taking_call_sites(_RUNNER_PACKAGE_ROOT)
+        assert sites, (
+            "expected pipeline-runner to call the engine's parse/load seam at "
+            "least once -- finding zero means the scan, not the code, changed"
+        )
+        missing = [s for s in sites if not s["threads_params"]]
+        assert not missing, (
+            "these pipeline-runner call sites drop the graph-level param "
+            f"mapping:\n{_format(missing)}\n\nall discovered sites:\n{_format(sites)}"
+        )
+
+
+class TestTheGuardItselfDetectsADroppedParam:
+    """Regression proof for the checker logic, independent of the live tree.
+
+    Without this, a scanner bug that silently matched nothing would let the
+    guard above pass forever on a package that had regressed.
+    """
+
+    def _sites(self, tmp_path, source: str) -> list[dict[str, object]]:
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "mod.py").write_text(source, encoding="utf-8")
+        return _find_param_taking_call_sites(pkg)
+
+    def test_flags_a_bare_call(self, tmp_path) -> None:
+        sites = self._sites(tmp_path, "graph = parse_dot(dot_source)\n")
+        assert len(sites) == 1
+        assert sites[0]["threads_params"] is False
+
+    def test_accepts_an_explicit_keyword(self, tmp_path) -> None:
+        sites = self._sites(tmp_path, "graph = parse_dot(dot_source, params=params)\n")
+        assert sites[0]["threads_params"] is True
+
+    def test_accepts_kwargs_forwarding(self, tmp_path) -> None:
+        sites = self._sites(tmp_path, "graph = parse_dot(dot_source, **kw)\n")
+        assert sites[0]["threads_params"] is True
+
+    def test_sees_an_attribute_call(self, tmp_path) -> None:
+        """`mod.parse_dot(...)` is the same site wearing a different spelling."""
+        sites = self._sites(tmp_path, "g = remote_dot.load_remote_or_local_graph(src)\n")
+        assert len(sites) == 1
+        assert sites[0]["callee"] == "load_remote_or_local_graph"
+        assert sites[0]["threads_params"] is False
+
+    def test_ignores_the_definition_and_the_import(self, tmp_path) -> None:
+        """A `def` and a `from ... import` are not calls and must not be counted."""
+        sites = self._sites(
+            tmp_path,
+            "from .dot_parser import parse_dot\n\n\n"
+            "def parse_dot(source, params=None):\n    return source\n",
+        )
+        assert sites == []
