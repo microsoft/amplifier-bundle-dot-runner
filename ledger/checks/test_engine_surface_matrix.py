@@ -28,15 +28,47 @@ stamps FROZEN.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import re
+import sys
+from pathlib import Path
 
 import yaml
 
-from test_spec_conformance_matrix import (
-    BUNDLE_ROOT,
-    ROWS,
-    row,
-)
+#: The sibling module owns the ONE ledger loader, and this module reuses it
+#: rather than parsing `rows.yaml` a second time -- two loaders drift, and a
+#: second reading of the ledger is exactly the kind of quiet divergence this
+#: ledger exists to catch. It is loaded BY PATH for the same reason
+#: `ledger/checks/conftest.py` loads loop-pipeline's conftest by path: these
+#: checks run under `--import-mode=importlib` from the loop-pipeline module,
+#: where `ledger/checks/` is not on `sys.path` and a plain
+#: `import test_spec_conformance_matrix` raises ModuleNotFoundError at
+#: collection time -- taking the whole suite down with it.
+_MATRIX_PATH = Path(__file__).resolve().parent / "test_spec_conformance_matrix.py"
+
+
+def _load_matrix_module():
+    for existing in sys.modules.values():
+        if getattr(existing, "__file__", None) == str(_MATRIX_PATH):
+            return existing
+    if not _MATRIX_PATH.exists():  # pragma: no cover - fails loud by design
+        raise RuntimeError(
+            f"{Path(__file__).name} cannot find the ledger loader it reuses: "
+            f"{_MATRIX_PATH}\nPoint this path at the moved file -- do NOT fork the "
+            "loader: a second reading of ledger/rows.yaml can disagree with the "
+            "first, and a ledger that disagrees with itself asserts nothing."
+        )
+    spec = importlib.util.spec_from_file_location("_ledger_matrix", _MATRIX_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_matrix = _load_matrix_module()
+BUNDLE_ROOT = _matrix.BUNDLE_ROOT
+ROWS = _matrix.ROWS
+row = _matrix.row
 
 #: The contract these rows answer to.
 CONTRACT_FILE = "contracts/engine-surface.v1.md"
@@ -209,7 +241,9 @@ def test_row_esf_017():
         )
         for key_path, value in _self_pinned_sources(doc):
             if key_path[-3:-1] != ("session", "orchestrator"):
-                pins.append((f"{path.relative_to(BUNDLE_ROOT)}:{'.'.join(key_path)}", value))
+                pins.append(
+                    (f"{path.relative_to(BUNDLE_ROOT)}:{'.'.join(key_path)}", value)
+                )
     assert not pins, (
         f"{header}"
         f"  observed:    same-repo `@ref` self-pin outside a session.orchestrator\n"
