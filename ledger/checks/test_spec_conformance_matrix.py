@@ -721,6 +721,61 @@ def test_tripwire_every_diverge_atx_row_is_asserted():
     )
 
 
+def test_tripwire_disposition_agrees_with_its_decision_record():
+    """A row's disposition may not contradict the record it cites.
+
+    This is the bidirectional-drift rule applied to the LEDGER ITSELF rather
+    than to the engine.  Flipping a row from DIVERGED to CONFORMS while its
+    decision record still records a decided divergence does not change one byte
+    of behavior -- it just makes the ledger claim we conform where the record
+    says we deliberately do not.  That is the "ledger quietly becoming a lie"
+    incident class, arriving through the ledger's own front door.
+
+    Both directions are checked: a row citing a DIVERGE-disposition record must
+    be DIVERGED, and a row citing a record with any other disposition must not
+    be.
+    """
+    history_text = HISTORY_LEDGER.read_text(encoding="utf-8")
+    diverging = diverge_disposition_atx_rows(history_text)
+    all_ids = history_ledger_ids(history_text)
+    # Only ATX-<n> ids participate: that is the population
+    # diverge_disposition_atx_rows() reads, so it is the only population whose
+    # ABSENCE from that set is meaningful.
+    atx_ids = {i for i in all_ids if i.startswith("ATX-")}
+
+    wrong: list[str] = []
+    for r in ROWS:
+        cite = (r.get("decision") or {}).get("history")
+        if not cite or cite not in atx_ids:
+            continue
+        if cite in diverging and r["disposition"] != "DIVERGED":
+            wrong.append(
+                f"    {r['id']}: disposition {r['disposition']} but {cite} is a "
+                "decided DIVERGE"
+            )
+        if cite not in diverging and r["disposition"] == "DIVERGED":
+            wrong.append(
+                f"    {r['id']}: disposition DIVERGED but {cite} records no "
+                "divergence"
+            )
+
+    assert not wrong, (
+        "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY (coverage tripwire)\n"
+        "  a ledger row's disposition contradicts the decision record it cites:\n"
+        + "\n".join(wrong)
+        + "\n"
+        "  Two legal exits -- in THIS PR, not a follow-up:\n"
+        "    1. Restore the row's disposition. The decision record is the record\n"
+        "       of decided behavior; a row does not get to overrule it silently.\n"
+        "    2. Keep the row AND move the record with it: docs/SPEC_CONFORMANCE_HISTORY.md\n"
+        "       is FROZEN, so a genuine re-decision is a new specs/EXTENSIONS.md\n"
+        "       entry (or an amendment) that the row cites instead.\n"
+        "  There is no third exit. Editing the disposition to match a new opinion,\n"
+        "  without moving the record, is the failure this ledger exists to prevent.\n"
+        "  Doing neither means main carries a ledger that lies. That is drift."
+    )
+
+
 def test_tripwire_sync_row_is_first_and_pins_the_contract():
     """LEDGER-FORMAT.md section 4: the SYNC row is row 0 and pins path + hash."""
     assert SYNC_ROW["id"].endswith("-000"), (
