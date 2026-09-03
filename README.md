@@ -126,11 +126,12 @@ see `MIGRATION.md` for before/after `.dot` snippets:
 - `feedback_from=` (EXTENSIONS.md Sec29) -- use file-mediated feedback (critique
   writes `.ai/feedback/*.md`; the generator's own prompt reads it back).
 
-`attractor lint` reports **ATTR-LINT-001** (ERROR) for one release when a graph
+`dot-runner lint` reports **ATTR-LINT-001** (ERROR) for one release when a graph
 still declares any of these five attributes, naming the migration pattern.
 
 ## Getting started
 
+<!-- historical-cli: this notice deliberately names the DELETED `attractor` command; renaming it to `dot-runner` would erase the very thing it warns about. -->
 **The `attractor` command is gone.** If you landed here from old docs or a
 bookmark expecting `attractor run ...`: that console script has been removed
 entirely (band-aid rip, no alias, no shim, no deprecation window). This
