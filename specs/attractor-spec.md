@@ -1,14 +1,14 @@
 # attractor-spec — RETIRED WORKING COPY
 
 **This working copy has been retired.** The canonical vendored snapshot is
-[`specs/canonical/attractor-spec-canonical.md`](canonical/attractor-spec-canonical.md). It is byte-identical to upstream
+[`contracts/external/attractor-spec-canonical.md`](../contracts/external/attractor-spec-canonical.md). It is byte-identical to upstream
 [strongdm/attractor](https://github.com/strongdm/attractor) @ `fb57a55` — read that file, not
 this one.
 
 ## Why
 
 This copy carried local edits that had drifted into **contradicting** the canonical snapshot after
-`SYNC-1` re-synced `specs/canonical/*` to `fb57a55`. It described a spec this project does not
+`SYNC-1` re-synced `contracts/external/*` to `fb57a55`. It described a spec this project does not
 implement and upstream does not publish. Concrete contradictions at the time of retirement:
 
 - **Five-phase lifecycle** (`:319`: `PARSE -> VALIDATE -> INITIALIZE -> EXECUTE -> FINALIZE`).
@@ -31,7 +31,7 @@ is normative, and a citation to `specs/attractor-spec.md:<line>` silently means 
 
 | Need | Go to |
 |------|-------|
-| The normative upstream spec | `specs/canonical/attractor-spec-canonical.md` (byte-identical to `fb57a55`) |
+| The normative upstream spec | `contracts/external/attractor-spec-canonical.md` (byte-identical to `fb57a55`) |
 | Where this bundle deliberately differs | `specs/EXTENSIONS.md` |
 | Disposition of each known gap | `SPEC_CONFORMANCE.md` |
 

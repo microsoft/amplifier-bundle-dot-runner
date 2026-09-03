@@ -1,6 +1,6 @@
 """Read-side pickup for a node-written ``status.json`` (Appendix C).
 
-Spec basis (canonical, verbatim -- see specs/canonical/attractor-spec-canonical.md):
+Spec basis (canonical, verbatim -- see contracts/external/attractor-spec-canonical.md):
 
     Sec 4.5 (line 709): "Status file: The handler writes ``status.json`` in
     the stage directory with the Outcome fields serialized as JSON. This

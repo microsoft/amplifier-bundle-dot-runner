@@ -1,7 +1,7 @@
 """Tests for ``--on-human-gate console`` -- argparse wiring, interviewer
 selection, and the fail-loud stdin guard.
 
-Spec basis (specs/canonical/attractor-spec-canonical.md, identical to the
+Spec basis (contracts/external/attractor-spec-canonical.md, identical to the
 fresh upstream clone at attractor/attractor-spec.md):
     Section 6.1  -- Interviewer interface.
     Section 6.4  -- "ConsoleInterviewer (CLI): Reads from standard input.

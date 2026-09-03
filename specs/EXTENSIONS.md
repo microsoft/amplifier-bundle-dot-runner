@@ -2,7 +2,19 @@
 
 Documented divergences and additions relative to the canonical attractor nlspec at
 [github.com/strongdm/attractor](https://github.com/strongdm/attractor). The current
-canonical snapshot lives at `specs/canonical/attractor-spec-canonical.md`.
+canonical snapshot lives at `contracts/external/attractor-spec-canonical.md`.
+
+**Role under the Converge layout (2026-09-02).** This file is the repo's
+**decision-record store**: the place where a decided divergence from the external
+contract is argued, evidenced, and dated. `ledger/rows.yaml`'s `DIVERGED` rows cite
+entries here — a `DIVERGED` row without a decision record is a ledger that asserts a
+decision nobody made. The extensions themselves are **not clauses of the external
+contract** and therefore carry no ledger rows of their own; they are governed by this
+file **pending promotion to an owned contract** (`contracts/engine-surface.v1`,
+forthcoming). Until that contract exists, an extension's record lives here and nowhere
+else. See `docs/VISION.md` for the compatibility doctrine that decides every disposition
+below, and `ledger/rows.yaml`'s header for the extension rows removed from the ledger
+when it was reshaped.
 
 **All extensions are backward-compatible with the canonical spec — community `.dot` files
 written against the canonical spec should continue to work without modification.**
@@ -12,7 +24,7 @@ before assuming it is a bug.
 
 An extension motivated by a recipe-shaped or other non-attractor consumer meets this
 identical bar — see the Compatibility doctrine's rule 5 ("Anchoring survives scope") in
-`SPEC_CONFORMANCE.md`.
+`docs/VISION.md`.
 
 ---
 

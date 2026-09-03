@@ -8,7 +8,7 @@ Both predecessors delegated the agentic tool loop to
 one place instead of two.
 
 Cites (nlspec-first gate, AGENTS.md -- spec text is never restated here):
-  - specs/canonical/attractor-spec-canonical.md Sec1.4/Sec4.5 (backend
+  - contracts/external/attractor-spec-canonical.md Sec1.4/Sec4.5 (backend
     delegation -- "what that backend does internally is entirely up to the
     implementor").
   - specs/EXTENSIONS.md Sec12/Sec13 (fidelity=full continuity realization,

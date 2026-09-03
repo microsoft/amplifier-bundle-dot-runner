@@ -11,7 +11,7 @@ spec-adjacent behavior, ask yourself: **"Did you check what the
 strongdm/attractor nlspec has to say about this first?"**
 
 1. **Check the nlspec first.** The canonical, pinned copies live in
-   `specs/canonical/`. Cite the section (e.g. "attractor-spec-canonical.md
+   `contracts/external/`. Cite the section (e.g. "attractor-spec-canonical.md
    §5.2") in your issue, PR, or design doc.
 2. **Conform-fixes are easy yeses.** If the nlspec clearly defines the
    behavior and we implement it wrong or not at all, that's a "yes, fix it"
