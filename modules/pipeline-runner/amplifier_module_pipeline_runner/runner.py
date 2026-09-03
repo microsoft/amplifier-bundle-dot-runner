@@ -67,7 +67,9 @@ PROVIDER_KEY_ENV: dict[str, str] = {
 
 # Reserved context keys that seed_context sets itself -- a user --param may
 # not collide with these (see seed_context's reserved-key guard).
-_RESERVED_CONTEXT_KEYS: frozenset[str] = frozenset({"context.target_dir"})
+_RESERVED_CONTEXT_KEYS: frozenset[str] = frozenset(
+    {"context.target_dir", "graph.params_values"}
+)
 
 # In-process cache: load the base bundle once; install deps once, then reuse
 # the offline path for subsequent runs in the same process.
@@ -186,7 +188,17 @@ def seed_context(
     silently overwriting a reserved key (or being silently overwritten by
     the reserved-key seed below) would be confusing and non-obvious.
 
-    There is intentionally only ONE reserved key -- ``context.target_dir``.
+    Two reserved keys are seeded. ``context.target_dir`` (above), and the
+    ``graph.params_values`` MAPPING -- the whole ``params`` dict under one
+    key, alongside (not instead of) the flat keys.
+
+    The mapping is what the engine reads for the two mechanisms that need
+    the SET rather than one value: ``transforms.expand_variables`` for
+    node-level ``$param`` in prompts, and every child/manager-child
+    ``parse_dot`` call for graph-level ``"$name"`` attributes
+    (EXTENSIONS.md entry 43 and its 2026-09-02 addendum). Flat keys cannot
+    serve either -- neither consumer knows the key names in advance.
+
     ``context.work_dir`` is deliberately NOT set; the engine does not read it.
 
     Args:
@@ -206,6 +218,17 @@ def seed_context(
         context.set(key, str(value))
 
     context.set("context.target_dir", str(cwd))
+
+    # The mapping form, seeded alongside the flat keys above. Without it this
+    # entry path is the one place a graph-level `"$name"` attribute can never
+    # resolve, no matter what the caller passed: PipelineHandler/ManagerLoop
+    # parse a child with `context.get("graph.params_values")`, and the mounted
+    # orchestrator (loop-pipeline/__init__.py) was the only writer -- so
+    # `--param max_duration=19800s` on the CLI reached tool_command and NOT the
+    # child's own parse, producing a failure whose diagnostic told the operator
+    # to pass the flag they had just passed. `str()` per value matches the flat
+    # seeding above so both forms agree on type.
+    context.set("graph.params_values", {k: str(v) for k, v in params.items()})
 
 
 async def _load_graph(
