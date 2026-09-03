@@ -24,7 +24,9 @@ from pathlib import Path
 def _find_bundle_root() -> Path:
     """Walk up to the repo root (the dir holding both `docs/` and `modules/`)."""
     for candidate in Path(__file__).resolve().parents:
-        if (candidate / "docs").is_dir() and (candidate / "modules" / "loop-pipeline").is_dir():
+        if (candidate / "docs").is_dir() and (
+            candidate / "modules" / "loop-pipeline"
+        ).is_dir():
             return candidate
     raise AssertionError(
         "Could not locate the bundle root from "
@@ -172,7 +174,7 @@ def test_guard_recognizes_every_shipped_subcommand():
 
     shipped = set(_ADD_PARSER_RE.findall(cli_source.read_text(encoding="utf-8")))
     assert shipped, (
-        f"Found no `sub.add_parser(\"...\")` calls in {_CLI_SOURCE_REL}. The "
+        f'Found no `sub.add_parser("...")` calls in {_CLI_SOURCE_REL}. The '
         "parser is built some other way now; re-anchor _ADD_PARSER_RE rather "
         "than leaving this guard matching nothing."
     )
