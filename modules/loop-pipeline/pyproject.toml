@@ -83,7 +83,14 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# `../../ledger/checks` is the repo-level conformance ledger's check suite. Its
+# behavioral probes drive THIS engine, so they must run in THIS module's venv --
+# but the ledger they execute (`ledger/rows.yaml`) and the contract it quotes
+# (`contracts/external/`) are repo-level artifacts, not this module's. Listing
+# the directory here is what makes `uv run pytest -q` from this module discover
+# and run them; without it the ledger would be a file nothing executes, which is
+# the exact "remembered audit" LEDGER-FORMAT.md section 1 warns about.
+testpaths = ["tests", "../../ledger/checks"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
 

@@ -142,13 +142,20 @@ jobs:
         run: .venv-root-install/bin/dot-runner --help
 
   conformance-matrix:
-    # Separate, distinctly-named job so a failure here reads as "the spec
-    # conformance matrix broke" rather than a generic unit-test failure.
+    # Separate, distinctly-named job so a failure here reads as "the conformance
+    # ledger broke" rather than a generic unit-test failure.
     # DESIGN-repo-split.md S2 (constraint #2): this is a REPACKAGING, zero
-    # semantic change -- all 38 rows in specs/conformance/attractor-matrix.yaml
-    # must pass UNMODIFIED. An edited row (beyond a file-path adjustment) is
-    # a failed move, not a passing gate.
-    name: Conformance Matrix (specs/conformance/attractor-matrix.yaml, all rows)
+    # semantic change -- all 38 rows in ledger/rows.yaml must pass UNMODIFIED.
+    # An edited row (beyond a file-path adjustment) is a failed move, not a
+    # passing gate.
+    #
+    # The checks live at ledger/checks/ (repo level, because the ledger and the
+    # contract it quotes are repo-level artifacts) but RUN in loop-pipeline's
+    # venv, because their behavioral probes drive that engine in-process. They
+    # are also picked up by the unit-tests job for this module via that module's
+    # pytest `testpaths`; this job exists to name the failure, not to be their
+    # only run.
+    name: Conformance Ledger (ledger/rows.yaml, all rows)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -164,9 +171,9 @@ jobs:
         working-directory: modules/loop-pipeline
         run: uv sync --extra remote
 
-      - name: Run conformance matrix suite
+      - name: Run conformance ledger checks
         working-directory: modules/loop-pipeline
-        run: uv run pytest tests/test_spec_conformance_matrix.py -v
+        run: uv run pytest ../../ledger/checks -v
 
   dot-render-gate:
     # This repo carries tracked *.dot fixtures under modules/*/tests/fixtures/

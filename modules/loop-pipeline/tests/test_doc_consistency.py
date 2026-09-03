@@ -126,7 +126,7 @@ def test_authoring_guide_reasoning_effort_default_matches_engine():
     the author (node attr), a ``model_stylesheet`` rule, or a profile sets it.
     The guide shipped Appendix A's ``high`` in that cell as though it held on
     this engine; it does not, and the divergence is decided and ledgered
-    (SPEC_CONFORMANCE.md ATX-14, specs/EXTENSIONS.md section 39, issue #234 F4).
+    (ATX-14, specs/EXTENSIONS.md section 39, issue #234 F4).
 
     Two-sided, D-240 style: asserting the CODE first means introducing an
     engine default fails here naming the ledger entries that must move with
@@ -142,9 +142,9 @@ def test_authoring_guide_reasoning_effort_default_matches_engine():
     assert Node(id="n").reasoning_effort is None, (
         "Node.reasoning_effort now has a dataclass default of "
         f"{Node(id='n').reasoning_effort!r}. That is the divergence "
-        "SPEC_CONFORMANCE.md ATX-14 / specs/EXTENSIONS.md section 39 decided "
+        "ATX-14 / specs/EXTENSIONS.md section 39 decided "
         "AGAINST re-introducing (issue #234 F4). If this is a deliberate "
-        "re-decision, move both ledger entries, matrix row ATX-M-F04, and "
+        "re-decision, move both decision records, ledger row ATX-M-F04, and "
         "docs/DOT-AUTHORING-GUIDE.md's reasoning_effort row in the same PR."
     )
     graph = parse_dot(

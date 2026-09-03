@@ -33,6 +33,6 @@ is normative, and a citation to `specs/attractor-spec.md:<line>` silently means 
 |------|-------|
 | The normative upstream spec | `contracts/external/attractor-spec-canonical.md` (byte-identical to `fb57a55`) |
 | Where this bundle deliberately differs | `specs/EXTENSIONS.md` |
-| Disposition of each known gap | `SPEC_CONFORMANCE.md` |
+| Disposition of each known gap | `docs/SPEC_CONFORMANCE_HISTORY.md` (frozen record) |
 
 Retired 2026-08-14 (maintainer ruling, documentation/spec-alignment wave).

@@ -845,7 +845,7 @@
   assertion:
     kind: indexed
     indexed:
-      - modules/loop-pipeline/tests/test_spec_conformance_batch.py
+      - ledger/checks/test_spec_conformance_batch.py
 
 - id: ATX-M-116
   title: default should_retry -- transient retryable, auth/400/validation terminal

@@ -1,7 +1,7 @@
 # Working in this repo
 
 `amplifier-bundle-dot-runner` implements the vendored **strongdm/attractor**
-nlspec faithfully (see `README.md` "Spec fidelity" and `SPEC_CONFORMANCE.md`).
+nlspec faithfully (see `README.md` "Spec fidelity" and `docs/VISION.md`).
 This file exists to make sure that stays true as the repo evolves.
 
 ## Before you design, file, or submit
@@ -21,7 +21,7 @@ strongdm/attractor nlspec has to say about this first?"**
    met *outside* the engine first: an extension/wrapper, pre/post-processing,
    or composing pipelines into something larger. Prefer those over touching
    the engine.
-4. **True extensions/divergences face the hard bar.** `SPEC_CONFORMANCE.md`'s
+4. **True extensions/divergences face the hard bar.** `docs/VISION.md`'s
    Compatibility doctrine (including rule 5, "Anchoring survives scope") plus
    a ledgered `specs/EXTENSIONS.md` entry are required — this is not the
    wild-west. "The spec didn't anticipate this shape" is a reason to file an
@@ -33,5 +33,6 @@ strongdm/attractor nlspec has to say about this first?"**
    `specs/EXTENSIONS.md`), and the preferred first answer to "the spec
    doesn't do X" is a different pipeline design, not a new feature.
 
-See `SPEC_CONFORMANCE.md` for the full doctrine and the deviation ledger, and
+See `docs/VISION.md` for the full doctrine, `ledger/rows.yaml` for the
+asserted ledger, `specs/EXTENSIONS.md` for the decision records, and
 `specs/EXTENSIONS.md` for every documented extension/divergence.
