@@ -1,39 +1,32 @@
 # CONTRACT: engine surface beyond the nlspec, v1
 
-> **DRAFT.** Not FROZEN. Only the owner stamps FROZEN, by editing the `status:`
-> line below and adding a dated Changelog entry. Freeze Bar evidence — condition
-> by condition, clause by clause — is in the sibling
-> `FREEZE-PACKET-engine-surface.v1.md`. This contract does not self-stamp, and
-> until it is stamped nothing here binds a lane.
+> **DRAFT.** Only the owner stamps FROZEN, by editing `status:` below and adding a
+> dated Changelog entry. Freeze Bar evidence — condition by condition, clause by
+> clause — is in the sibling `FREEZE-PACKET-engine-surface.v1.md`. This contract
+> does not self-stamp; until stamped, nothing here binds a lane.
 
-- **id:** `CONTRACT-engine-surface.v1` · **version:** 1.0.0 · **status:** **DRAFT**
-- **date:** 2026-09-02 · **owner:** maintainer
-- **repo:** `microsoft/amplifier-bundle-dot-runner`
+- **id:** `CONTRACT-engine-surface.v1` · **version:** 1.0.0 · **status:** **DRAFT** · **date:** 2026-09-02
+- **owner:** maintainer · **repo:** `microsoft/amplifier-bundle-dot-runner`
 
 **Scope.** The behavior of this engine **beyond** the external nlspec vendored at
-`contracts/external/attractor-spec-canonical.md`. That nlspec is governed
-upstream and asserted clause-by-clause in `ledger/rows.yaml`; **this file governs
-the surface it does not.** Core clauses are derived, one per live extension
-surface, from `specs/EXTENSIONS.md` — the decision-record store that has carried
-these surfaces "pending promotion to an owned contract
-(`contracts/engine-surface.v1`, forthcoming)". This is that contract. Each
-clause names the sections it derives from; that `From` line **is** the
-derivation, and a clause citing no live section is not a clause.
+`contracts/external/attractor-spec-canonical.md`. That nlspec is governed upstream and
+asserted clause-by-clause in `ledger/rows.yaml`; **this file governs the surface it does
+not.** Core clauses are derived, one per live extension surface, from
+`specs/EXTENSIONS.md` — the decision-record store that has carried these surfaces "pending
+promotion to an owned contract (`contracts/engine-surface.v1`, forthcoming)". This is that
+contract. Each clause names the sections it derives from; that `From` line **is** the
+derivation, and a clause citing no live section is not a clause. Out of scope: anything the
+nlspec already governs; `contracts/recipe-substrate.v1.md`'s five proposed engine changes
+(a separate, paused DRAFT, not duplicated here); anything EXTENSIONS marks REMOVED/ABSORBED.
 
-**Out of scope.** Anything the nlspec already governs. The five proposed engine
-changes in `contracts/recipe-substrate.v1.md` — a separate, paused DRAFT, not
-duplicated here. Anything EXTENSIONS marks REMOVED or ABSORBED.
-
-**Census, the negative half — stated so it can be checked.** All 44 EXTENSIONS
-sections were read. Excluded, with cause: **§1–§7**, ABSORBED UPSTREAM @
-`fb57a55` (the nlspec is the normative text); **§16** `runs_on` /
-`continue_on_fail`, **§17** `requires=` / `outputs=`, **§29** `feedback_from=`,
-REMOVED 2026-08-30 (`feat/extensions-rip-3`); **§23** `response_schema` and
-**§18**'s `k_of_n` / `quorum`, REMOVED 2026-08-31
-(`feat/extensions-walkback-2`); **§35**'s `report_outcome` transport, REMOVED
-2026-08-30 (WAVE 5); the **T0-4** note, a restoration of nlspec behavior and so
-`ledger/rows.yaml`'s row `ATX-10`, not ours. Every other section is LIVE and
-appears in exactly one Core clause.
+**Census, the negative half — stated so it can be checked.** All 44 EXTENSIONS sections were
+read. Excluded, with cause: **§1–§7**, ABSORBED UPSTREAM @ `fb57a55` (the nlspec is the
+normative text); **§16** `runs_on`/`continue_on_fail`, **§17** `requires=`/`outputs=`, **§29**
+`feedback_from=`, REMOVED 2026-08-30 (`feat/extensions-rip-3`); **§23** `response_schema` and
+**§18**'s `k_of_n`/`quorum`, REMOVED 2026-08-31 (`feat/extensions-walkback-2`); **§35**'s
+`report_outcome` transport, REMOVED 2026-08-30 (WAVE 5); the **T0-4** note, a restoration of
+nlspec behavior and so `ledger/rows.yaml`'s `ATX-10`, not ours. Every other section is LIVE
+and appears in exactly one Core clause.
 
 ---
 
@@ -47,8 +40,7 @@ appears in exactly one Core clause.
 3. Precedence, highest first: the node's `worker=`; the run-level default; the capability fallback (`spawn` when `session.spawn` resolved, else `llm-direct`).
 4. An unrecognized name — on a node or as a run default — raises `ValueError` **naming every known worker**; never a silent fallback. A retired name (`direct`, `loop-agent`) fails loud with a `renamed: '<old>' -> '<new>'` hint, which is an error message, not a working alias.
 5. A bare invocation — no `worker=`, no `bundle=` — resolves to `amplifier-agent` unconditionally on **both** seams, through one shared resolver.
-6. A configured default worker whose module is absent or broken **fails loud**. Degrading to `llm-direct` with a stderr notice is deleted behavior, not deprecated behavior. `worker=` and `bundle=` are mutually exclusive: passing both raises immediately rather than silently overriding one. The seams differ only in mechanism — the CLI exits non-zero, the library raises the catchable `WorkerResolutionError`.
-7. `WorkerRegistry.register` refuses a worker missing `clone()` or `close()`.
+6. A configured default worker whose module is absent or broken **fails loud**. Degrading to `llm-direct` with a stderr notice is deleted behavior, not deprecated behavior. `worker=` and `bundle=` are mutually exclusive: passing both raises immediately rather than silently overriding one. The seams differ only in mechanism — the CLI exits non-zero, the library raises the catchable `WorkerResolutionError`. `WorkerRegistry.register` refuses a worker missing `clone()` or `close()`.
 
 **Probe.** *Given* a node with `worker="direct"`, *When* its worker is resolved, *Then* a `ValueError` naming both `llm-direct` and `renamed` is raised and no node executes; *and given* a broken configured default, *Then* resolution fails loud rather than returning `llm-direct`.
 
@@ -96,7 +88,7 @@ appears in exactly one Core clause.
 4. Declaring either provider under `llm-direct` fails loud **before** the generic no-adapter error, naming the fix: add `--worker coding-agent` (or `amplifier-agent`), or use `anthropic` / `openai` / `gemini`.
 5. A node with an explicit `llm_provider` and no `llm_model` resolves a **family token**, never a literal model id, live: `anthropic` → `sonnet` (stable only); `openai` → `gpt-5.*[0-9]` (stable only, anchored so `-mini` / `-codex` siblings cannot outrank the bare release); `gemini` → `gemini-3*pro*` (stable-only filtering disabled, because the flagship is itself preview-named). Rung order is otherwise unchanged: explicit `llm_model`, then `model_stylesheet`, then the unimplemented graph-level default, then this.
 6. A node with **neither** `llm_model` nor `llm_provider` still fails loud. An unknown provider fails loud naming the provider and the known-defaults set — never a silent guess. The two subscription providers have no rung-4 row and none is planned: a family token for either fails loud before any live resolve, naming the fix (an explicit concrete id, or none at all).
-7. When exactly one provider is mounted, a node declaring no `llm_provider` defaults to it. Zero or multiple mounted preserves the literal `anthropic` fallback, unchanged.
+7. When exactly one provider is mounted, a node declaring no `llm_provider` defaults to it; zero or multiple mounted preserves the literal `anthropic` fallback, unchanged.
 
 **Probe.** *Given* an environment with only `GITHUB_TOKEN` set and a DOT source declaring no `llm_provider`, *Then* `github-copilot` is **not** configured; *and* the same environment with a node declaring it **does** configure it; *and* `llm_provider="anthropic"` with no `llm_model` resolves a concrete stable Sonnet id.
 
@@ -183,7 +175,7 @@ appears in exactly one Core clause.
 
 1. **`$param` / `${key}`** (§21): prompt and attribute substitution accepts these alongside `$goal`, resolved against pipeline context by plain string replacement — substitution, never templating.
 2. **Tool node** (§20): `shape=tool` accepts `parse_json` and `tool_env`, and exposes routing key `tool.last_line` alongside `tool.output`.
-3. **`wait.human` freeform** (§19): a gate may accept open text and file attachments, not only accelerator-key choices; accelerator-key gates behave as in canonical.
+3. **`wait.human` freeform** (§19): `mode="freeform"` accepts open text rather than only accelerator-key choices, and `description` / `attachments_inline` / `attachments_ref` enrich the question with files (each attachment read up to a byte cap, an unreadable one skipped with a warning rather than failing the gate). Accelerator-key gates behave as in canonical.
 4. **`allow_partial` on timeout** (§14): the canonical attribute gains a second trigger — a node timeout yields `PARTIAL_SUCCESS` rather than FAIL. Call sites accept `True` and `"true"` alike.
 5. **`error_policy`** (§18, retained half): `fail_fast` / `continue` / `ignore` on a parallel node remain load-bearing; `k_of_n` and `quorum` are removed and reserved.
 
@@ -223,8 +215,7 @@ appears in exactly one Core clause.
 
 ## Backlogged
 
-Candidate clauses with named promotion triggers. None binds today.
-
+*Candidate clauses with named promotion triggers; none binds today.*
 - **B1 — Preflight beyond the statically detectable class** (§36's own residual): the implicit default provider, nested child graphs, and key *validity* are out of scope. **Trigger:** a measured run that drains budget on a misconfiguration this preflight could not have seen.
 - **B2 — `must_write=`'s delayed-replant window and session attribution** (§27's residual, documented by `test_case4_delayed_replant_informational`). **Trigger:** a measured false pass caused by an external writer landing inside the window.
 - **B3 — Retired worker-name hints** (C1.4). **Trigger:** the one-release migration window closes; the hint is then deleted, not softened.
@@ -236,31 +227,23 @@ Candidate clauses with named promotion triggers. None binds today.
 
 ## Reserved
 
-Names held — removed or never built — not to be reintroduced without an amendment.
-
+*Names held — removed or never built — not reintroduced without an amendment.*
 - **Removed graph vocabulary:** `runs_on` and `continue_on_fail` as *routing* attributes (§16; `continue_on_fail`'s interaction with C3.4 is the only surviving mention), `requires=` / `outputs=` (§17), `response_schema` (§23), `feedback_from=` (§29), and `join_policy=k_of_n` / `quorum` with `min_success` / `quorum_fraction` (§18).
 - **`report_outcome`** (§35, WAVE 5): the tool module is deleted and `metadata.report_outcome` is dead end-to-end; the name is reserved. **Open — needs an owner ruling:** `loop-agent`'s batch **ordering barrier** still keys on a tool named `report_outcome` (`agent_session.py`), and a `report_outcome_convergence.dot` fixture survives. WAVE 5's deletion list does not name the barrier and the EXTENSIONS body still asserts it, so this contract deliberately states no clause about it.
 - **Retired worker names** `direct` and `loop-agent`: reserved as fail-loud rename hints only (C1.4).
 - **Edge-level fan-out** (T0-4): retired; that behavior belongs to the nlspec and is asserted at `ledger/rows.yaml`'s `ATX-10`, not here.
 - **The nlspec's own surface:** no clause here may restate or contradict a clause of `contracts/external/attractor-spec-canonical.md`. Where this engine departs from it, the departure is a ledger row with a decision record — C8.1, C8.2, C11, C12, C13, C15.1 and C16.2 are those departures, named as such.
 
----
-
 ## Conformance
 
-Per-clause fixtures and checks, and the Freeze Bar's condition-by-condition
-state, are in `contracts/FREEZE-PACKET-engine-surface.v1.md`. Ledger rows
-deriving from these clauses are a separate lane's work: **no `ledger/rows.yaml`
-row derives from this contract yet**, and none may until it is stamped.
-
----
+Per-clause fixtures and checks, and the Freeze Bar's condition-by-condition state, are in
+`contracts/FREEZE-PACKET-engine-surface.v1.md`. **No `ledger/rows.yaml` row derives from this
+contract yet**, and none may until it is stamped; seeding them is a separate lane's work.
 
 ## Changelog
 
-- **1.0.0 — 2026-09-02 — DRAFT.** Initial draft: the contract this repo owns for
-  engine behavior beyond the external nlspec. Seventeen Core clauses derived, one
-  per live extension surface, from a full census of `specs/EXTENSIONS.md` §1–§44
-  — the promotion that file's own header has been pointing at ("pending promotion
-  to an owned contract"). Decided in-document: `report_outcome`'s ordering barrier
-  is **not** clause material until the owner rules on it (Reserved).
-  Not stamped, not ledgered, binds nothing.
+- **1.0.0 — 2026-09-02 — DRAFT.** Initial draft: the contract this repo owns for engine
+  behavior beyond the external nlspec. Seventeen Core clauses derived, one per live extension
+  surface, from a full census of `specs/EXTENSIONS.md` §1–§44 — the promotion that file's own
+  header has been pointing at. Decided in-document: `report_outcome`'s ordering barrier is
+  **not** clause material until the owner rules on it (Reserved). Not stamped, not ledgered.
