@@ -332,7 +332,10 @@ async def test_load_remote_cleanup_called_when_parse_fails(tmp_path, monkeypatch
 
         shutil.rmtree(view_dir, ignore_errors=True)
 
-    async def _fake_materialize(_source: str):
+    # Accepts and RECORDS params rather than dropping it -- same discipline PR
+    # #42 applied to test_orchestrator_source_dir's loader double. A double
+    # that silently swallows the kwarg lets a regression on this path pass.
+    async def _fake_materialize(_source: str, *, params: dict[str, str] | None = None):
         return entry_path, _cleanup
 
     def _raising_parse_dot(_text: str, params: dict[str, str] | None = None):
@@ -348,3 +351,90 @@ async def test_load_remote_cleanup_called_when_parse_fails(tmp_path, monkeypatch
 
     assert cleanup_calls == [True]
     assert not view_dir.exists()
+
+
+# --- graph-level `$name` params must reach the MATERIALIZE-time parse too ---
+# EXTENSIONS.md entry 43's 2026-09-02 addendum. `extract_dot_file_refs` parses
+# each fetched file IN FULL (it uses the real parser rather than a regex, by
+# design), so a graph-level `"$name"` duration attribute is resolved during the
+# tree walk -- long before `load_remote_or_local_graph`'s own params-aware
+# parse of the materialized entry. Discovered by the all-call-sites guard in
+# test_graph_param_child_inheritance.py; see that file's docstring.
+
+_PARAM_DOT = """digraph Remote {
+  graph [max_pipeline_duration="$max_duration", params="max_duration"];
+  s [shape=Mdiamond];
+  c [shape=folder, dot_file="child.dot"];
+  d [shape=Msquare];
+  s -> c;
+  c -> d;
+}"""
+
+
+class _Origin:
+    """Minimal stand-in for a Layer A Origin (only the fields the error path reads)."""
+
+    owner = "acme"
+    repo = "samples"
+    ref = "main"
+    path = "pipelines/main.dot"
+
+
+def test_extract_dot_file_refs_resolves_a_graph_level_param():
+    """With the mapping supplied, the ref scan parses and returns the refs."""
+    from amplifier_module_loop_pipeline.remote_dot import extract_dot_file_refs
+
+    refs = extract_dot_file_refs(
+        _PARAM_DOT, origin=_Origin(), params={"max_duration": "19800s"}
+    )
+    assert refs == ["child.dot"]
+
+
+def test_extract_dot_file_refs_without_the_param_still_fails_loud():
+    """Threading params must not turn the missing-param case into a silent pass.
+
+    This is the half that matters: the fix supplies the mapping, it does NOT
+    weaken the declarative-only contract. An absent param is still a loud
+    failure, now surfaced as the remote layer's own parse error.
+    """
+    from amplifier_module_loop_pipeline.remote_dot import extract_dot_file_refs
+
+    with pytest.raises(remote_source.RemoteFetchParseError, match="max_duration"):
+        extract_dot_file_refs(_PARAM_DOT, origin=_Origin())
+
+
+@pytest.mark.asyncio
+async def test_load_remote_forwards_params_to_materialize(tmp_path, monkeypatch):
+    """`load_remote_or_local_graph` must hand params to the materialize step.
+
+    Regression pin for the discovered gap: the remote path parsed the ENTRY
+    with params but walked the TREE without them, so a remote pipeline
+    carrying `max_pipeline_duration="$max_duration"` failed at materialize
+    time no matter what the caller supplied.
+    """
+    import amplifier_module_loop_pipeline.remote_dot as remote_dot_mod
+
+    entry_path = tmp_path / "main.dot"
+    entry_path.write_text(
+        'digraph G { s [shape=Mdiamond]; d [shape=Msquare]; s -> d }',
+        encoding="utf-8",
+    )
+    seen: list[dict[str, str] | None] = []
+
+    async def _fake_materialize(_source: str, *, params: dict[str, str] | None = None):
+        seen.append(params)
+        return entry_path, (lambda: None)
+
+    monkeypatch.setattr(remote_dot_mod, "materialize_remote_dot", _fake_materialize)
+
+    graph, cleanup = await load_remote_or_local_graph(
+        "git+https://github.com/acme/samples@main#subdirectory=pipelines/main.dot",
+        params={"max_duration": "19800s"},
+    )
+    cleanup()
+
+    assert seen == [{"max_duration": "19800s"}], (
+        "materialize_remote_dot must receive the same param mapping the entry "
+        "parse gets -- the tree walk parses every fetched file"
+    )
+    assert "s" in graph.nodes
