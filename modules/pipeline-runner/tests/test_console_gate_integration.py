@@ -7,7 +7,7 @@ edge selection -- not a silent auto-approve/first-choice fallback -- by
 running a minimal two-choice hexagon gate and asserting the SECOND choice's
 edge is the one actually taken when "B\\n" is piped in.
 
-Spec basis (specs/canonical/attractor-spec-canonical.md, identical to the
+Spec basis (contracts/external/attractor-spec-canonical.md, identical to the
 fresh upstream clone at attractor/attractor-spec.md):
     Section 6.1  -- Interviewer interface (``ask``/``ask_multiple``/``inform``).
     Section 6.4  -- "ConsoleInterviewer (CLI): Reads from standard input.

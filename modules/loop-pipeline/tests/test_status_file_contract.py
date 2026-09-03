@@ -1,6 +1,6 @@
 """Status-file contract (canonical spec Sec 4.5 + Appendix C) -- read side.
 
-Spec basis (specs/canonical/attractor-spec-canonical.md):
+Spec basis (contracts/external/attractor-spec-canonical.md):
 
   Sec 4.5, line 709: "Status file: The handler writes ``status.json`` in
   the stage directory with the Outcome fields serialized as JSON. This

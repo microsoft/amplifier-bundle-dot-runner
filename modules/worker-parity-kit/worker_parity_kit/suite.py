@@ -262,7 +262,7 @@ _PROBE_CONFIG: dict[str, dict[str, Any]] = {
     # orchestrator_config['llm_provider']" while provider_preferences exists
     # purely to carry the model) -- the task's cited "spec sec8.5" maps to
     # the Model Stylesheet's Application Order section in
-    # specs/canonical/attractor-spec-canonical.md, not to provider
+    # contracts/external/attractor-spec-canonical.md, not to provider
     # precedence; no spec section actually governs provider_preferences
     # precedence today, so the REAL authority cited here is the backend.py
     # comment + each worker's own README ("gap 4" for loop-amplifier-agent).

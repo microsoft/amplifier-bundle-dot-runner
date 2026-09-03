@@ -42,7 +42,7 @@ docs) lives in the repos that consume this one.
 | `modules/tool-apply-patch` | v4a unified-diff patch-apply tool module. |
 | `modules/tool-dashboard-query` | Dashboard HTTP query tool module. |
 | `modules/tool-pipeline-status` | Pipeline execution state query tool module. |
-| `specs/canonical/` | Byte-pinned vendored copies of the upstream `strongdm/attractor`, `coding-agent-loop`, and `unified-llm` nlspecs. |
+| `contracts/external/` | Byte-pinned vendored copies of the upstream `strongdm/attractor`, `coding-agent-loop`, and `unified-llm` nlspecs. |
 | `specs/EXTENSIONS.md` | Append-only ledger of every place this implementation extends or deviates from the canonical specs. |
 | `specs/conformance/attractor-matrix.yaml` | The conformance matrix: one row per normative statement cluster, each runner-verified against canonical spec bytes. |
 | `SPEC_CONFORMANCE.md` | Compat doctrine + deviation ledger, human-readable. |
@@ -90,7 +90,7 @@ attractor-specific vision/contracts docs, see
 This is a **repackaging, not a rewrite**. Engine behavior is byte-identical
 to its pre-extraction form where testable:
 
-- `specs/canonical/attractor-spec-canonical.md` — the byte-pinned
+- `contracts/external/attractor-spec-canonical.md` — the byte-pinned
   `strongdm/attractor` snapshot this engine implements.
 - `specs/conformance/attractor-matrix.yaml` — 38 rows, each citing a
   verbatim spec quote and an in-process engine probe against it. All 38

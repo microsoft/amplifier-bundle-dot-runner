@@ -325,7 +325,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # --- Human-gate policy: default fail-loud; auto-approve/console are opt-in ---
     #
-    # Spec basis (specs/canonical/attractor-spec-canonical.md -- identical to
+    # Spec basis (contracts/external/attractor-spec-canonical.md -- identical to
     # the fresh upstream clone at attractor/attractor-spec.md):
     #   Section 6.1 -- Interviewer interface (ask/ask_multiple/inform).
     #   Section 6.4 -- "ConsoleInterviewer (CLI): Reads from standard input.
