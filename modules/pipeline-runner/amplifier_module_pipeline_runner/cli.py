@@ -222,6 +222,21 @@ def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
     )
     lint_p.add_argument("dot_file", help="path to a .dot file to lint")
     lint_p.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        metavar="k=v",
+        help=(
+            "graph-level parameter mapping, same syntax as `run`. Needed only "
+            "to LINT a graph whose graph-level duration attribute holds a bare "
+            "`$name` token (EXTENSIONS.md entry 43) -- such a graph cannot be "
+            "parsed at all without its param, so it could not be linted "
+            "before this flag existed. The value is never executed; any "
+            "placeholder that parses (e.g. --param max_duration=1s) is enough "
+            "for a lint-only run."
+        ),
+    )
+    lint_p.add_argument(
         "--strict",
         action="store_true",
         default=False,
@@ -662,8 +677,19 @@ def cmd_lint(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Graph-level `$name` params (EXTENSIONS.md entry 43) resolve at PARSE
+    # time, so a graph carrying `max_pipeline_duration="$max_duration"` cannot
+    # be parsed -- and therefore cannot be linted -- without its mapping. Lint
+    # never executes anything, so any parseable placeholder suffices; the flag
+    # exists so the shipped `$`-token graphs are lintable at all.
     try:
-        graph = parse_dot(dot_source)
+        params = parse_params(getattr(args, "param", []) or [])
+    except ValueError as e:
+        print(f"{prog} lint: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        graph = parse_dot(dot_source, params=params)
     except Exception as e:  # noqa: BLE001 -- fail loud with the real error, no fallback
         print(f"{prog} lint: failed to parse {dot_path}: {e}", file=sys.stderr)
         return 1

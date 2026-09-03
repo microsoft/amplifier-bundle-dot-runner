@@ -50,12 +50,23 @@ def _cross_origin_local_relpath(referrer, child) -> str:
     return posixpath.relpath(_repo_root_relpath(child), referrer_dir)
 
 
-def extract_dot_file_refs(text: str, *, origin) -> list[str]:
-    """Return all raw dot_file= values, using the engine's own parser (no regex)."""
+def extract_dot_file_refs(
+    text: str, *, origin, params: dict[str, str] | None = None
+) -> list[str]:
+    """Return all raw dot_file= values, using the engine's own parser (no regex).
+
+    ``params`` is threaded through to ``parse_dot`` for the same reason every
+    other parse site takes it (EXTENSIONS.md entry 43 + its 2026-09-02
+    addendum): this scan parses the FULL remote text, so a graph-level
+    ``"$name"`` duration attribute is resolved here too. Without it, a remote
+    pipeline carrying ``max_pipeline_duration="$max_duration"`` failed at
+    MATERIALIZE time -- before ``load_remote_or_local_graph``'s own
+    params-aware parse was ever reached -- no matter what the caller supplied.
+    """
     from amplifier_module_remote_source import RemoteFetchParseError  # lazy
 
     try:
-        graph = parse_dot(text)
+        graph = parse_dot(text, params=params)
     except Exception as exc:  # noqa: BLE001
         raise RemoteFetchParseError(
             f"Failed to parse DOT from {origin.owner}/{origin.repo}"
@@ -106,12 +117,19 @@ async def materialize_remote_dot(
     token: str | None = None,
     cache=None,
     base_url: str | None = None,
+    params: dict[str, str] | None = None,
 ) -> tuple[Path, Callable[[], None]]:
     """Materialize a remote pipeline tree into a per-run local view.
 
     Returns (entry_local_path, cleanup). Blobs persist in the shared cache;
     ``cleanup()`` removes only the per-run view dir. On failure the partial view
     is removed here (nothing has executed yet) and the error propagates.
+
+    ``params`` is the graph-level ``$name`` mapping (EXTENSIONS.md entry 43),
+    forwarded to the ``dot_file=`` ref-extraction parse of every fetched file.
+    Walking the tree parses each file in full, so a graph-level ``"$name"``
+    attribute must resolve HERE as well, not only in the later
+    ``load_remote_or_local_graph`` parse of the materialized entry.
     """
     from amplifier_module_remote_source import (  # lazy — keeps import network-free
         BlobCache,
@@ -177,7 +195,9 @@ async def materialize_remote_dot(
                 text = raw.decode("utf-8")
                 local_path = os.path.join(view_dir, _repo_root_relpath(origin))
                 rewrites = []
-                for raw_ref in extract_dot_file_refs(text, origin=origin):
+                for raw_ref in extract_dot_file_refs(
+                    text, origin=origin, params=params
+                ):
                     ref = _resolve_ref(raw_ref, origin)
                     if ref is None:
                         continue
@@ -232,8 +252,10 @@ async def load_remote_or_local_graph(
     already cost a regression test once).
 
     If ``source`` is a ``git+https://`` URL: materializes the remote tree
-    (async, before parse) via ``materialize_remote_dot``, parses the local
-    entry, and sets ``graph.source_dir`` to the materialized entry's parent
+    (async, before parse) via ``materialize_remote_dot`` -- which receives
+    ``params`` too, because the tree walk parses every fetched file to find
+    its ``dot_file=`` refs -- parses the local entry, and sets
+    ``graph.source_dir`` to the materialized entry's parent
     directory so subgraph ``dot_file=`` refs resolve against the fetched tree
     rather than cwd. If parsing the materialized entry fails, ``cleanup()`` is
     called before the exception propagates so the per-run view never leaks.
@@ -248,7 +270,7 @@ async def load_remote_or_local_graph(
         longer needed, regardless of which path was taken.
     """
     if isinstance(source, str) and source.startswith(_GIT_HTTPS_PREFIX):
-        entry_path, cleanup = await materialize_remote_dot(source)
+        entry_path, cleanup = await materialize_remote_dot(source, params=params)
         try:
             graph = parse_dot(entry_path.read_text(encoding="utf-8"), params=params)
             graph.source_dir = str(entry_path.parent)
