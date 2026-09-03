@@ -53,6 +53,64 @@ class TestParseContract:
         )
 
 
+class TestDiagnosticNamesTheMechanismPerPath:
+    """The missing-param diagnostic must not speak CLI-only vocabulary.
+
+    The original message said "Pass --param <name>=<value>" -- correct on the
+    CLI, and actively misleading on every other path this parser is reached
+    from, which is most of them once a graph is composed. A user who hit it
+    while running a CHILD graph, or through the mounted orchestrator, was told
+    to pass a flag that path has no way to accept.
+
+    These assertions deliberately check the param NAME plus the presence of
+    each MECHANISM, not the full sentence -- pinning the exact prose would
+    make the message unrewordable without a test edit, which is how a
+    diagnostic ends up frozen in the wrong vocabulary in the first place.
+    """
+
+    def _message(self) -> str:
+        try:
+            parse_dot(CHILD_DOT)
+        except ValueError as exc:
+            return str(exc)
+        raise AssertionError("expected ValueError naming the missing param")
+
+    def test_names_the_missing_param(self) -> None:
+        assert "max_duration" in self._message()
+
+    def test_names_the_cli_mechanism(self) -> None:
+        assert "--param max_duration=" in self._message()
+
+    def test_names_the_mounted_orchestrator_mechanism(self) -> None:
+        msg = self._message()
+        assert 'config["params"]' in msg, (
+            "the mounted-orchestrator path supplies params via config['params'], "
+            "not a CLI flag -- the diagnostic must say so"
+        )
+
+    def test_names_the_composed_child_mechanism(self) -> None:
+        msg = self._message()
+        assert "parent" in msg.lower(), (
+            "a composed child inherits its parent's params -- the diagnostic "
+            "must point at the PARENT's entry point, not at a flag the child "
+            "has no way to receive"
+        )
+        assert "dot_file=" in msg or "folder" in msg, (
+            "the diagnostic must name the composition shapes (shape=folder / "
+            "dot_file=, manager-loop child) so the reader can tell which path "
+            "they are on"
+        )
+
+    def test_stays_loud_about_declarative_only(self) -> None:
+        msg = self._message()
+        assert "declarative-only" in msg
+        assert "no shell-style default" in msg
+
+    def test_does_not_claim_the_cli_is_the_only_mechanism(self) -> None:
+        """The pre-reword message ended with a bare CLI imperative."""
+        assert "Pass --param" not in self._message()
+
+
 class TestEveryParseSiteThreadsParams:
     """Static coverage across the parse sites entry 43 left behind.
 
