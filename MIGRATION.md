@@ -71,7 +71,7 @@ critique -> generate [label="loop_restart", condition="outcome=fail"]
 
 ### Lint
 
-`attractor lint` reports **ATTR-LINT-001** (ERROR) for one release when a graph
+`dot-runner lint` reports **ATTR-LINT-001** (ERROR) for one release when a graph
 still declares `runs_on=`, `continue_on_fail=`, `requires=`, `outputs=`, or
 `feedback_from=` -- the message names the migration pattern above. These attrs are
 otherwise silently ignored (the engine's standard unknown-attr behavior); the lint
