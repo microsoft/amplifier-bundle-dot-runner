@@ -69,6 +69,7 @@ _matrix = _load_matrix_module()
 BUNDLE_ROOT = _matrix.BUNDLE_ROOT
 ROWS = _matrix.ROWS
 row = _matrix.row
+flip = _matrix.flip
 
 #: The contract these rows answer to.
 CONTRACT_FILE = "contracts/engine-surface.v1.md"
@@ -143,115 +144,158 @@ def _bundle_frontmatter(path):
     return yaml.safe_load(text[4:end]) or {}
 
 
-def _self_pinned_sources(node, path=()):
-    """Every `source:` value self-pinning THIS repo, with its key path.
+#: The bundle surface this repo actually ships -- the only place a same-repo
+#: `source:` can appear. Discovered by directory rather than by a hard-coded
+#: file list, so a composition file added tomorrow is scanned tomorrow instead
+#: of silently falling outside the probe. `bundles/`, `profiles/` and `agents/`
+#: do not exist here today (the ruling at issue #48 removed the C17 items that
+#: named them); they are listed anyway so the day one appears it is covered.
+_BUNDLE_DIRS = ("behaviors", "bundles", "profiles", "agents")
+_BUNDLE_SUFFIXES = {".yaml", ".yml", ".md"}
 
-    Yields ``(key_path, value)``. A self-pin is a `git+…amplifier-bundle-dot-runner@<ref>`
-    source -- the shape `specs/EXTENSIONS.md` section 37 made ref-free wherever
-    foundation's resolution semantics allowed, and deliberately KEPT for
-    `session.orchestrator` sources, which resolve against the composed root.
-    """
+#: A same-repo source that carries a git ref -- the shape C17 forbids:
+#: ``git+https://github.com/microsoft/amplifier-bundle-dot-runner@<ref>#subdirectory=...``.
+#: The ref-FREE same-repo forms specs/EXTENSIONS.md section 37 moved to (a
+#: relative ``../modules/X``, a namespaced ``"@dot-runner:skills"``) carry no
+#: ``@`` after the repo slug and so never match.
+_SELF_PIN_WITH_REF = re.compile(r"amplifier-bundle-dot-runner(?:\.git)?@(?P<ref>[^#\s]+)")
+
+#: THE ALLOW-LIST -- one class, named explicitly rather than pattern-matched
+#: loosely, because an exemption nobody can point at is indistinguishable from a
+#: hole. Its authority is specs/EXTENSIONS.md section 37, change 3, verbatim:
+#:
+#:   "The remaining 34 are all `session.orchestrator` sources and are **kept
+#:    deliberately**: foundation resolves those against the *composed root's*
+#:    base_path -- the app's own bundle directory in a real session -- so no
+#:    relative path written here can reach this snapshot, and there is no
+#:    namespaced module-source form. Measured, not assumed: a build that made
+#:    them relative failed to start in a clean DTU install."
+#:
+#: C17.2 restates that exemption inside the contract, so the clause and this
+#: probe agree about it. `test_selfcheck_the_exemption_is_still_section_37s_own_words`
+#: fails if that sentence ever leaves section 37.
+_KEPT_DELIBERATELY = ("session", "orchestrator")
+
+
+def bundle_surface_files() -> list[Path]:
+    """Every bundle/behavior YAML or md file this repo ships."""
+    files = [BUNDLE_ROOT / "bundle.md"]
+    for name in _BUNDLE_DIRS:
+        directory = BUNDLE_ROOT / name
+        if not directory.is_dir():
+            continue
+        files.extend(
+            path
+            for path in sorted(directory.rglob("*"))
+            if path.is_file() and path.suffix in _BUNDLE_SUFFIXES
+        )
+    return [path for path in files if path.exists()]
+
+
+def _load_bundle_doc(path: Path):
+    """A bundle file's YAML: frontmatter for `.md`, the whole document otherwise."""
+    if path.suffix == ".md":
+        return _bundle_frontmatter(path)
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _sources(node, path=()):
+    """Every `source:` scalar in a bundle document, with its YAML key path."""
     if isinstance(node, dict):
         for key, value in node.items():
-            if (
-                key == "source"
-                and isinstance(value, str)
-                and "amplifier-bundle-dot-runner@" in value
-            ):
-                yield path + (key,), value
+            if key == "source" and isinstance(value, str):
+                yield path + (str(key),), value
             else:
-                yield from _self_pinned_sources(value, path + (str(key),))
+                yield from _sources(value, path + (str(key),))
     elif isinstance(node, list):
         for i, value in enumerate(node):
-            yield from _self_pinned_sources(value, path + (str(i),))
+            yield from _sources(value, path + (str(i),))
+
+
+def classify_self_pins(doc) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split a bundle document's ref-carrying same-repo sources.
+
+    Returns ``(offending, exempt)``; each entry is ``(key_path, value)``. A
+    source is exempt ONLY when it sits at ``...session.orchestrator.source`` --
+    the single class `_KEPT_DELIBERATELY` allow-lists. Everything else that
+    carries a git ref back at this repo violates C17.1.
+    """
+    offending: list[tuple[str, str]] = []
+    exempt: list[tuple[str, str]] = []
+    for key_path, value in _sources(doc):
+        if not _SELF_PIN_WITH_REF.search(value):
+            continue
+        bucket = exempt if key_path[-3:-1] == _KEPT_DELIBERATELY else offending
+        bucket.append((".".join(key_path), value))
+    return offending, exempt
+
+
+def _source_line(path: Path, value: str) -> str:
+    """The 1-based line of the `source:` entry carrying ``value``, for file:line.
+
+    Comment lines are skipped: `behaviors/dot-runner-amplifier-agent.yaml`
+    documents the kept pin in prose directly above the pin itself, and pointing
+    a reviewer at the comment instead of the code wastes the one thing a
+    file:line is for.
+    """
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith("source:") and value in line:
+            return str(number)
+    return "?"
 
 
 def test_row_esf_017():
-    """OPEN-PINNED: pin today's bundle-composition reality in all three directions.
+    """CONFORMS: no same-repo module or skill source carries a git ref.
 
-    C17's three items name a root bundle with a `context:` key, an
-    `agents/attractor-expert.md` registered by `behaviors/attractor-core.yaml`,
-    and ref-free same-repo module/skill sources. None of those artifacts is in
-    THIS repo -- they are the attractor bundle's, and the split left them there.
-    This probe asserts that state rather than asserting the clause, because
-    which of the three exits to take (re-scope / move / drop) is a contract
-    edit, and PROTOCOL.md section 5 makes that the owner's call.
+    C17 as originally drafted named three things, two of which the repo split
+    left in `microsoft/amplifier-bundle-attractor`. The owner ruling at issue
+    #48 removed those two and made section 37's third change the whole clause,
+    which IS true of this repo and IS testable -- this probe is that test, and
+    the reason the row could move off OPEN-PINNED.
 
-    The point of pinning it: the ruling cannot be quietly pre-empted. Port the
-    expert agent in, add a `context:` key, or let a module source re-acquire a
-    self-pinned ref, and this row goes red naming issue #48.
+    Hermetic: reads this repo's own bundle files, parses YAML, matches a regex.
+    No engine, no network, no install. `test_selfcheck_the_scanner_*` below are
+    the discriminating cases -- they prove the scanner separates a forbidden pin
+    from an exempt one from a ref-free source, so a green run here means "looked
+    and found nothing", never "never looked".
     """
     r = row("ESF-017")
-    issue = r["decision"]["issue"]
-    header = (
-        f'SPEC-CONFORMANCE LEDGER FLIP -- row {r["id"]} "{r["title"]}"\n'
-        f"  contract:    {CONTRACT_FILE}  clause C17\n"
-        f"  disposition: OPEN-PINNED -- decision pending at issue #{issue}\n"
-        "  direction:   UNDECIDED-MOVEMENT\n"
-    )
-    tail = (
-        "\n"
-        "  This row pins a state, not a behavior the contract requires. It moved.\n"
-        "  Two legal exits -- in THIS change, not a follow-up:\n"
-        f"    1. Revert the move, and take the ruling at issue #{issue} first.\n"
-        "    2. Keep the move AND close the ruling with it: edit C17 (owner), then\n"
-        "       re-row this clause against whatever C17 then says.\n"
-        "  There is no third exit: re-pointing this probe at the new state without\n"
-        "  the ruling silently decides an owner question a lane may not decide.\n"
-        "  Doing neither means main carries a ledger that lies. That is drift."
+
+    surface = bundle_surface_files()
+    assert surface, (
+        "ESF-017's probe found NO bundle files to scan. `bundle.md` and "
+        f"{list(_BUNDLE_DIRS)} are all absent or unreadable, so this probe would "
+        "pass vacuously -- which is worse than failing. Point "
+        "bundle_surface_files() at wherever the bundle surface moved."
     )
 
-    # C17.1 -- this repo's root bundle serves no always-on guidance.
-    root_bundle = BUNDLE_ROOT / "bundle.md"
-    assert root_bundle.exists(), f"{header}  observed: bundle.md is gone entirely{tail}"
-    front = _bundle_frontmatter(root_bundle)
-    assert not front.get("context"), (
-        f"{header}"
-        f"  observed:    bundle.md now carries a `context:` key: {front.get('context')!r}\n"
-        "  expected:    no `context:` key -- the always-on guidance C17.1 describes\n"
-        "               belongs to the attractor bundle's root, not this one\n"
-        f"{tail}"
-    )
-    assert not front.get("agents"), (
-        f"{header}"
-        f"  observed:    bundle.md now registers agents: {front.get('agents')!r}\n"
-        "  expected:    no `agents:` key on this repo's root bundle\n"
-        f"{tail}"
-    )
-
-    # C17.2 -- neither the expert agent nor the core behavior lives here.
-    for missing in ("agents/attractor-expert.md", "behaviors/attractor-core.yaml"):
-        assert not (BUNDLE_ROOT / missing).exists(), (
-            f"{header}"
-            f"  observed:    {missing} now exists in this repo\n"
-            "  expected:    absent -- C17.2's subject is the attractor bundle's\n"
-            "               registration, and that file was left in that repo by the split\n"
-            f"{tail}"
+    offending: list[str] = []
+    for path in surface:
+        rel = path.relative_to(BUNDLE_ROOT)
+        bad, _kept = classify_self_pins(_load_bundle_doc(path))
+        offending.extend(
+            f"{rel}:{_source_line(path, value)}  ({key_path})\n                 {value}"
+            for key_path, value in bad
         )
 
-    # C17.3 -- every same-repo self-pin still confined to session.orchestrator,
-    # the one class section 37 keeps deliberately.
-    pins: list[tuple[str, str]] = []
-    bundle_files = [root_bundle, *sorted((BUNDLE_ROOT / "behaviors").glob("*.yaml"))]
-    for path in bundle_files:
-        doc = (
-            _bundle_frontmatter(path)
-            if path.suffix == ".md"
-            else yaml.safe_load(path.read_text(encoding="utf-8"))
-        )
-        for key_path, value in _self_pinned_sources(doc):
-            if key_path[-3:-1] != ("session", "orchestrator"):
-                pins.append(
-                    (f"{path.relative_to(BUNDLE_ROOT)}:{'.'.join(key_path)}", value)
-                )
-    assert not pins, (
-        f"{header}"
-        f"  observed:    same-repo `@ref` self-pin outside a session.orchestrator\n"
-        f"               source: {pins}\n"
-        "  expected:    module and skill sources stay ref-free (C17.3). A self-pin at\n"
-        "               @main makes a BRANCH install serve main's bytes, which is what\n"
-        "               made branch regression-testing of guidance impossible.\n"
-        f"{tail}"
+    assert not offending, flip(
+        r,
+        observed=(
+            "same-repo `source:` carrying a git ref, outside the one exempt "
+            "class:\n               " + "\n               ".join(offending)
+        ),
+        expected=(
+            "module and skill sources stay ref-free. A self-pin at @main makes a "
+            "BRANCH install serve main's bytes, which is what made branch "
+            "regression-testing of guidance impossible (specs/EXTENSIONS.md "
+            "section 37, change 3). Use a relative source (`../modules/X`) or a "
+            "namespaced one (`\"@dot-runner:skills\"`). If this pin is a "
+            "`session.orchestrator` source it is exempt -- but then it must "
+            "actually SIT under `session.orchestrator`, not merely resemble one."
+        ),
     )
 
 
@@ -347,7 +391,110 @@ def test_selfcheck_core_clause_extraction_finds_the_real_clauses():
     clauses = core_clauses()
     assert {"C1", "C10", "C17"} <= set(clauses)
     assert "C99" not in clauses
-    assert clauses["C17"] == "Bundle composition"
+    # Retitled 2026-09-06 with the narrowing (owner ruling, issue #48): the
+    # clause is no longer "Bundle composition" -- two of that heading's three
+    # subjects were another repo's.
+    assert clauses["C17"] == "Ref-free same-repo sources"
     # Backlogged entries (`- **B1 — ...**`) are NOT Core clauses and must not be
     # swept in by a looser pattern.
     assert not any(c.startswith("B") for c in clauses)
+
+
+# --- ESF-017's scanner: the discriminating triple -------------------------
+#
+# These are what make test_row_esf_017's green run mean something. Each case is
+# an in-memory document -- nothing on disk is touched, nothing is restored --
+# so the probe's detector is exercised even on the day the repo happens to
+# contain no violation at all.
+
+
+def _doc_with_source(key_path: tuple[str, ...], value: str):
+    """Build a nested dict placing ``value`` at ``key_path`` + ``source``."""
+    node: dict = {"source": value}
+    for key in reversed(key_path):
+        node = {key: node}
+    return node
+
+
+_A_REF_PIN = (
+    "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
+    "#subdirectory=modules/loop-pipeline"
+)
+
+
+def test_selfcheck_the_scanner_catches_a_ref_pinned_module_source():
+    """The RED case: a `tools:` module source that re-acquired a git ref."""
+    doc = _doc_with_source(("tools", "0"), _A_REF_PIN)
+    offending, exempt = classify_self_pins(doc)
+    assert offending == [("tools.0.source", _A_REF_PIN)]
+    assert exempt == []
+
+
+def test_selfcheck_the_scanner_exempts_a_session_orchestrator_source():
+    """The allow-listed case: identical value, different key path."""
+    doc = _doc_with_source(("agents", "x", "session", "orchestrator"), _A_REF_PIN)
+    offending, exempt = classify_self_pins(doc)
+    assert offending == []
+    assert exempt == [("agents.x.session.orchestrator.source", _A_REF_PIN)]
+
+
+def test_selfcheck_the_scanner_ignores_ref_free_and_foreign_sources():
+    """The GREEN cases: what section 37 moved TO, plus another repo's pin.
+
+    Without this third case the scanner could pass the first two by flagging
+    every `source:` it sees, which would make the probe unusable rather than
+    correct.
+    """
+    for ref_free in (
+        "../modules/loop-pipeline",
+        '"@dot-runner:skills"',
+        "git+https://github.com/microsoft/amplifier-bundle-attractor@main",
+    ):
+        offending, exempt = classify_self_pins(_doc_with_source(("tools", "0"), ref_free))
+        assert offending == [], ref_free
+        assert exempt == [], ref_free
+
+
+def test_selfcheck_the_scanner_reads_the_real_bundle_surface():
+    """The surface list is not empty, and the shipped root bundle is in it."""
+    surface = bundle_surface_files()
+    relative = {str(p.relative_to(BUNDLE_ROOT)) for p in surface}
+    assert "bundle.md" in relative
+    assert "behaviors/dot-runner-amplifier-agent.yaml" in relative
+
+
+def test_selfcheck_source_line_points_at_the_pin_not_the_comment_above_it():
+    """file:line must land on the `source:` line, not the prose describing it.
+
+    `behaviors/dot-runner-amplifier-agent.yaml` documents its kept pin in a long
+    comment block directly above the pin, and that comment contains the same URL.
+    """
+    path = BUNDLE_ROOT / "behaviors" / "dot-runner-amplifier-agent.yaml"
+    _offending, exempt = classify_self_pins(_load_bundle_doc(path))
+    assert len(exempt) == 1, exempt
+    line = _source_line(path, exempt[0][1])
+    assert line != "?"
+    text = path.read_text(encoding="utf-8").splitlines()[int(line) - 1]
+    assert text.lstrip().startswith("source:"), text
+
+
+def test_selfcheck_the_exemption_is_still_section_37s_own_words():
+    """The allow-list cites section 37. If that sentence goes, so does its authority.
+
+    C17.2 and `_KEPT_DELIBERATELY` both rest on section 37 saying it keeps this
+    class deliberately. Delete or reword that and the exemption becomes an
+    unsourced carve-out, so this fails rather than letting the allow-list
+    outlive its reason.
+    """
+    extensions = (BUNDLE_ROOT / "specs" / "EXTENSIONS.md").read_text(encoding="utf-8")
+    sentence = (
+        "The remaining 34 are all `session.orchestrator` sources and are "
+        "**kept deliberately**"
+    )
+    assert " ".join(sentence.split()) in " ".join(extensions.split()), (
+        "specs/EXTENSIONS.md section 37 no longer says it keeps `session.orchestrator` "
+        "sources deliberately, but C17.2 and this module's `_KEPT_DELIBERATELY` "
+        "allow-list both cite it. Re-source the exemption or remove it -- an "
+        "allow-list whose justification has been deleted is a hole with a comment "
+        "on it."
+    )
