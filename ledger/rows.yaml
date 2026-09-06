@@ -1429,15 +1429,17 @@
     quote: |
       `thread_id` is **branch-local**. The same explicit `thread_id` in two sibling branches shares no history — the nlspec's §3.8 isolation is given precedence over its §5.4 thread reuse. Sequential same-`thread_id` reuse is unchanged.
     line: 141
-  disposition: GAP
+  disposition: CONFORMS
   assertion:
     kind: indexed
     indexed:
+      - modules/loop-pipeline/tests/test_thread_id_branch_local.py::test_sibling_branches_with_the_same_thread_id_share_no_history
+      - modules/loop-pipeline/tests/test_thread_id_branch_local.py::test_the_same_nodes_run_sequentially_do_share_history
+      - modules/loop-pipeline/tests/test_thread_id_branch_local.py::test_both_sibling_branches_resolve_the_same_explicit_thread_key
       - modules/loop-pipeline/tests/test_isolation_boundary_preferred_label.py::test_parallel_branch_clone_starts_without_preferred_label
       - modules/loop-pipeline/tests/test_backend_clone.py::TestAmplifierBackendClone::test_clone_has_empty_mutable_state
-  work: "microsoft/amplifier-bundle-dot-runner#46"
   notes: >
-    GAP, not CONFORMS, and the indexed cites are why: they pin clone-level and unit-level isolation, which is a NEARBY claim, not this one. Nothing runs two sibling branches declaring the SAME explicit thread_id and proves neither sees the other's history, and nothing pins the sequential-reuse control that the clause holds unchanged. The freeze packet reached the same reading ("Exactly what is missing", item 3: one-sided). Rowing this CONFORMS on the strength of the cites below would be the ledger lying by adjacency.
+    Was GAP (issue #46): the only cites were the last two, which pin clone-level and unit-level isolation -- a NEARBY claim, not this one -- and nothing pinned the sequential control the clause holds unchanged. The freeze packet read it the same way ("Exactly what is missing", item 3: one-sided). The first three cites close it, and the first two are the discriminating pair: the SAME four nodes carrying the SAME explicit thread_id="T" at fidelity=full, run through the real engine, wired first as two sibling branches (b2 is replayed exactly its own branch's one exchange -- 2 messages -- and none of the sibling's) and then as one sequential chain (the identical b2 is replayed all three prior exchanges -- 6 messages). Only the topology differs, and the two topologies must answer oppositely, so a backend that simply never replayed history fails the control rather than passing both. The third cite pins the pair's premise -- both branches resolve the SAME explicit key -- so the isolation cannot be a false green produced by two branches quietly deriving different keys. Hermetic: an in-process coordinator double, no network, no provider, no model call. Verified RED both ways: sharing `_thread_transcripts` across `AmplifierBackend.clone()` reddens the sibling half while the sequential control stays green.
 
 - id: ESF-014
   title: additive vocabulary leaves the canonical baseline untouched
