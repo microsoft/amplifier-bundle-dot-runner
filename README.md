@@ -42,6 +42,7 @@ docs) lives in the repos that consume this one.
 | `modules/tool-apply-patch` | v4a unified-diff patch-apply tool module. |
 | `modules/tool-dashboard-query` | Dashboard HTTP query tool module. |
 | `modules/tool-pipeline-status` | Pipeline execution state query tool module. |
+| `modules/tool-pipeline-run` | Agent-facing `run_pipeline` tool module: lets an interactive session invoke a DOT graph pipeline at runtime via `session.spawn`. Its defaults name no bundle -- a mounting bundle supplies its own `runner_agent` / `mention_example`. |
 | `contracts/external/` | Byte-pinned vendored copies of the upstream `strongdm/attractor`, `coding-agent-loop`, and `unified-llm` nlspecs. |
 | `specs/EXTENSIONS.md` | Append-only ledger of every place this implementation extends or deviates from the canonical specs. |
 | `contracts/recipe-substrate.v1.md` | Owned contract, **DRAFT/paused** — does not meet the Freeze Bar; governs nothing yet. |
@@ -501,6 +502,7 @@ cd modules/hooks-tool-truncation && uv sync && uv run pytest -q
 cd modules/tool-apply-patch && uv sync && uv run pytest -q
 cd modules/tool-dashboard-query && uv sync && uv run pytest -q
 cd modules/tool-pipeline-status && uv sync && uv run pytest -q
+cd modules/tool-pipeline-run && uv sync && uv run pytest -q
 ```
 
 ## Contributing
