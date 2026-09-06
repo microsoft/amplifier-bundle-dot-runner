@@ -1,7 +1,7 @@
 # History map — extractions from `amplifier-bundle-attractor`
 
-This repo has received two history-preserving extractions from
-`microsoft/amplifier-bundle-attractor` via `git filter-repo`. Both are
+This repo has received three history-preserving extractions from
+`microsoft/amplifier-bundle-attractor` via `git filter-repo`. All three are
 recorded, commit-by-commit, in `HISTORY-MAP.tsv` (two columns: `old` =
 original commit SHA in `amplifier-bundle-attractor`'s full history, `new` =
 the corresponding commit SHA in this repo, or `0000...0000` if that original
@@ -82,3 +82,70 @@ Phase 2, `attractor-79z`)
 - **Distribution/import names unchanged:** `amplifier-module-loop-agent`
   stays `amplifier-module-loop-agent`, etc. — only the git URL that serves
   these seven modules moved.
+
+## Extraction 3 — `tool-pipeline-run`, the held-back module (`attractor-24e` stage 2)
+
+This is the module Extraction 2 explicitly **held back** (see the "Held back"
+bullet above). The gate condition named there — its namespace debt — was paid
+off *in `amplifier-bundle-attractor` first*, as `attractor-24e` **stage 1**
+(two commits, `2a2a1f88…` and `5ad4de98…`, both mapped in
+`HISTORY-MAP.tsv` like every other commit in this extraction), so that the
+de-attractorization is part of the module's own history and rides across the
+move rather than appearing as a post-move edit here. This extraction is
+**stage 2**: the move itself, carrying zero authored content change.
+
+- **Source:** `microsoft/amplifier-bundle-attractor` @
+  `1b7bac54acda0a699e56a6480ee00fbc5df3d993` (`main`).
+- **Path (one module):** `modules/tool-pipeline-run`.
+- **SHA range (original attractor history):** oldest original commit
+  `367def86ce947ed0d2d3fb155b0598b249e391af` (2026-02-13) through
+  `5ad4de986047d067b341e7ab337981cb016508a0` (2026-09-06); **10** original
+  commits touch this module path, and all 10 are ordinary commits — unlike
+  Extraction 2, **no merge commit** falls in this set, so there is no
+  elided-merge caveat to record.
+- **Method:** `git filter-repo --path modules/tool-pipeline-run` against a
+  scratch clone, producing 10 commits, then grafted onto this repo's `main`
+  tip (`1762fe95fe3a9e15052a38d994d0c7a268cd344f`) — same rebase-graft
+  strategy as Extraction 2, and for the same reason: this repo's
+  branch-protection ruleset mandates linear history, so the result is a
+  fully linear chain (`c16f0399…` parents directly onto the `main` tip) with
+  no merge commit.
+- **Content fidelity:** verified by a full recursive tree comparison of the
+  moved directory against the source repo's copy at the source commit —
+
+  ```
+  $ diff -r modules/tool-pipeline-run \
+      ~/dev/better-attractor/amplifier-bundle-attractor/modules/tool-pipeline-run
+  $ echo $?
+  0
+  ```
+
+  Zero differences across all 7 tracked files. No content was altered by the
+  move itself.
+- **History preservation:** verified by `git log --follow` on the module's
+  main source file, which walks back through all 8 of the commits that touch
+  it, oldest (`c16f0399…`) through newest (`31dde8a8…`) — i.e. the file's
+  ancestry survived the move rather than starting at a single squashed
+  import. (8 of the 10, because `a91a2d17…` and `d3c3dda8…` touch other files
+  in the module, not `__init__.py`.)
+- **`uv.lock` — deliberately absent:** 13 sibling `modules/*/uv.lock` files
+  are committed in this repo, so its absence here is worth stating
+  explicitly rather than leaving as an apparent oversight. The source repo
+  does **not** track a `uv.lock` for this module either (`git ls-files
+  modules/tool-pipeline-run` lists 7 files, none of them a lock), so
+  generating one would be an authored content change riding inside a move
+  that must stay byte-identical. CI resolves the module's dependencies with
+  `uv sync` at job time and does not require a committed lock. If a lock is
+  wanted, it belongs in its own later commit.
+- **Authored changes riding on top (separate commits, never mixed into the
+  move):** CI matrix wiring for the module (`.github/workflows/ci.yml`,
+  `c5d4389…`), a `README.md` module-inventory update (`2c80cca…`), and this
+  `HISTORY-MAP.md`/`HISTORY-MAP.tsv` extension.
+- **Distribution/import names unchanged:** `amplifier-module-tool-pipeline-run`
+  stays `amplifier-module-tool-pipeline-run` — only the git URL that serves
+  it moved.
+- **The attractor-side copy is NOT deleted by this extraction.** Removing it
+  there is a separate, third step, folded into the gated `28x` slim — the
+  same asymmetric strategy used for Extraction 1 (`DESIGN-repo-split.md`
+  §3.6): the receiving repo gets the history-preserving extraction, the
+  source repo gets an ordinary later `git rm`, never a rewrite.
