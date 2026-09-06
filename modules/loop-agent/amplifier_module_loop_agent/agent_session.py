@@ -443,8 +443,18 @@ class AgentSession:
                 reasoning_effort=self._config.reasoning_effort,
             )
 
-            # Emit provider:request before LLM call
-            await self._hooks.emit(PROVIDER_REQUEST, {})
+            # Emit provider:request before LLM call.
+            #
+            # Carries the model (issue #64): this event is persisted per
+            # worker session (hooks-pipeline-observability's
+            # PERSISTED_SESSION_EVENTS), and its persisted timestamp is the
+            # START of one LLM call -- the matching provider:response is its
+            # END. An empty payload made every call in the stream
+            # indistinguishable, so a multi-hour node could not be attributed
+            # to a model at all. `self._model` is this session's resolved
+            # model name ("" when the provider default was taken, normalized
+            # to None here rather than persisting a bare empty string).
+            await self._hooks.emit(PROVIDER_REQUEST, {"model": self._model or None})
 
             # Call LLM — streaming or non-streaming based on provider capability
             try:

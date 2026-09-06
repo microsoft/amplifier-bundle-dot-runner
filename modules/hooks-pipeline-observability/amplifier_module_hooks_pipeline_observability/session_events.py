@@ -86,6 +86,26 @@ PERSISTED_SESSION_EVENTS: tuple[str, ...] = (
     "prompt:complete",
     "tool:pre",
     "tool:post",
+    # LLM-CALL BOUNDARIES (issue #64). Without these, a persisted stream
+    # answered "which tools did the worker call?" but NOT "where did the
+    # wall-clock go?" -- and on a node like capsule-specify's `author`
+    # (84 minutes, run 34039364352) the answer is overwhelmingly "waiting on
+    # the model", which no tool event can show.
+    #
+    # These three are the coding-agent loop's own emissions, bracketing every
+    # provider call it makes (`agent_session.py`: `emit(PROVIDER_REQUEST,
+    # {"model": ...})` immediately before the call, `emit(PROVIDER_RESPONSE,
+    # {"usage": usage_data})` immediately after, `provider:error` on a failed
+    # one). Paired with each record's own persisted `timestamp`, a
+    # request/response pair IS one LLM call's start and end; `usage` carries
+    # the token counts. Nothing is sampled or synthesized.
+    #
+    # Still no streaming deltas: `*_delta` / `content_block:*` remain excluded
+    # as UI-cadence noise (the paragraph above). Call BOUNDARIES are not
+    # cadence -- there is exactly one pair per provider call.
+    "provider:request",
+    "provider:response",
+    "provider:error",
     "orchestrator:complete",
 )
 

@@ -298,6 +298,42 @@ _TOOL_MODULE_SOURCES: dict[str, str] = {
     "tool-search": "git+https://github.com/microsoft/amplifier-module-tool-search@main",
 }
 
+#: Hook modules every synthesized named-worker bundle mounts.
+#:
+#: THE THIRD SILENTLY-DROPPED HALF. #338 restored `providers:`; the live-gate
+#: finding above restored `tools:`. This synthesis still emitted no `hooks:`
+#: section at all -- so a spawned box-node worker ran with NO observers
+#: attached, and EXTENSIONS.md Sec 26's worker-session event persistence was
+#: dead on the entire named-worker path.
+#:
+#: Sec 26's design is a two-sided seam: loop-pipeline's codergen handler sets
+#: the `current_worker_sessions_dir` ContextVar (engine side, present and
+#: working), and `hooks-pipeline-observability`'s SessionEventPersister reads
+#: it from inside the worker session (worker side). The persister only ever
+#: reaches a worker session by riding the PARENT bundle through foundation's
+#: `PreparedBundle.spawn` composition (`self.bundle.compose(child_bundle)`) --
+#: and this synthesized bundle IS the run's parent/base bundle. With no
+#: `hooks:` here, nothing was ever composed in, both sides no-oped forever,
+#: and no `events.jsonl` was ever written.
+#:
+#: Measured consequence (capsule-specify run 34039364352, issue #64): four
+#: agent nodes ran 42, 84, 47 and 38 minutes and the ENTIRE run evidence for
+#: each was prompt.md + response.md + status.json. No tool timings, no LLM
+#: call boundaries, no way to answer "84 minutes of what?". The telemetry
+#: system already existed, shipped in this repo, fully tested -- it was
+#: simply never mounted.
+#:
+#: Runtime git+fetch via `source:`, exactly like the providers and tools
+#: above -- the same proven mechanism, no new machinery. Unconditional for
+#: the same reason the tools are: there is no environment in which a
+#: multi-hour pipeline worker is better off unobservable.
+_HOOK_MODULE_SOURCES: dict[str, str] = {
+    "hooks-pipeline-observability": (
+        "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
+        "#subdirectory=modules/hooks-pipeline-observability"
+    ),
+}
+
 
 def _detect_configured_providers(dot_source: str | None = None) -> list[str]:
     """Provider names servable by a spawn worker, in registry order.
@@ -443,6 +479,14 @@ def _synthesize_agent_bundle_yaml(
         for name, source in _TOOL_MODULE_SOURCES.items()
     )
 
+    # See _HOOK_MODULE_SOURCES: without this section the Sec 26 worker-session
+    # persister is never composed into the spawned worker, and every
+    # named-worker run is unobservable by construction.
+    hook_lines = "\n".join(
+        f"  - module: {name}\n    source: {source}"
+        for name, source in _HOOK_MODULE_SOURCES.items()
+    )
+
     return f"""\
 bundle:
   name: dot-runner-{worker_name}-bundle
@@ -458,6 +502,8 @@ providers:
 {provider_lines}
 tools:
 {tool_lines}
+hooks:
+{hook_lines}
 session:
   context:
     # AmplifierSession construction requires SOME session.context to be

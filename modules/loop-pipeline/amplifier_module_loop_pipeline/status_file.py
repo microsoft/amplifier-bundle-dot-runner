@@ -104,6 +104,16 @@ def read_status_override(
     node/external tool's explicit verdict wins (see module docstring for
     the precedence rationale).
     """
+
+    def _bad(reason: str) -> Outcome:
+        """A contract violation, still carrying the engine-side session id.
+
+        A malformed status.json is exactly when the join key to the node's
+        persisted event stream matters most -- the file cannot be trusted,
+        so the events are the only remaining account of what the worker did.
+        """
+        return _malformed(node, reason, session_id=handler_outcome.session_id)
+
     status_path = os.path.join(logs_root, node.id, "status.json")
     if not os.path.exists(status_path):
         return None
@@ -124,20 +134,18 @@ def read_status_override(
         with open(status_path, encoding="utf-8") as f:
             raw = f.read()
     except OSError as exc:
-        return _malformed(node, f"could not read status.json: {exc}")
+        return _bad(f"could not read status.json: {exc}")
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return _malformed(node, f"invalid JSON in status.json: {exc}")
+        return _bad(f"invalid JSON in status.json: {exc}")
 
     if not isinstance(data, dict):
-        return _malformed(
-            node, f"status.json must be a JSON object, got {type(data).__name__}"
-        )
+        return _bad(f"status.json must be a JSON object, got {type(data).__name__}")
 
     if "outcome" not in data:
-        return _malformed(node, "status.json missing required 'outcome' field")
+        return _bad("status.json missing required 'outcome' field")
 
     outcome_value = data["outcome"]
     status = (
@@ -146,15 +154,14 @@ def read_status_override(
         else None
     )
     if status is None:
-        return _malformed(
-            node,
+        return _bad(
             "status.json 'outcome' must be one of "
             f"{sorted(_ALLOWED_OUTCOME_VALUES)}, got {outcome_value!r}",
         )
 
     suggested_next_ids = data.get("suggested_next_ids")
     if suggested_next_ids is not None and not isinstance(suggested_next_ids, list):
-        return _malformed(node, "status.json 'suggested_next_ids' must be a list")
+        return _bad("status.json 'suggested_next_ids' must be a list")
     # Deliberately permissive on ITEM type: EXTENSIONS.md Sec 34 already
     # gives edge_selection.py's _coerce_suggested_id a documented, tested
     # coercion policy for bare int/float entries (an LLM/tool emitting
@@ -164,15 +171,15 @@ def read_status_override(
 
     context_updates = data.get("context_updates")
     if context_updates is not None and not isinstance(context_updates, dict):
-        return _malformed(node, "status.json 'context_updates' must be an object")
+        return _bad("status.json 'context_updates' must be an object")
 
     preferred_label = data.get("preferred_label")
     if preferred_label is not None and not isinstance(preferred_label, str):
-        return _malformed(node, "status.json 'preferred_label' must be a string")
+        return _bad("status.json 'preferred_label' must be a string")
 
     notes = data.get("notes")
     if notes is not None and not isinstance(notes, str):
-        return _malformed(node, "status.json 'notes' must be a string")
+        return _bad("status.json 'notes' must be a string")
 
     candidate = Outcome(
         status=status,
@@ -181,6 +188,30 @@ def read_status_override(
         context_updates=context_updates,
         notes=notes,
         is_explicit=True,
+        # ENGINE-SIDE PROVENANCE IS CARRIED, NEVER RE-DERIVED FROM THE FILE.
+        #
+        # status.json is the node's VERDICT channel (spec Sec 4.5 / Appendix
+        # C): outcome, label, routing hints, notes. It is NOT a telemetry
+        # channel, and a spawned worker cannot know its own engine-visible
+        # session id or hold the engine's copy of its response text -- both
+        # are established on THIS side of the seam, by the backend, before
+        # the file is ever read.
+        #
+        # Before this, the override built a fresh Outcome and silently
+        # dropped both. Measured consequence (capsule-specify run
+        # 34039364352, issue #64): EVERY box node that wrote its own
+        # status.json -- which is every node the pipeline actually asks for
+        # a verdict from -- landed `"session_id": null` in the run
+        # evidence, so a node that burned 84 minutes had no join key to its
+        # own persisted event stream at
+        # <stage_dir>/sessions/<session_id>/events.jsonl (Sec 26). The
+        # events were unreachable, not absent.
+        #
+        # Carrying them is not a merge of two verdicts: the file wins on
+        # every field it actually speaks about. These two it never speaks
+        # about at all.
+        session_id=handler_outcome.session_id,
+        response_text=handler_outcome.response_text,
     )
 
     if _matches(candidate, handler_outcome):
@@ -208,16 +239,21 @@ def _matches(candidate: Outcome, existing: Outcome) -> bool:
     )
 
 
-def _malformed(node: Node, reason: str) -> Outcome:
+def _malformed(node: Node, reason: str, *, session_id: str | None = None) -> Outcome:
     """A malformed status.json is a loud FAIL -- never a silent no-op.
 
     ``is_explicit=True``: a broken contract is itself a definitive signal
     (mirrors the ``must_write=`` backstop's fail-closed treatment,
     EXTENSIONS.md Sec 27), not something to soften with a defaulted status.
+
+    ``session_id`` (keyword-only, defaulted) is engine-side provenance the
+    caller already holds -- see ``read_status_override``'s ``_bad``. Kept
+    optional so the existing two-argument call shape stays valid.
     """
     return Outcome(
         status=StageStatus.FAIL,
         failure_reason=f"Malformed status.json for node '{node.id}': {reason}",
         notes="status.json contract violation (Appendix C) -- fail-closed",
         is_explicit=True,
+        session_id=session_id,
     )
