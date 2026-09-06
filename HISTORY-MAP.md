@@ -10,6 +10,33 @@ human-readable index; `HISTORY-MAP.tsv` is the mechanical one — use it to
 resolve any pre-extraction commit citation (council transcripts,
 `SPEC_CONFORMANCE.md` entries, code review comments) to its commit here.
 
+## Known gap in the `new` column — rebase-merge rewrites SHAs
+
+**Read this before trusting a `new` SHA that does not resolve.**
+
+An extraction lands here through a pull request, and this repo's
+branch-protection ruleset mandates linear history, so every PR merges with
+`--rebase`. A rebase **re-writes every commit SHA on the branch**: the commit
+whose SHA an extraction recorded while the work sat on its lane branch is not
+the commit that ends up on `main`. Same content, same author, same message —
+different SHA. A `new` value captured before the merge therefore names a
+commit that is unreachable from `main` once the branch is deleted.
+
+As of Extraction 3, **188 of the 512 distinct non-zero `new` SHAs in
+`HISTORY-MAP.tsv` are unreachable from `main` for exactly this reason.** They
+are all Extraction 2's; Extraction 1's survived because it became this repo's
+initial history and was never rebased onto anything. Extraction 3's 10 rows
+were corrected to their post-merge `main` SHAs and are all reachable.
+
+Repairing the remaining 188 is mechanical and safe — each unreachable SHA has
+exactly one same-subject, same-`git patch-id` counterpart on `main` — but it is
+a bulk edit to a record file and is deliberately left as its own change rather
+than folded into an unrelated extraction. **Until it lands: if a `new` SHA does
+not resolve, look up its commit message and find that message on `main`.**
+
+Future extractions: record `new` **after** the merge, from `main`, not from the
+lane branch.
+
 ## Extraction 1 — the engine (`DESIGN-repo-split.md`, shipped)
 
 - **Source:** `microsoft/amplifier-bundle-attractor` (full history through
@@ -108,8 +135,11 @@ move rather than appearing as a post-move edit here. This extraction is
   tip (`1762fe95fe3a9e15052a38d994d0c7a268cd344f`) — same rebase-graft
   strategy as Extraction 2, and for the same reason: this repo's
   branch-protection ruleset mandates linear history, so the result is a
-  fully linear chain (`c16f0399…` parents directly onto the `main` tip) with
-  no merge commit.
+  fully linear chain (`8ba930b4…` parents directly onto the `main` tip) with
+  no merge commit. The `new` column for this extraction records the
+  **post-merge `main`** SHAs, not the pre-merge lane-branch ones — see "Known
+  gap in the `new` column" above for why that distinction matters and which
+  earlier rows still need it applied.
 - **Content fidelity:** verified by a full recursive tree comparison of the
   moved directory against the source repo's copy at the source commit —
 
@@ -124,9 +154,9 @@ move rather than appearing as a post-move edit here. This extraction is
   move itself.
 - **History preservation:** verified by `git log --follow` on the module's
   main source file, which walks back through all 8 of the commits that touch
-  it, oldest (`c16f0399…`) through newest (`31dde8a8…`) — i.e. the file's
+  it, oldest (`8ba930b4…`) through newest (`2c372edd…`) — i.e. the file's
   ancestry survived the move rather than starting at a single squashed
-  import. (8 of the 10, because `a91a2d17…` and `d3c3dda8…` touch other files
+  import. (8 of the 10, because `4af0ada2…` and `f26944df…` touch other files
   in the module, not `__init__.py`.)
 - **`uv.lock` — deliberately absent:** 13 sibling `modules/*/uv.lock` files
   are committed in this repo, so its absence here is worth stating
