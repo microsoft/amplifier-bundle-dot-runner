@@ -23,12 +23,21 @@ Routing via tool.last_line:
     condition="outcome=success" routing behaviour for tool nodes whose output is not a
     routing label (e.g. the "routing" echo in existing tests).
 
+Subprocess lifetime:
+    The spawned child is killed and reaped on EVERY exit path out of the
+    execution block -- normal completion, the node's own ``timeout=``, an
+    external ``asyncio.CancelledError`` (the graph-level
+    ``max_pipeline_duration`` fuse cancelling this node mid-flight), or any
+    other exception raised after the spawn. One routine, ``_kill_and_reap``,
+    called from one ``finally``. See issue #34.
+
 Spec coverage: TOOL-001–004, Section 4.10.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -54,6 +63,10 @@ _TOTAL_CAP_BYTES = 8192  # 8 KiB total JSON-serialised cap
 _CMD_INITIAL_CAP = 500  # command captured at up to 500 chars
 _CMD_TRUNCATE_CAP = 200  # step-3 truncation drops to 200 chars
 _STDERR_TRUNCATE_BYTES = 1024  # step-2 truncation drops stderr to 1 KiB
+
+# Issue #34: bound the post-kill reap so a wedged wait can never hold the
+# engine's own cancellation grace window (5s) open indefinitely.
+_REAP_TIMEOUT_S = 3.0
 
 
 class ToolHandler:
@@ -134,110 +147,152 @@ class ToolHandler:
                 cwd=cwd,
             )
             try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout_s
-                )
-            except asyncio.TimeoutError:
-                # Kill the process on timeout
-                proc.kill()
-                await proc.wait()
-                return Outcome(
-                    status=StageStatus.FAIL,
-                    failure_reason=f"Timeout after {timeout_s}s: {command}",
-                )
-            duration_s = round(time.monotonic() - t0, 3)
-            stdout_text = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
-            stderr_text = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
-
-            # Write output to logs
-            _write_file(
-                os.path.join(stage_dir, "output.txt"),
-                stdout_text + stderr_text,
-            )
-
-            if proc.returncode != 0:
-                # proc.communicate() guarantees returncode is set; the or-0 is
-                # a type-narrowing hint for static checkers (never actually 0
-                # since we're inside the returncode != 0 branch).
-                exit_code: int = proc.returncode or -1
-                return Outcome(
-                    status=StageStatus.FAIL,
-                    # EXTENSIONS.md §25: a tool's exit code IS an explicit
-                    # verdict — the process asserted failure unambiguously.
-                    is_explicit=True,
-                    failure_reason=(
-                        f"Command exited with code {exit_code}: "
-                        f"{stderr_text.strip() or stdout_text.strip()}"
-                    ),
-                    failed_step=_build_failed_step(
-                        command=command,
-                        exit_code=exit_code,
-                        duration_s=duration_s,
-                        stdout_text=stdout_text,
-                        stderr_text=stderr_text,
-                    ),
-                )
-
-            # Store stdout in context
-            context.set("tool.output", stdout_text)
-            context_updates: dict[str, Any] = {"tool.output": stdout_text}
-
-            # Handle parse_json attribute
-            if resolve_bool_attr(node.attrs.get("parse_json"), "parse_json"):
                 try:
-                    parsed = json.loads(stdout_text)
-                    if isinstance(parsed, dict):
-                        for key, value in parsed.items():
-                            context.set(key, value)
-                            context_updates[key] = value
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "parse_json: failed to parse JSON output from node %r: %r",
-                        node.id,
-                        stdout_text[:_LOG_TRUNCATE_CHARS],
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout_s
+                    )
+                except asyncio.TimeoutError:
+                    # The child is killed and reaped by the `finally` below --
+                    # the ONE cleanup routine shared with every other exit.
+                    return Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason=f"Timeout after {timeout_s}s: {command}",
+                    )
+                duration_s = round(time.monotonic() - t0, 3)
+                stdout_text = (
+                    stdout_bytes.decode(errors="replace") if stdout_bytes else ""
+                )
+                stderr_text = (
+                    stderr_bytes.decode(errors="replace") if stderr_bytes else ""
+                )
+
+                # Write output to logs
+                _write_file(
+                    os.path.join(stage_dir, "output.txt"),
+                    stdout_text + stderr_text,
+                )
+
+                if proc.returncode != 0:
+                    # proc.communicate() guarantees returncode is set; the or-0 is
+                    # a type-narrowing hint for static checkers (never actually 0
+                    # since we're inside the returncode != 0 branch).
+                    exit_code: int = proc.returncode or -1
+                    return Outcome(
+                        status=StageStatus.FAIL,
+                        # EXTENSIONS.md §25: a tool's exit code IS an explicit
+                        # verdict — the process asserted failure unambiguously.
+                        is_explicit=True,
+                        failure_reason=(
+                            f"Command exited with code {exit_code}: "
+                            f"{stderr_text.strip() or stdout_text.strip()}"
+                        ),
+                        failed_step=_build_failed_step(
+                            command=command,
+                            exit_code=exit_code,
+                            duration_s=duration_s,
+                            stdout_text=stdout_text,
+                            stderr_text=stderr_text,
+                        ),
                     )
 
-            # Extract the last non-empty stdout line into tool.last_line.
-            # Tool commands that echo a routing label as their final output
-            # (e.g. "echo tests_pass") can then be routed via
-            # condition="context.tool.last_line=tests_pass" on outgoing edges.
-            # This avoids polluting outcome.preferred_label, which would break
-            # condition="outcome=success" routing on tool nodes whose output is
-            # not a routing label.
-            # Always emit tool.last_line so the inferred output contract in
-            # HANDLER_INFERRED_OUTPUTS["tool"] holds even when stdout is empty.
-            # Empty stdout → tool.last_line = "". Downstream edge conditions
-            # that gate on a non-empty value will simply not match, which is
-            # the correct behaviour (no routing label was produced).
-            # Rationale: option (a) from the zen-architect review — emit "" on
-            # empty stdout rather than silently omitting the key and triggering
-            # a false-positive PIPELINE_NODE_CONTRACT_VIOLATION.
-            last_line = next(
-                (
-                    line.strip()
-                    for line in reversed(stdout_text.splitlines())
-                    if line.strip()
-                ),
-                "",
-            )
-            context.set("tool.last_line", last_line)
-            context_updates["tool.last_line"] = last_line
+                # Store stdout in context
+                context.set("tool.output", stdout_text)
+                context_updates: dict[str, Any] = {"tool.output": stdout_text}
 
-            return Outcome(
-                status=StageStatus.SUCCESS,
-                # EXTENSIONS.md §25: exit code 0 IS an explicit verdict — the
-                # process asserted success unambiguously. Without this, a
-                # goal_gate=true tool node could never satisfy its gate
-                # (the gate check requires is_success AND is_explicit).
-                is_explicit=True,
-                context_updates=context_updates,
-                notes=f"Tool completed: {command}",
-            )
+                # Handle parse_json attribute
+                if resolve_bool_attr(node.attrs.get("parse_json"), "parse_json"):
+                    try:
+                        parsed = json.loads(stdout_text)
+                        if isinstance(parsed, dict):
+                            for key, value in parsed.items():
+                                context.set(key, value)
+                                context_updates[key] = value
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "parse_json: failed to parse JSON output from node %r: %r",
+                            node.id,
+                            stdout_text[:_LOG_TRUNCATE_CHARS],
+                        )
+
+                # Extract the last non-empty stdout line into tool.last_line.
+                # Tool commands that echo a routing label as their final output
+                # (e.g. "echo tests_pass") can then be routed via
+                # condition="context.tool.last_line=tests_pass" on outgoing edges.
+                # This avoids polluting outcome.preferred_label, which would break
+                # condition="outcome=success" routing on tool nodes whose output is
+                # not a routing label.
+                # Always emit tool.last_line so the inferred output contract in
+                # HANDLER_INFERRED_OUTPUTS["tool"] holds even when stdout is empty.
+                # Empty stdout → tool.last_line = "". Downstream edge conditions
+                # that gate on a non-empty value will simply not match, which is
+                # the correct behaviour (no routing label was produced).
+                # Rationale: option (a) from the zen-architect review — emit "" on
+                # empty stdout rather than silently omitting the key and triggering
+                # a false-positive PIPELINE_NODE_CONTRACT_VIOLATION.
+                last_line = next(
+                    (
+                        line.strip()
+                        for line in reversed(stdout_text.splitlines())
+                        if line.strip()
+                    ),
+                    "",
+                )
+                context.set("tool.last_line", last_line)
+                context_updates["tool.last_line"] = last_line
+
+                return Outcome(
+                    status=StageStatus.SUCCESS,
+                    # EXTENSIONS.md §25: exit code 0 IS an explicit verdict — the
+                    # process asserted success unambiguously. Without this, a
+                    # goal_gate=true tool node could never satisfy its gate
+                    # (the gate check requires is_success AND is_explicit).
+                    is_explicit=True,
+                    context_updates=context_updates,
+                    notes=f"Tool completed: {command}",
+                )
+            finally:
+                # Issue #34: ONE cleanup routine for every exit path out of
+                # this block -- the node's own `timeout=` above, an EXTERNAL
+                # asyncio.CancelledError (the graph-level max_pipeline_duration
+                # fuse cancelling this node mid-flight, EXTENSIONS.md §15), or
+                # any other exception raised after the spawn. Without it a
+                # cancelled handler propagated CancelledError while its OS
+                # child kept running, orphaned from the engine's bookkeeping.
+                # A normally-completed child already has a returncode, so this
+                # is a no-op on the success and non-zero-exit paths.
+                await _kill_and_reap(proc)
         except Exception as e:
             return Outcome(
                 status=StageStatus.FAIL,
                 failure_reason=str(e),
             )
+
+
+async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
+    """Kill a tool subprocess and reap it. Safe to call on any exit path.
+
+    Issue #34. The handler previously killed its child on exactly one path --
+    its own internal ``asyncio.TimeoutError``. An EXTERNAL cancellation of the
+    handler's task (the engine's ``max_pipeline_duration`` fuse cancelling a
+    node mid-flight -- see ``PipelineEngine._await_node_bounded`` and
+    EXTENSIONS.md §15) unwound straight through without ever killing the
+    child, leaving the OS process running with nothing tracking it.
+
+    Idempotent and already-exited-safe:
+
+    - a child that already finished (``returncode`` set) is left alone, so
+      this is a no-op on the ordinary success / non-zero-exit paths;
+    - ``ProcessLookupError`` (the child raced us to exit) is suppressed;
+    - the reap is bounded by ``_REAP_TIMEOUT_S`` so a wedged wait can never
+      hold the caller -- or the engine's own cancellation grace window
+      (``PipelineEngine._FUSE_CANCEL_GRACE_S``, 5s) -- open indefinitely.
+    """
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
+        await asyncio.wait_for(proc.wait(), timeout=_REAP_TIMEOUT_S)
 
 
 def _write_file(path: str, content: str) -> None:
