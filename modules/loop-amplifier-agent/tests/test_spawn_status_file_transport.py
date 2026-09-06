@@ -1,15 +1,14 @@
-"""The child->parent verdict transport, amplifier-agent-backed (WAVE 4).
+"""The child->parent verdict transport, amplifier-agent-backed.
 
-Mirrors ``modules/pipeline-runner/tests/test_spawn_report_outcome_transport.py``
-(issue #285's transport test) with one substitution: the PRODUCER is this
-module's ``AmplifierAgentOrchestrator`` (hosting a REAL amplifier-agent
-Engine) instead of ``amplifier_module_loop_agent.AgentOrchestrator``.
+The PRODUCER is this module's ``AmplifierAgentOrchestrator`` (hosting a REAL
+amplifier-agent Engine) rather than
+``amplifier_module_loop_agent.AgentOrchestrator``.
 
-WAVE 4 (maintainer ruling 2026-08-29, ruling 5): this module no longer
-mounts a ``report_outcome`` reach-in tool onto the hosted agent's
-coordinator. The channel this test now proves end-to-end, with all REAL
-parties, is the spec's own status-file contract (canonical Sec 4.5 /
-Appendix C):
+WAVE 4 (maintainer ruling 2026-08-29, ruling 5) retired this module's
+reach-in tool mount onto the hosted agent's coordinator; WAVE 5 (2026-08-30)
+removed that channel repo-wide. The channel this test proves end-to-end,
+with all REAL parties, is the spec's own status-file contract (canonical
+Sec 4.5 / Appendix C):
 
   * PRODUCER -- ``amplifier_module_loop_amplifier_agent.AmplifierAgentOrchestrator``,
     running a REAL ``amplifier_agent_lib.engine.Engine`` turn;
@@ -40,8 +39,8 @@ offline one:
 The hermetic equivalent of this same "never fabricate a verdict" claim
 (real orchestrator, DOUBLED amplifier-agent Engine/bundle machinery) lives
 in ``tests/test_orchestrator.py::
-test_envelope_shape_never_fabricates_report_outcome`` and runs
-unconditionally, in CI, on every push.
+test_envelope_shape_never_fabricates_a_verdict`` and runs unconditionally,
+in CI, on every push.
 """
 
 from __future__ import annotations
@@ -123,10 +122,10 @@ async def _run_child(prompt: str) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_real_amplifier_agent_writes_status_file_via_its_own_tools():
-    """WAVE 4 (ruling 5): the hosted amplifier-agent's explicit verdict now
-    travels via the status-file contract (canonical Sec 4.5 / Appendix C),
-    written with the agent's OWN file-editing tools -- NOT a mounted
-    report_outcome reach-in (retired). This is the amplifier-agent-backed,
+    """The hosted amplifier-agent's explicit verdict travels via the
+    status-file contract (canonical Sec 4.5 / Appendix C), written with the
+    agent's OWN file-editing tools -- NOT a mounted reach-in tool (retired
+    WAVE 4, removed repo-wide WAVE 5). This is the amplifier-agent-backed,
     real-network analogue of pipeline-runner's #285 regression test, ported
     to the new channel: a real turn, given the exact contract block
     ``backend.py`` injects for every spawn worker, actually writes the file.
@@ -140,8 +139,8 @@ async def test_real_amplifier_agent_writes_status_file_via_its_own_tools():
 
         result = await _run_child(prompt)
 
-        # WAVE 4: metadata never carries a fabricated report_outcome -- this
-        # module no longer mounts that reach-in tool (ruling 5).
+        # metadata never carries a fabricated verdict -- this module mounts
+        # no reach-in tool (WAVE 4 ruling 5; channel removed WAVE 5).
         assert result["metadata"] == {}
 
         assert os.path.exists(status_path), (

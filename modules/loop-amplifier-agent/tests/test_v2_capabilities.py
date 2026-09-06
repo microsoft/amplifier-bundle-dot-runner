@@ -589,7 +589,7 @@ async def test_context_get_messages_failure_still_emits_incomplete(
         )
 
     assert hooks.completion.get("status") == "incomplete"
-    # fail-closed: no fabricated report_outcome on the incomplete path.
+    # fail-closed: no fabricated verdict on the incomplete path.
     assert hooks.completion.get("metadata", {}) == {}
 
 

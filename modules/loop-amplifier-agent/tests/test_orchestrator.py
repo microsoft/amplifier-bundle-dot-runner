@@ -33,14 +33,14 @@ def _install_fake_deps(monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
 
 
 @pytest.mark.asyncio
-async def test_envelope_shape_never_fabricates_report_outcome(
+async def test_envelope_shape_never_fabricates_a_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """WAVE 4 (ruling 5): this module no longer mounts a report_outcome
+    """WAVE 4 (ruling 5): this module no longer mounts a verdict-capturing
     reach-in onto the hosted agent's coordinator, so it has nothing to read
     back after the turn. The ORCHESTRATOR_COMPLETE envelope's ``metadata``
-    stays empty on the happy path -- it must never fabricate a
-    ``report_outcome`` key from nothing. Fed into the REAL loop-pipeline
+    stays empty on the happy path -- it must never fabricate a verdict key
+    from nothing. Fed into the REAL loop-pipeline
     backend reader, an empty-metadata envelope falls through to the
     lifecycle-status-only path (``is_explicit=False``): it can complete a
     node, but it can never satisfy a goal_gate on its own. The status-file
@@ -121,7 +121,7 @@ async def test_config_keys_are_mapped_to_the_right_injection_points(
     prompt_seen = captured["session"].prompt_seen
     assert "focus on the tests" in prompt_seen
     assert "do the work" in prompt_seen
-    # WAVE 4: the report_outcome nudge is retired -- this adapter no longer
+    # WAVE 4: the verdict nudge is retired -- this adapter no longer
     # appends anything beyond user_instructions (see _build_prompt).
 
 
