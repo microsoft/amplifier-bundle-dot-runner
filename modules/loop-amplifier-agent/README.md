@@ -36,21 +36,23 @@ answered yes against a real Engine and a real model turn):
    `amplifier_agent_lib._runtime.make_turn_handler`, builds a handler that
    calls `prepared.create_session()` and wires capabilities onto
    `session.coordinator`.
-2. A custom turn handler can do the same `create_session()` call and
+2. A custom turn handler *could* do the same `create_session()` call and
    additionally `await session.coordinator.mount("tools", tool,
    name=tool.name)` to add a tool amplifier-agent's own baked-in bundle
-   never declared -- here, the REAL `tool-report-outcome` module's
-   `ReportOutcomeTool`. This is the *same call shape*
-   `amplifier_agent_http/_session_runner.py` uses (around line 134) to
-   mount its own `HostToolProxy` tools onto a live per-turn coordinator, so
-   it is a documented extension point, not a private hack.
-3. After the turn, `tool.last_outcome` holds the agent's `report_outcome`
-   call arguments (or `None` if it never called the tool). This module
-   republishes that as `metadata.report_outcome` on an
-   `ORCHESTRATOR_COMPLETE` event, in the exact envelope shape
+   never declared. **This module does not.** WAVE 4 (maintainer ruling
+   2026-08-29, ruling 5) retired that reach-in mount as an
+   internals-reach-in, and WAVE 5 (2026-08-30) removed the tool it mounted
+   repo-wide. The call shape is kept documented here only because
+   `amplifier_agent_http/_session_runner.py` uses it (around line 134) for
+   its own `HostToolProxy` tools -- it is a real extension point, just not
+   one this adapter uses.
+3. After the turn, this module emits an `ORCHESTRATOR_COMPLETE` event in the
+   exact envelope shape
    `amplifier_module_loop_agent.AgentOrchestrator._emit_completion` uses,
    which `amplifier_module_loop_pipeline.backend._outcome_from_spawn_result`
-   already knows how to read.
+   already knows how to read. Its `metadata` is **always `{}`**: no verdict
+   channel rides this envelope any more. An explicit verdict travels via the
+   status-file contract instead (see "Fail-closed" below).
 
 A fresh `Engine` (and fresh amplifier-agent session) is booted per
 `execute()` call -- **no caching** -- for per-node state isolation.
@@ -94,7 +96,7 @@ This module maps the four keys `backend.py`'s spawn path forwards:
 | `llm_provider`      | `amplifier_agent_cli.provider_sources.inject_provider(prepared, provider, ...)` -- the probe-proven seam. `prepared.mount_plan["providers"]` is cleared first: amplifier-agent's baked-in bundle declares 9 install-only provider *stubs*, and `inject_provider` no-ops ("don't clobber existing") unless they're cleared, which could otherwise trigger interactive OAuth for `openai-chatgpt` during session creation. |
 | `reasoning_effort`  | forwarded to the same `inject_provider(...)` call as `effort_override`. |
 | `max_turns`         | best-effort forward into `prepared.mount_plan["session"]["orchestrator"]["config"]["max_turns"]`. amplifier-agent's `Engine` has no "max turns" knob at the boot/turn-submit layer (one `execute()` call here is one `submit_turn`); this mirrors how the dot-pipeline backend itself blindly forwards `orchestrator_config` to whatever orchestrator is mounted, honored only if the mounted session orchestrator (`loop-streaming` by default) recognizes the key. |
-| `user_instructions` | appended to the prompt text handed to `session.execute()` (Layer-5 override), next to the report_outcome nudge. |
+| `user_instructions` | appended to the prompt text handed to `session.execute()` (Layer-5 override). WAVE 4 retired this adapter's own verdict nudge, so this is the only thing appended. |
 
 When `llm_provider` is absent, this module defaults to `"anthropic"` --
 amplifier-agent's own baked-in default (`bundle.md`'s `default_provider:
@@ -102,31 +104,28 @@ anthropic`).
 
 ## Fail-closed: never fabricate success
 
-After the turn, this module reads `tool.last_outcome`. If it is `None`
-(the agent never called `report_outcome`) or malformed (missing/unknown
-`status`), the module does **not** leave the verdict empty and let the
-parent's lifecycle-only fallback derive `SUCCESS` from a clean exit. It
-synthesizes an explicit, non-passing verdict instead:
+WAVE 4 (ruling 5) and WAVE 5 (2026-08-30) together removed the in-process
+verdict capture this section used to describe: there is no mounted tool, no
+`tool.last_outcome` read, and no synthesized `{"status": "retry", ...}`
+substitute. This module now does the strictly more honest thing -- it
+asserts **nothing**. `metadata` is always `{}`, so
+`backend.py::_outcome_from_spawn_result` falls through to the
+lifecycle-status-only path (`is_explicit=False`): the node can complete, but
+it can never satisfy a `goal_gate` on its own.
 
-```python
-{
-    "status": "retry",
-    "notes": "amplifier-agent turn ended without a valid report_outcome verdict ...",
-}
-```
+An explicit verdict reaches the parent exclusively through the spec's own
+status-file channel (canonical Sec 4.5 / Appendix C, `EXTENSIONS.md` §41):
+`amplifier_module_loop_pipeline.backend` injects the absolute
+`<stage_dir>/status.json` path and the envelope contract into the prompt
+(`status_contract.py`), the hosted amplifier-agent writes it with its own
+file tools, and `handlers/codergen.py`'s `read_status_override` -- running in
+the PARENT process, entirely outside this adapter -- reads it back.
 
-This is *stricter* than `loop-agent`'s own default (plain prose without a
-verdict is `SUCCESS`, non-explicit, per spec section 4.5) -- deliberately,
-per this module's own contract: an amplifier-agent turn that produces prose
-without ever calling `report_outcome` must read as "needs another look,"
-never as silent success. See `tests/test_orchestrator.py`'s
-`test_fail_closed_on_missing_verdict` /
-`test_fail_closed_on_malformed_verdict_*`.
-
-An empty final reply is not itself a failure: if the agent calls
-`report_outcome` with `status="success"` and returns no closing prose, the
-turn still succeeds (artifact over prose -- see
-`test_empty_reply_with_verdict_still_succeeds`).
+See `tests/test_orchestrator.py`'s
+`test_envelope_shape_never_fabricates_a_verdict` and
+`test_never_fabricates_a_verdict_when_child_asserts_none` for the hermetic
+proof, and `tests/test_spawn_status_file_transport.py` for the live
+end-to-end one.
 
 ## Capability gaps vs the vendored CLI handler (v2)
 
@@ -305,10 +304,9 @@ run without the real, heavy, Python-3.12-only library installed at all.
   REAL `loop-pipeline` backend reader), config-key mapping, fail-closed
   behavior, empty-reply-with-verdict success, exception handling, and
   `Engine.shutdown()` always being called (including on exception).
-* `tests/test_spawn_report_outcome_transport.py` -- a real,
-  network-and-credential-requiring integration test mirroring
-  `modules/pipeline-runner/tests/test_spawn_report_outcome_transport.py`
-  with this module as the producer. `pytest.importorskip("amplifier_agent_lib")`
+* `tests/test_spawn_status_file_transport.py` -- a real,
+  network-and-credential-requiring integration test with this module as the
+  producer, proving the status-file verdict channel end-to-end. `pytest.importorskip("amplifier_agent_lib")`
   skips when the peer library isn't installed; a `skipif` additionally skips
   when no `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` is present, so CI (which
   carries no secrets) skips this test honestly rather than failing it.

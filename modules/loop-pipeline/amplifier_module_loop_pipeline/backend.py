@@ -1591,7 +1591,7 @@ def _parse_outcome(output: str, *, node: object = None) -> Outcome:
                         logger.warning(
                             "Verdict recovered from prose-wrapped response "
                             "(embedded status=%r).  Verdict nodes should emit "
-                            "pure JSON or call the report_outcome tool.",
+                            "pure JSON or write their status.json.",
                             _embedded["status"],
                         )
                         return Outcome(
@@ -1621,7 +1621,7 @@ def _parse_outcome(output: str, *, node: object = None) -> Outcome:
     if _is_goal_gate:
         logger.warning(
             "Node %r (goal_gate=true) produced plain-text output with no "
-            "explicit verdict (no report_outcome, no JSON, no embedded verdict). "
+            "explicit verdict (no JSON, no status.json, no embedded verdict). "
             "Fail-closed contract (EXTENSIONS.md §25): returning RETRY so the "
             "gate is not satisfied by a defaulted plain-text response. "
             "Node output (first 200 chars): %r",
@@ -1631,7 +1631,7 @@ def _parse_outcome(output: str, *, node: object = None) -> Outcome:
         return Outcome(
             status=StageStatus.RETRY,
             notes=f"No explicit verdict from goal_gate node — plain text only: {output[:200]}",
-            failure_reason="goal_gate node requires an explicit verdict (report_outcome / JSON)",
+            failure_reason="goal_gate node requires an explicit verdict (JSON / status.json)",
             is_explicit=False,
             response_text=output,  # EXTENSIONS.md §26: carry full text
         )

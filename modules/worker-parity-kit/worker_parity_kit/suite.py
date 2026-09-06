@@ -204,7 +204,7 @@ async def test_m3_no_signal_never_fabricates_explicit_success(
     ``broken_worker.py``'s current fixtures (see there).
     """
     result = await worker_harness.run_turn(
-        "Do some work, but never call report_outcome or assert any verdict.",
+        "Do some work, but never assert any verdict of any kind.",
         None,
     )
     if result.reply.strip():
