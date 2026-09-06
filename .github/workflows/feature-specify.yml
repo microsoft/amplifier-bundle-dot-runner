@@ -390,6 +390,22 @@ jobs:
             "$RUNNER_TEMP/capsule-run/out" \
             "$RUNNER_TEMP/capsule-pair.sha256"
 
+      - name: "Per-node timing table (job summary)"
+        # Issue #64: an agent node that runs for an hour used to leave only
+        # prompt.md + response.md + status.json, so "an hour of WHAT?" was
+        # unanswerable without downloading and hand-reading the evidence.
+        # This joins trace.jsonl to each node's worker-session stream and
+        # prints node / round / duration / LLM calls / tool calls / longest
+        # single call into the job summary. No LLM, no network, structural
+        # data only (ids, counts, durations, statuses -- never notes,
+        # prompts, tool arguments or tool results). Never fails the job.
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 .github/capsule-pipeline/node_timing_table.py \
+            --logs-root "$RUNNER_TEMP/capsule-run/logs" \
+            --json-out "$RUNNER_TEMP/capsule-run/logs/timing-rollup.json"
+
       - name: "Capsule artifacts: a secret finding FAILS the run, never redacts"
         id: capsule_secret_gate
         if: always() && steps.idem.outputs.skip != 'true'
@@ -422,6 +438,26 @@ jobs:
             "$RUNNER_TEMP/capsule-run/logs" \
             "$GITHUB_WORKSPACE/.ai"
 
+      - name: "Bound session-evidence size (and say what was dropped)"
+        # Issue #64: with the Sec 26 persister finally mounted, every agent
+        # node writes <stage>/sessions/<id>/events.jsonl and each tool:post
+        # record carries that tool's full output -- unbounded. Cap it,
+        # keeping the HEAD (what the node set out to do) and the TAIL (where
+        # it actually stopped), with one `evidence:truncated` record naming
+        # exactly what went. A silent drop would be worse than no evidence.
+        #
+        # ORDER IS LOAD-BEARING: after the scrub (kept bytes are already
+        # redacted) and before the residual gate (the gate scans EXACTLY the
+        # bytes that get uploaded). Capping only removes whole lines, so it
+        # cannot reintroduce anything the scrub removed -- proved in
+        # .github/capsule-pipeline/test_session_evidence.py.
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 .github/capsule-pipeline/cap_session_evidence.py \
+            "$RUNNER_TEMP/capsule-run/logs" \
+            "$GITHUB_WORKSPACE/.ai"
+
       - name: Classify the result
         id: classify
         if: always() && steps.idem.outputs.skip != 'true'
@@ -448,12 +484,25 @@ jobs:
           fi
           duration_hint="no further detail available"
           if [ "$kind" = "duration_ceiling" ]; then
-            iters="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])) if __import__('os').path.exists(sys.argv[1]) else {}; print((d.get('engine_state') or {}).get('iteration_count',''))" "$RUNNER_TEMP/capsule-run/logs/checkpoint.json" 2>/dev/null || true)"
-            if [ -n "$iters" ]; then
-              duration_hint="${iters} iteration(s) completed against a starting budget of 8 (max_iterations=8) when the wall-clock fuse (--param max_duration=\"${MAX_DURATION:-19800s}\") tripped mid-work."
-            else
-              duration_hint="the wall-clock fuse (--param max_duration=\"${MAX_DURATION:-19800s}\") tripped mid-work; the per-iteration count was not cheaply readable from checkpoint.json for this run, see the uploaded evidence."
-            fi
+            # Issue #64: the old sentence ("N iteration(s) completed
+            # against a starting budget of M") reads as under-performance
+            # when the real finding is usually that M was never reachable
+            # at this graph's measured per-iteration cost. The hint now
+            # carries the arithmetic -- N of M, the fuse, the MEASURED mean
+            # iteration cost, and how many iterations that cost actually
+            # affords -- so the ceiling is legible and the next budget
+            # change has its evidence inline.
+            #
+            # max_iterations is NOT reconciled here the way capsule-specify's
+            # was: that one had a measured cost (run 34039364352). This
+            # graph does not yet. Rather than guess a number, this prints
+            # the cost on every ceiling hit so the reconciliation, when it
+            # happens, is evidence-based.
+            duration_hint="$(python3 .github/capsule-pipeline/ceiling_hint.py \
+              --fuse "${MAX_DURATION:-19800s}" \
+              --max-iterations 8 \
+              --checkpoint "$RUNNER_TEMP/capsule-run/logs/checkpoint.json" \
+              --timing "$RUNNER_TEMP/capsule-run/logs/timing-rollup.json")"
           fi
           echo "kind=$kind" >> "$GITHUB_OUTPUT"
           echo "id=$id" >> "$GITHUB_OUTPUT"

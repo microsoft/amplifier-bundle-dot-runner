@@ -294,6 +294,35 @@ jobs:
             recipe_path=foundation:recipes/validate-bundle-repo.yaml \
             context="{\"repo_path\": \"${GITHUB_WORKSPACE}\"}"
 
+  capsule-pipeline-scripts:
+    # The CI-run home for `.github/capsule-pipeline/`'s own unit tests.
+    #
+    # These scripts are load-bearing safety and reporting machinery for the
+    # capsule workflows -- the secret scrubber that stands between a
+    # worker's tool output and a public artifact, the session-evidence size
+    # cap, the per-node timing table, and the wall-clock-ceiling hint. Until
+    # now NOTHING in CI ran them: `test_scrub_secrets.py` shipped 37 passing
+    # tests that only ever ran when a human remembered to. A scrubber whose
+    # tests nobody runs is a scrubber nobody has checked.
+    #
+    # Stdlib `unittest`, no dependencies, no network -- so this job is a few
+    # seconds and needs no uv, no venv, and no matrix.
+    name: Capsule Pipeline Scripts (scrub, evidence cap, timing table)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run the capsule-pipeline script tests
+        working-directory: .github/capsule-pipeline
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s . -p 'test_*.py' -v
+
+
   ci-gate:
     # Aggregate "all-green" summary gate -- the ONE stable check to require
     # in branch protection. `if: always()` + explicit result inspection
@@ -308,6 +337,7 @@ jobs:
       - dot-render-gate
       - type-check
       - validate-bundle
+      - capsule-pipeline-scripts
     runs-on: ubuntu-latest
     steps:
       - name: Require every upstream job to have succeeded
@@ -321,6 +351,7 @@ jobs:
             [dot-render-gate]="${{ needs.dot-render-gate.result }}"
             [type-check]="${{ needs.type-check.result }}"
             [validate-bundle]="${{ needs.validate-bundle.result }}"
+            [capsule-pipeline-scripts]="${{ needs.capsule-pipeline-scripts.result }}"
           )
 
           overall_ok=true
