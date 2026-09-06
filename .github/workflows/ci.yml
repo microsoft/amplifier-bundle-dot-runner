@@ -78,6 +78,15 @@ jobs:
             extra_args: ""
           - name: tool-pipeline-status
             extra_args: ""
+          - name: tool-pipeline-run
+            # Held back from the P2 second extraction over namespace debt
+            # (DESIGN-worker-registry-core-split.md S6.3); de-attractorized
+            # in place in amplifier-bundle-attractor first, then moved here
+            # history-preserving as attractor-24e stage 2. Self-contained:
+            # its only runtime dependency is amplifier-core, and its tests
+            # import nothing from sibling modules, so no `pythonpath` entry
+            # or extra is needed.
+            extra_args: ""
         exclude:
           # loop-amplifier-agent's own pyproject.toml declares
           # `requires-python = ">=3.12"` -- one floor higher than this repo's
