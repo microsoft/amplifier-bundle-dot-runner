@@ -568,6 +568,27 @@ same extension, not a new one: the attribute, its name, its milliseconds unit, i
 - Tests: `modules/loop-pipeline/tests/test_fuse_node_granularity.py` (RED-proofed: hangs/overruns
   on the pre-fix engine, terminates near budget on the fix)
 
+*Addendum (2026-09-06, issue #34): what a cancelled TOOL node actually leaves behind.* The
+mid-node bullet above says the node's task is cancelled and given a bounded grace window "for its
+own cancellation cleanup" -- that presumed each handler HAD such cleanup. `ToolHandler` did not.
+It killed its `create_subprocess_shell` child on exactly one path (its OWN internal
+`asyncio.TimeoutError` from the node's `timeout=`), and `asyncio.CancelledError` is a
+`BaseException`, so the handler's `except Exception` never saw an external cancellation either:
+the `CancelledError` propagated correctly while the OS child kept running, orphaned from the
+engine's bookkeeping. The gap PRE-DATES this fuse update (a node with its own `timeout=` could
+already reach it), but node-granularity enforcement made it reachable by EVERY tool node in any
+pipeline that sets `max_pipeline_duration`, not just nodes that opt into their own `timeout=`.
+`ToolHandler.execute()` now kills and reaps its child (`proc.kill()` + a bounded `proc.wait()`,
+`ProcessLookupError`-guarded for the already-exited race) from ONE `finally`-invoked routine,
+`handlers/tool.py::_kill_and_reap`, covering every exit path -- normal completion (a no-op, the
+child already has a returncode), the node's own `timeout=`, external cancellation, and any other
+post-spawn exception. Its own wait is bounded (`_REAP_TIMEOUT_S`, 3s) so it can never hold the
+engine's `_FUSE_CANCEL_GRACE_S` (5s) window open indefinitely. No outcome, message, or
+`failure_reason` changes at either fuse call site; the only observable change is that the OS
+child is gone. Tests: `modules/loop-pipeline/tests/test_tool_subprocess_reap.py` (RED-proofed:
+the sleeper survives cancellation on the pre-fix handler, both at the handler seam and
+end-to-end through this entry's own fuse path).
+
 **Compatibility:** Additive. Pipelines that do not set `max_pipeline_duration` are unaffected
 (the attribute defaults to `None` and both checks are skipped). The attribute name does not
 collide with any upstream spec-defined graph attribute. A pipeline that previously relied on a
