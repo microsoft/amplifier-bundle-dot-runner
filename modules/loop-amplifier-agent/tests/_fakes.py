@@ -11,7 +11,7 @@ actual seam this module depends on (not just a name-shaped stub):
   * ``FakePreparedBundle.create_session`` returns a ``FakeSession`` whose
     ``coordinator.mount("tools", tool, name=...)`` records any mounted tool
     exactly like the real per-turn coordinator does (WAVE 4: the real
-    orchestrator no longer mounts a report_outcome reach-in itself -- ruling
+    orchestrator no longer mounts a verdict-capturing reach-in itself -- ruling
     5 -- so ``mounted_tools`` is normally empty; this fake keeps the
     recording behavior only because ``FakeSessionCoordinator`` is a general
     double other tests may still exercise).

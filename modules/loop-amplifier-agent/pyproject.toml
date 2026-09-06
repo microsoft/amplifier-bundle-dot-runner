@@ -38,7 +38,7 @@ package = true
 
 [tool.uv.sources]
 # Test-only, same-repo path source (dev dependency-group member below). The
-# integration test (tests/test_spawn_report_outcome_transport.py) drives the
+# integration test (tests/test_spawn_status_file_transport.py) drives the
 # REAL consumer (loop-pipeline's AmplifierBackend) against this module's REAL
 # orchestrator, mirroring pipeline-runner's own transport test verbatim for
 # this adapter. Editable so the test always runs the working tree's modules.

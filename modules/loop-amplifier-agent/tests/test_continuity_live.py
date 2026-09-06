@@ -23,11 +23,12 @@ regression: re-run before treating it as one. The hermetic Gap-6 tests are the
 deterministic guarantee; this test is the live corroboration that the seam
 actually reaches the model.
 
-WAVE 4 (ruling 5): this test no longer asks the model to call
-``report_outcome`` -- this module doesn't mount that reach-in tool anymore,
-so there would be nothing to call. The assertion reads the reply text alone.
+WAVE 4 (ruling 5): this test no longer asks the model to call a
+verdict-reporting tool -- this module doesn't mount that reach-in tool
+anymore, so there would be nothing to call. The assertion reads the reply
+text alone.
 
-Gated exactly like ``test_spawn_report_outcome_transport.py``:
+Gated exactly like ``test_spawn_status_file_transport.py``:
   * ``importorskip("amplifier_agent_lib")`` -- skips when the peer lib is absent.
   * skip-if-no-provider-key -- skips in CI (no secrets) so it never blocks.
 """
@@ -92,7 +93,7 @@ async def test_seeded_history_is_recalled_by_the_real_hosted_model():
         coordinator=None,
     )
 
-    # WAVE 4 (ruling 5): metadata never carries a fabricated report_outcome --
+    # WAVE 4 (ruling 5): metadata never carries a fabricated verdict --
     # this module no longer mounts that reach-in tool.
     assert hooks.completion.get("metadata", {}) == {}
 

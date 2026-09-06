@@ -582,25 +582,14 @@ class AgentSession:
             self._history.append(ToolResultsTurn(results=results))
             round_count += 1
 
-            # EXTENSIONS.md 35 (Ordering barrier): after the COMPLETE declared
-            # batch has run, a successful report_outcome terminates this
-            # execute() invocation -- no further provider call, and no
-            # automatic follow-up processing.  The verdict IS the node's
-            # answer; burning another provider call to have the model narrate
-            # it is what produced the cheerful-prose-after-a-FAIL class of
-            # incident in the first place.
-            #
-            # Already-queued follow-ups deliberately REMAIN queued (they are
-            # neither cleared nor consumed here) so a later explicit
-            # process_input() can still drain them.  That is also why this
-            # returns last_text directly rather than via _process_follow_ups.
-            if any(
-                tool_call.name == "report_outcome" and result.success
-                for tool_call, result in zip(raw_tool_calls, results, strict=True)
-            ):
-                self._state_machine.complete()  # PROCESSING -> IDLE
-                await self._emit_session_end()
-                return last_text
+            # EXTENSIONS.md 35 (2026-09-06 addendum): the post-batch
+            # verdict-terminates-the-invocation gate that used to sit here is
+            # DELETED.  It keyed on a tool the WAVE 5 repair (2026-08-30)
+            # removed repo-wide, so it could never fire again; the loop now
+            # continues to the next provider call exactly as it does for any
+            # other tool batch.  The taught verdict channel is the spec's own
+            # status.json (canonical Sec 4.5 / Appendix C, EXTENSIONS.md 41),
+            # which lives entirely outside this loop.
 
             # Record tool calls for loop detection
             if self._config.enable_loop_detection:
@@ -885,23 +874,16 @@ class AgentSession:
         """Execute tool calls, parallel or sequential based on config.
 
         Uses asyncio.gather() when supports_parallel_tool_calls is True
-        AND there are multiple ORDINARY tool calls (spec Section 3.2).
+        AND there are multiple tool calls (spec Section 3.2).
 
-        EXTENSIONS.md 35 (Ordering barrier): a batch containing AT LEAST ONE
-        ``report_outcome`` call is the exception -- every call in that batch
-        runs sequentially, in provider-declared order.  ``report_outcome``
-        writes a single semantic completion register (the tool's
-        ``last_outcome``); under asyncio.gather() the winner of two reports in
-        one batch would be decided by scheduling order rather than by the order
-        the model declared them, so "the last declared report wins" would not
-        be a statement anyone could rely on.  Batches without report_outcome
-        keep the configured parallel behavior unchanged.
+        EXTENSIONS.md 35 (2026-09-06 addendum): the sequential-batch ordering
+        barrier that used to carve out an exception here is DELETED.  It keyed
+        on a tool the WAVE 5 repair (2026-08-30) removed repo-wide, so its
+        exception branch was unreachable; batch semantics are now uniformly the
+        ordinary spec Section 3.2 ones for every tool.
         """
-        has_report_outcome = any(tc.name == "report_outcome" for tc in tool_calls)
         use_parallel = (
-            self._config.supports_parallel_tool_calls
-            and len(tool_calls) > 1
-            and not has_report_outcome
+            self._config.supports_parallel_tool_calls and len(tool_calls) > 1
         )
 
         if use_parallel:

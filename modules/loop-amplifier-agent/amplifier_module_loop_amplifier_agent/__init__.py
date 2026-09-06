@@ -119,7 +119,7 @@ async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
 
 
 def _load_dependencies() -> SimpleNamespace:
-    """Lazy-import the real amplifier-agent + tool-report-outcome seam.
+    """Lazy-import the real amplifier-agent seam.
 
     Extracted into its own function -- rather than inlined into
     ``_run_turn`` -- for two reasons:
@@ -131,9 +131,8 @@ def _load_dependencies() -> SimpleNamespace:
     2. Hermetic unit tests monkeypatch THIS ONE seam
        (``amplifier_module_loop_amplifier_agent._load_dependencies``) with
        faithful fakes (a fake ``Engine`` whose ``submit_turn`` really does
-       invoke the injected ``turn_handler``, a fake ``ReportOutcomeTool``
-       exposing ``.last_outcome``) instead of requiring the real, network-
-       fetching, Python-3.12-only library to be installed just to exercise
+       invoke the injected ``turn_handler``) instead of requiring the real,
+       network-fetching, Python-3.12-only library to be installed just to exercise
        the envelope-shape / config-mapping / fail-closed contracts this
        module owns.
 
@@ -235,12 +234,14 @@ class AmplifierAgentOrchestrator:
     ) -> str:
         """Run exactly one amplifier-agent turn and publish its completion envelope.
 
-        Boots a fresh Engine (no caching -- per-node state isolation),
-        mounts the real ``report_outcome`` tool onto the turn's session,
-        runs the turn, and emits ONE ``ORCHESTRATOR_COMPLETE`` event mirroring
+        Boots a fresh Engine (no caching -- per-node state isolation), runs
+        the turn, and emits ONE ``ORCHESTRATOR_COMPLETE`` event mirroring
         loop-agent's envelope shape (EXTENSIONS.md 35) so
-        ``backend.py::_outcome_from_spawn_result`` can recover an explicit
-        verdict across the spawn boundary.
+        ``backend.py::_outcome_from_spawn_result`` can read the child's
+        lifecycle status across the spawn boundary.  No tool is mounted onto
+        the hosted agent's session: the reach-in mount WAVE 4 retired is gone,
+        and the explicit-verdict channel is the status-file contract carried
+        in ``prompt`` (canonical Sec 4.5 / Appendix C, EXTENSIONS.md 41).
         """
         if coordinator is not None:
             self._coordinator = coordinator
@@ -265,17 +266,16 @@ class AmplifierAgentOrchestrator:
             # still owes the spawn boundary an envelope (mirrors loop-agent's
             # own cancelled/incomplete handling), but must NOT promote a
             # partial/absent report as a verdict.
-            await self._emit_completion(hooks, status="incomplete", report_outcome=None)
+            await self._emit_completion(hooks, status="incomplete")
             raise
 
-        # WAVE 4 (maintainer ruling 2026-08-29, EXTENSIONS.md Sec 35 RETCON
-        # note): no in-process report_outcome capture exists anymore -- this
-        # adapter no longer mounts a reach-in tool onto the hosted agent's
-        # coordinator (ruling 5). It is NOT this module's job to fabricate an
-        # explicit verdict from nothing: `metadata.report_outcome` stays
-        # empty, so `backend.py::_outcome_from_spawn_result` falls through to
-        # the lifecycle-status-only path (`is_explicit=False` -- cannot
-        # satisfy a goal_gate on its own, exactly as intended). The REAL
+        # WAVE 4 (maintainer ruling 2026-08-29) retired this adapter's
+        # reach-in tool mount; WAVE 5 (2026-08-30) removed the in-process
+        # verdict channel repo-wide. It is NOT this module's job to fabricate
+        # an explicit verdict from nothing: `metadata` stays empty, so
+        # `backend.py::_outcome_from_spawn_result` falls through to the
+        # lifecycle-status-only path (`is_explicit=False` -- cannot satisfy a
+        # goal_gate on its own, exactly as intended). The REAL
         # explicit-verdict channel for this worker is the status-file
         # contract already embedded in `prompt` (see
         # `amplifier_module_loop_pipeline.status_contract`): if the hosted
@@ -283,7 +283,7 @@ class AmplifierAgentOrchestrator:
         # tools, `handlers/codergen.py`'s `read_status_override` (running in
         # the PARENT process, after this method returns) picks it up --
         # entirely outside this adapter's control or knowledge.
-        await self._emit_completion(hooks, status="success", report_outcome=None)
+        await self._emit_completion(hooks, status="success")
         return reply
 
     @staticmethod
@@ -315,7 +315,6 @@ class AmplifierAgentOrchestrator:
         hooks: Any,
         *,
         status: str,
-        report_outcome: dict[str, Any] | None,
     ) -> None:
         """Emit the single ORCHESTRATOR_COMPLETE envelope for an invocation.
 
@@ -324,12 +323,13 @@ class AmplifierAgentOrchestrator:
         ``metadata``) so the parent's reader
         (``backend.py::_outcome_from_spawn_result``) needs no adapter-specific
         branch.
+
+        ``metadata`` is always ``{}``: WAVE 5 (2026-08-30) removed the only
+        verdict-carrying key this envelope ever had, and the 2026-09-06 owner
+        ruling deleted the residual parameter that could still have populated
+        it. This adapter never fabricates a verdict.
         """
-        metadata = (
-            {"report_outcome": report_outcome}
-            if isinstance(report_outcome, dict)
-            else {}
-        )
+        metadata: dict[str, Any] = {}
         await hooks.emit(
             ORCHESTRATOR_COMPLETE,
             {
@@ -351,7 +351,7 @@ class AmplifierAgentOrchestrator:
         """Boot a fresh Engine, run exactly one turn, return the reply text.
 
         WAVE 4: no longer returns a captured ``last_outcome`` -- there is no
-        more in-process report_outcome tool to capture it from (ruling 5).
+        more in-process verdict-capturing tool to capture it from (ruling 5).
         An explicit verdict, if any, reaches the parent exclusively via the
         status-file contract (``status_contract.py``) already embedded in
         ``prompt`` -- see ``execute()``'s docstring update below.
@@ -402,8 +402,7 @@ class AmplifierAgentOrchestrator:
             the mounted session orchestrator (``loop-streaming`` by
             default) recognizes the key.
           * ``user_instructions`` -> appended to the prompt text handed to
-            ``session.execute()`` (Layer-5 override), the same place the
-            report_outcome nudge is appended.
+            ``session.execute()`` (Layer-5 override).
           * ``workspace`` (v2, gap 1) -> the CLI's ``--workspace`` argv-flag
             analogue, forwarded to ``amplifier_agent_lib.persistence.
             resolve_workspace`` (argv > ``AMPLIFIER_AGENT_WORKSPACE`` env >
@@ -786,7 +785,7 @@ class AmplifierAgentOrchestrator:
     def _build_prompt(prompt: str, user_instructions: str | None) -> str:
         """Compose the final prompt: base prompt + user_instructions.
 
-        WAVE 4: no longer appends a report_outcome nudge -- ``prompt`` already
+        WAVE 4: no longer appends a verdict-reporting nudge -- ``prompt`` already
         carries the status-file contract (path + envelope), injected once by
         ``amplifier_module_loop_pipeline.backend`` for every spawn-capable
         worker (see ``status_contract.py``). Retiring a second, adapter-local
