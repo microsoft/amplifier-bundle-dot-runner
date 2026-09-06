@@ -26,37 +26,27 @@ without graphviz.** That asymmetry drives the whole recommendation below.
 
 ## 1. Audiences and what they actually lack
 
-### A. Pipeline author, iterating locally
-Wants the edit→look→fix loop under a few seconds.
-
-Has today: `dot-runner lint <file.dot>` — the full rule set (structural `LINT-001..018`,
+**A. Pipeline author, iterating locally** — wants edit→look→fix under a few seconds.
+*Has:* `dot-runner lint <file.dot>` — the full rule set (structural `LINT-001..018`,
 topological `TOPO-001..010`, command-content `CMD-001..002`, render-compliance
-`RENDER-001..002`), implemented at `cli.py:644-735` over
-`amplifier_module_loop_pipeline.validation.lint()`. Plus `dot -Tsvg` by hand.
+`RENDER-001..002`) at `cli.py:644-735` over `validation.lint()`; plus `dot -Tsvg` by hand.
+*Lacks:* **the two are separate artifacts.** Lint prints
+`ERROR: [rule][node_id] (from -> to) message` to a terminal (`cli.py:706-729`; no
+`--json`, no `--format`); the picture is a separate file with none of that on it. The
+author reads a finding about `node_id`, then hunts for that node in an image.
 
-Lacks: **the two are separate artifacts.** Lint prints
-`ERROR: [rule][node_id] (from -> to) message` to a terminal (`cli.py:706-729`; there is
-no `--json`, no `--format`); the picture is a separate file with none of that on it.
-The author reads a finding about `node_id` and then hunts for that node in an image.
+**B. Reviewer reading a capsule/fix PR** — wants to judge a graph change without
+checking it out. *Has:* **nothing.** A `.dot` diff in a PR is a text diff;
+`dot-render-gate` proves the file *draws* but never produces the drawing. *Lacks:* an
+image, and more importantly a *correct* one — see §3, where the edges that matter most
+are not in the file at all.
 
-### B. Reviewer reading a capsule/fix PR
-Wants to judge a graph change without checking it out.
-
-Has today: **nothing.** A `.dot` diff in a PR is a text diff. `dot-render-gate` proves
-the file *draws*; it never produces the drawing.
-
-Lacks: an image, and more importantly a *correct* image — see §3, where several of the
-edges that matter most are not in the file at all.
-
-### C. User watching a live run
-Wants "where is it now, what failed, how many iterations in."
-
-Has today: `dot-runner trace <run-dir>` (`cli.py:569-640`) — a post-hoc text table
-grouped by iteration. And a **phantom**: `modules/tool-dashboard-query` is a complete
-HTTP client for `/api/pipelines*` on `:8050` with no server anywhere in this repo.
-
-Lacks: anything visual and anything live. The data exists and is good (§2); nothing
-consumes it as a picture.
+**C. User watching a live run** — wants "where is it now, what failed, how many
+iterations in." *Has:* `dot-runner trace <run-dir>` (`cli.py:569-640`), a post-hoc text
+table grouped by iteration; and a **phantom** — `modules/tool-dashboard-query` is a
+complete HTTP client for `/api/pipelines*` on `:8050` with no server anywhere in this
+repo. *Lacks:* anything visual and anything live. The data exists and is good (§2);
+nothing consumes it as a picture.
 
 ## 2. What a live overlay would read (verified formats)
 
@@ -86,8 +76,8 @@ fields (`current_node`, `completed_nodes`, `context`, `timestamp`, `node_retries
 `logs`) and adds `run_state` (`in_flight` | `completed`), `node_outcomes`,
 `engine_state`, and `graph` (fingerprint + embedded DOT source).
 
-**Every field a run-state overlay needs is already on disk.** No new engine artifact,
-no new event, is required — which is what keeps this proposal inside AGENTS.md rule 3.
+**Every field a run-state overlay needs is already on disk** — no new engine artifact
+or event required, which is what keeps this proposal inside AGENTS.md rule 3.
 
 ## 3. Attractor semantics vs plain graphviz
 
@@ -107,10 +97,10 @@ node must reach `SUCCESS` or `PARTIAL_SUCCESS` before the pipeline can exit"; §
 the enforcement. It is one attribute among twelve promoted node fields and renders
 identically to a node that gates nothing.
 
-**(c) Budget walls are unrendered.** `max_retries` (§2.6), node `timeout` (§2.6), and
-`max_pipeline_duration` — a documented divergence, `specs/EXTENSIONS.md:500-511`,
-graph-level wall-clock in ms yielding `failure_reason="max_pipeline_duration_exceeded"`
-— determine whether the drawn path is reachable at all.
+**(c) Budget walls are unrendered.** `max_retries` and node `timeout` (§2.6), plus
+`max_pipeline_duration` (a documented divergence, `specs/EXTENSIONS.md:500-511`:
+graph-level wall-clock in ms yielding `failure_reason="max_pipeline_duration_exceeded"`)
+determine whether the drawn path is reachable at all.
 
 ### Worth encoding
 
@@ -124,7 +114,7 @@ graph-level wall-clock in ms yielding `failure_reason="max_pipeline_duration_exc
 4. **Budget badges** on the label — `max_retries`, `timeout`, graph
    `max_pipeline_duration` — as text, not geometry.
 5. **Lint findings pinned to their node/edge.** `Diagnostic` already carries `node_id`
-   and `edge` (`validation.py:74+`); `cli.py:706-729` proves both are populated.
+   and `edge` (`validation.py:74-86`); `cli.py:706-729` proves both are populated.
 
 ### Not worth encoding
 
@@ -266,7 +256,7 @@ graph-level label rather than being dropped silently.
 each executed node shows its `status` and the node named by `checkpoint.json:current_node`
 is marked current; And a run dir with **no** `trace.jsonl` annotates cleanly with no
 status rather than erroring (matching `cmd_trace`'s existing tolerance,
-`cli.py:597-604`); And `iteration_<N>` selection is explicit, not "last writer wins".
+`cli.py:590-597`); And `iteration_<N>` selection is explicit, not "last writer wins".
 
 **B4 — `dot-runner render` subcommand (layer 2).** Sixth `_DISPATCH` key; DOT to stdout.
 *Acceptance:* Given any tracked fixture, When `dot-runner render <f> | dot -Tsvg -o /dev/null`
@@ -287,7 +277,7 @@ engine-side artifact.
 *Acceptance:* Given the CI job, When any fixture's annotated output stops rendering,
 Then the job fails naming the file (mirroring the existing `::error file=` emission,
 `ci.yml:216`); And the sweep fails vacuously-empty, as the current gate already does
-(`ci.yml:226-228`).
+(`ci.yml:226-229`).
 
 ## 8. Open questions for the owner
 
