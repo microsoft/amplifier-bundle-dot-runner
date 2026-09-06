@@ -10,11 +10,19 @@ contract stays **DRAFT** after this packet lands. Nothing here asks for less tha
 the whole bar; where a condition is unmet, this packet says so in as many words,
 because pillar 5 holds that a missing artifact is a real result.
 
-**Assessed:** 2026-09-02, against the tree at this branch. Guard suites re-run
-green at assessment time: `ledger/checks` (214 passed, 24 skipped) and the doc
+**Assessed:** 2026-09-06, against `main` at `1dfc78b`. Guard suites re-run green
+at assessment time: `ledger/checks` (**294 passed, 40 skipped** — was 214/24 on
+2026-09-02; the growth is this contract's own rows and their guards) and the doc
 guards `test_extensions_ledger_integrity` · `test_doc_consistency` ·
 `test_engine_semantics_doc_guard` · `test_explainer_doc_guard` ·
-`test_examples_lint_clean` (12 passed, 6 skipped).
+`test_examples_lint_clean` (12 passed, 6 skipped, unchanged).
+
+**What moved since the 2026-09-02 packet.** #49 seeded `ledger/rows.yaml` rows
+from this contract's clauses and added the coverage tripwires; #51 closed C10's
+one-sided case (ESF-010 GAP → CONFORMS, issue #46); #52 closed C14's two missing
+removed-attribute controls (ESF-014 GAP → CONFORMS, issue #47); #48 opened the
+C17 ruling. The contract file itself has **not** moved — `ESF-000` pins its bytes
+and is green. Nothing else this packet reads has changed.
 
 ---
 
@@ -22,21 +30,23 @@ guards `test_extensions_ledger_integrity` · `test_doc_consistency` ·
 
 | # | Condition (`PROTOCOL.md` §5) | Verdict |
 |---|---|---|
-| 1 | The spec is written | **MET** — 17 Core clauses, each deriving from a named live `specs/EXTENSIONS.md` section, each carrying one executable Given/When/Then |
-| 2 | A machine-checkable conformance kit exists, with ≥1 discriminating good/bad fixture pair | **NOT MET as a kit.** Discriminating tests exist for 15 of 17 clauses, but **none is bound to this contract**: every one was written against an EXTENSIONS section, and **no `ledger/rows.yaml` row derives from this contract**. The binding layer is a separate lane's work. C14 is partial; C17 has no test at all |
-| 3 | At least one real implementation passes it | **MET.** One implementation — this engine — and its suites are green. Two named residuals below (C14.3's attachment path, C17's untested composition) are untested, not failing |
-| 4 | A worked example exists end-to-end | **MET for 11 of 17 clauses**, via the three CI-executed capsule pipelines. **NOT MET for 6** (C1's node-attribute half, C2, C8, C10, C13, C17) — listed exactly, below |
+| 1 | The spec is written | **MET** — unchanged. 17 Core clauses, each deriving from a named live `specs/EXTENSIONS.md` section, each carrying one executable Given/When/Then |
+| 2 | A machine-checkable conformance kit exists, with ≥1 discriminating good/bad fixture pair | **MET — this is what changed.** 18 rows derive from this contract: `ESF-000` (SYNC, byte-pin) plus **one per Core clause C1–C17**, with 70 named test cites. 16 clause rows **CONFORMS**; `ESF-017` is **OPEN-PINNED** on the owner ruling at #48. Coverage tripwires in `ledger/checks/test_engine_surface_matrix.py` assert the join in both directions — no clause un-rowed, no row inventing a clause. Two limits, stated below, not softened |
+| 3 | At least one real implementation passes it | **MET.** One implementation — this engine — and its suites are green. The residue is down to one named sliver (C14.3's byte-cap/unreadable-attachment path) plus C17, whose artifacts are not in this repo at all |
+| 4 | A worked example exists end-to-end | **MET literally** — the three CI-executed capsule pipelines are a real end-to-end example. **Per clause: fully met for 7 of 17, partial for 6, absent for 4.** The corpus has not changed since 2026-09-02; the count has, because the counting rule is now stated (below) |
 
-**Overall: the bar is not met.** Condition 2 is the blocker, and it is structural
-rather than a matter of writing more prose: this contract has no conformance
-layer of its own yet.
+**Overall: conditions 1–3 are met, and 4 is met literally with named per-clause
+residue.** Condition 2 was the structural blocker and it is gone. What blocks a
+stamp today is **not lane work** — it is two owner-only edits to the clause text
+(C17's referent, and a Conformance sentence that is now factually false), both of
+which fall inside the single step the owner already owns.
 
 ---
 
 ## The worked-example corpus
 
-Condition 4's evidence is one artifact family, and it is real: the three graphs
-in `.github/capsule-pipeline/` — `capsule.dot`, `feature-capsule.dot`,
+Unchanged since 2026-09-02, and stated so it is not re-counted as new: the three
+graphs in `.github/capsule-pipeline/` — `capsule.dot`, `feature-capsule.dot`,
 `task-runner.dot` — executed end-to-end by `.github/workflows/capsule-specify.yml`
 and `capsule-implement.yml` as
 
@@ -48,91 +58,159 @@ with run artifacts uploaded as evidence. Between them they exercise `--worker`,
 `--param` into `max_pipeline_duration="$max_duration"`, `must_write=`,
 `goal_gate=`, `llm_provider="openai"` on a node, and the whole run directory.
 
-**A named erosion.** Several EXTENSIONS entries cite exemplars under `examples/`
-(`examples/pipelines/…`, `examples/patterns/task-runner.dot`,
-`examples/objective/objective-runner.dot`). **That directory is not in the tree.**
-`test_examples_lint_clean.py` skips accordingly — it is designed to, so this is
-not a red test, but it does mean the corpus those entries point at is gone. Any
-freeze that leans on those citations for condition 4 would be leaning on nothing.
+**The counting rule, stated once.** A clause counts as **fully met** when a
+shipped, CI-executed graph exercises the surface the clause governs. **Partial**
+means one half of the clause is exercised and the other is not. **Absent** means
+no shipped graph touches it. A refusal path that no green run can demonstrate
+(C8) is counted absent, not excused. Under that rule: fully met — C3, C4, C6, C7,
+C11, C12, C15 (**7**); partial — C1, C5, C9, C14, C16, C17 (**6**); absent — C2,
+C8, C10, C13 (**4**). The 2026-09-02 packet's "11 of 17" folded partials in
+inconsistently (C1's partial counted against, C5/C9/C14/C16's counted for); the
+corpus is identical, only the arithmetic is honest now.
+
+**A named erosion, still open.** Several EXTENSIONS entries cite exemplars under
+`examples/` (`examples/pipelines/…`, `examples/patterns/task-runner.dot`,
+`examples/objective/objective-runner.dot`). **That directory is still not in the
+tree.** `test_examples_lint_clean.py` skips accordingly — by design, so not a red
+test — but the corpus those entries point at is gone. Any freeze that leans on
+those citations for condition 4 would be leaning on nothing.
 
 ---
 
 ## Per-clause evidence
 
-Legend for condition 2 — **PAIR**: tests assert both the behavior *and* a
-discriminating counter-case (absence, negative, or the same graph without the
-attribute). **ONE-SIDED**: behavior asserted, no discriminating counter-case.
-**NONE**: no test. Condition 4 — the worked example, or `—`.
+Condition 2 is now the ledger's own column: each clause has exactly one row, and
+that row carries the cites the 2026-09-02 packet listed inline. Read
+`ledger/rows.yaml` for the cite sets; they are AST-verified to resolve.
+Condition 4 — the worked example, or `—`.
 
-| Clause | 2 — kit | Named tests | 4 — worked example |
-|---|---|---|---|
-| **C1** worker names / selection / default ladder | PAIR | `loop-pipeline/tests/test_worker_selection.py` (precedence ×3, `test_unknown_node_worker_attr_raises_loud_error`, `test_unknown_default_worker_raises_at_construction_time`, and the control `test_a_community_dot_with_no_worker_attribute_runs_via_direct_unchanged`); `test_worker_registry.py`; `test_worker_parity.py` + `worker-parity-kit`'s `broken_worker`; `pipeline-runner/tests/test_default_worker.py`, `test_library_seam_default_worker.py` | **Partial.** `--worker coding-agent` runs in both capsule workflows. **No shipped `.dot` uses the `worker=` node attribute** — that half has no end-to-end example |
-| **C2** `status.json` verdict channel + spawn envelope | PAIR | `loop-pipeline/tests/test_status_file_contract.py` (RED-proofed; SF-006/SF-007 goal-gate interaction, `test_sf009_spawn_node_status_json_override_wins`, absent/malformed cases); `test_fail_closed_outcomes.py` (FC-008); `loop-amplifier-agent/tests/test_orchestrator.py::test_envelope_shape_never_fabricates_report_outcome`. Note `ledger/rows.yaml`'s `ATX-M-041` also asserts this behavior — but as a clause of the **external** nlspec (§4.5's status-file contract), not of this contract | **—** No shipped graph demonstrates a child writing a divergent `status.json` end-to-end |
-| **C3** `must_write=` | PAIR | `loop-pipeline/tests/test_engine_must_write.py` — `test_case1_narration_no_write_fails` / `test_case3_planted_file_fails` / `test_case3b_equality_boundary_fails` / `test_empty_artifact_fails` against `test_case5_write_first_skeleton_passes` / `test_minimal_content_passes` / `test_case6_no_attribute_control`; retry-budget half in `test_retry.py` | **Yes** — `capsule.dot`'s `critique` / `critique_b` and `task-runner.dot`'s postmortem node declare `must_write=` |
-| **C4** graph-level `$name` params | PAIR | `loop-pipeline/tests/test_graph_param_child_inheritance.py` — `test_absent_param_fails_loud` vs `test_supplied_param_resolves`, per-path message tests (`…_cli_mechanism`, `…_mounted_orchestrator_mechanism`, `…_composed_child_mechanism`), child-crossing (`test_child_pipeline_handler`, `test_manager_loop_handler`), and the AST all-call-sites guard `test_every_engine_call_site_threads_params`; `pipeline-runner/tests/test_params.py`, `test_lint_graph_param.py` | **Yes** — all three capsule graphs carry `max_pipeline_duration="$max_duration"`, supplied by `--param` in CI |
-| **C5** subscription providers + rung-4 default model | PAIR | `pipeline-runner/tests/test_provider_detection.py` — the intent rule asserted both ways (`…_not_configured_from_gh_token_alone`, `…_generic_token_counts_with_explicit_ask`, `…_generic_token_ignored_when_ask_is_for_other_provider`, `…_high_intent_token_counts_even_without_explicit_ask`), plus `test_three_tables_derive_from_one_registry`; `loop-pipeline/tests/test_subscription_provider_direct_worker.py`, `test_llm_provider_alone_default_model.py`, `test_profile_no_default_model.py`, `test_sole_mounted_provider_default.py`; `loop-agent/tests/test_subscription_provider_prompt_profile.py` | **Partial.** `capsule.dot`'s `critique_b` declares `llm_provider="openai"` end-to-end. **Neither subscription provider appears in a shipped graph** |
-| **C6** fuse at node granularity | PAIR | `loop-pipeline/tests/test_fuse_node_granularity.py` — `test_fuse_fires_during_node_execution_not_just_between_nodes` against `test_node_finishing_within_budget_completes_normally`, plus `…_node_own_timeout_still_governs_when_tighter_than_fuse` and `…_stubborn_cancellation_bounded_by_grace_window`; `test_node_timeout_units.py` | **Yes** — the capsule workflows set the fuse per invocation and their failure path reports it tripping |
-| **C7** provider preflight | PAIR | `loop-pipeline/tests/test_provider_preflight.py`, `test_profile_resolver_parity.py`; `pipeline-runner/tests/test_provider_preflight_drive_engine.py` (both entry points) | **Yes** — every capsule run passes the preflight before its first node |
-| **C8** refusal not degradation | PAIR | `loop-pipeline/tests/test_no_silent_fallback.py` — `test_unknown_shape_raises_value_error` / `…_lists_supported_shapes` / `…_names_the_bad_shape` against `test_known_shapes_still_dispatch_correctly`; `test_engine_semantics_doc_guard.py` (D-200 / D-201 / D-202a / D-202b); `test_engine.py`; `test_edge_selection_no_silent_fallthrough.py`; `test_spawn_suggested_next_ids_coercion.py`; ledger row `ATX-M-F01` in `ledger/checks` | **—** No shipped graph deliberately trips either refusal (correctly — they are refusals) |
-| **C9** `shape=folder` / `dot_file=` | PAIR | `loop-pipeline/tests/test_child_dot_resolution.py`, `test_folder_node_failure_routing.py`; `pipeline-runner/tests/test_lint_folder_dot_file.py`; fixture pair `fixtures/parent_with_child.dot` + `fixtures/child_pipeline.dot` | **Partial** — the fixture pair is the only end-to-end sub-pipeline in the tree; no shipped pipeline uses `dot_file=` |
-| **C10** session and thread scoping | ONE-SIDED | `loop-pipeline/tests/test_backend_clone.py`, `test_backend_full_continuity.py`, `test_fidelity.py`, `test_backend_fidelity.py`, `test_isolation_boundary_preferred_label.py` (which does carry both `…_clone_starts_without_preferred_label` and `…_child_converged_verdict_still_propagates_to_parent`) | **—** The sibling-branch `thread_id` case is asserted at unit level only |
-| **C11** no `reasoning_effort` default | PAIR (absence) | `loop-pipeline/tests/test_doc_consistency.py` (D-243, pinned two-sided); `test_attribute_passthrough.py`; ledger row `ATX-M-F04` in `ledger/checks` | **Yes** — every capsule run omits the attribute and no default appears |
-| **C12** fail-closed goal gate | PAIR | `loop-pipeline/tests/test_goal_gates.py`, `test_fail_closed_outcomes.py`, `test_goal_gate_retry_clears_failures.py`; fixture `fixtures/goal_gate.dot` | **Yes** — all three capsule graphs declare `goal_gate` |
-| **C13** `outcome=` → `preferred_label` first | PAIR | `loop-pipeline/tests/test_conditions.py` — `test_preferred_label_equals` / `…_not_equals` / `…_none_resolves_to_empty` against `test_outcome_equals`; `test_edge_selection.py` | **—** Unit-level only; no fixture pair and no shipped graph turning on the distinction |
-| **C14** additive graph vocabulary | **PARTIAL** | §21 `test_param_expansion.py`, `test_transforms.py`, `test_substitution_count_regression.py`; §20 `test_handlers.py`, `test_tool_cwd.py`, `test_tool_failure_capture.py`; §19 `test_human.py` (freeform + `attachments_inline` / `attachments_ref`); §14 `test_retry.py`, `test_attribute_passthrough.py`; §18 `test_parallel_policies.py` (`TestFailFastErrorPolicy`, `TestIgnoreErrorPolicy`) | **Partial** — `fixture_tool_reads_param.dot` and `fixture_human_gate.dot` are end-to-end for §21/§19; §14 and §18 have no shipped example |
-| **C15** run directory as audit trail | PAIR | `loop-pipeline/tests/test_convergence_observability.py` (iteration dirs, `$iteration`, `trace.jsonl` shape), `test_worker_session_observability.py`, `test_run_directory.py`, `test_parallel_branch_observability.py`, `test_subgraph_runner.py`, `test_manager_loop.py`; `hooks-pipeline-observability/tests/test_session_events_redaction.py`; `pipeline-runner/tests/test_provenance.py`, `test_trace_subcommand.py` | **Yes** — capsule runs upload the run directory as evidence |
-| **C16** validation narrowing + lint | PAIR | `loop-pipeline/tests/test_validation.py`, `test_dot_parser.py`, `test_retry.py`; lint half `test_topological_lint.py` (incl. `TestFolderDotFileAbsent`, `TestOutcomeLabelShadowingCalibration`), `test_inert_vocabulary_lint.py` (incl. `TestVocab001FalsePositives`) | **Partial** — `test_examples_lint_clean.py`, the corpus-sweep arm, **skips: `examples/` is absent** |
-| **C17** bundle composition | **NONE** | No test asserts `attractor:attractor-expert` registration, the always-on `context:` key, or the ref-free same-repo source rule | **Partial** — the shipped bundle is itself the example, but nothing checks it |
+| Clause | 2 — ledger row | 4 — worked example |
+|---|---|---|
+| **C1** worker names / selection / default ladder | `ESF-001` CONFORMS · 3 cites · control: `…runs_via_direct_unchanged` | **Partial.** `--worker coding-agent` runs in both capsule workflows. **No shipped `.dot` uses the `worker=` node attribute** |
+| **C2** `status.json` verdict channel + spawn envelope | `ESF-002` CONFORMS · 4 cites · control: `test_sf005_matching_status_json_is_noop…` | **—** No shipped graph demonstrates a child writing a divergent `status.json` end-to-end |
+| **C3** `must_write=` | `ESF-003` CONFORMS · 4 cites · control: `test_case6_no_attribute_control` | **Yes** — `capsule.dot`'s `critique` / `critique_b` and `task-runner.dot`'s postmortem node declare `must_write=` |
+| **C4** graph-level `$name` params | `ESF-004` CONFORMS · 4 cites · pair: `…absent_param_fails_loud` / `…supplied_param_resolves` | **Yes** — all three capsule graphs carry `max_pipeline_duration="$max_duration"`, supplied by `--param` in CI |
+| **C5** subscription providers + rung-4 default model | `ESF-005` CONFORMS · 4 cites · asserted both directions | **Partial.** `capsule.dot`'s `critique_b` declares `llm_provider="openai"`. **Neither subscription provider appears in a shipped graph** |
+| **C6** fuse at node granularity | `ESF-006` CONFORMS · 3 cites · control: `…finishing_within_budget_completes_normally` | **Yes** — the capsule workflows set the fuse per invocation and their failure path reports it tripping |
+| **C7** provider preflight | `ESF-007` CONFORMS · 4 cites · **no counter-case cited** (see below) | **Yes** — every capsule run passes the preflight before its first node |
+| **C8** refusal not degradation | `ESF-008` CONFORMS · 3 cites · control: `test_known_shapes_still_dispatch_correctly` | **—** No shipped graph deliberately trips either refusal (correctly — they are refusals) |
+| **C9** `shape=folder` / `dot_file=` | `ESF-009` CONFORMS · 3 cites · lazy-admission half cited directly | **Partial** — `fixtures/parent_with_child.dot` + `child_pipeline.dot` is the only end-to-end sub-pipeline; no shipped pipeline uses `dot_file=` |
+| **C10** session and thread scoping | `ESF-010` CONFORMS · 5 cites · **discriminating pair** — same four nodes, same `thread_id`, sibling vs sequential topology (#51) | **—** The sibling-branch case runs through the real engine, hermetically, but no shipped graph turns on it |
+| **C11** no `reasoning_effort` default | `ESF-011` CONFORMS · 4 cites · absence asserted on all three paths | **Yes** — every capsule run omits the attribute and no default appears |
+| **C12** fail-closed goal gate | `ESF-012` CONFORMS · 4 cites · scoping control: `test_fc002_non_goal_gate…` | **Yes** — all three capsule graphs declare `goal_gate` |
+| **C13** `outcome=` → `preferred_label` first | `ESF-013` CONFORMS · 3 cites · both rungs pinned | **—** Shipped graphs condition only on `outcome=success` / `outcome=fail`; **no shipped edge turns on a `preferred_label`** |
+| **C14** additive graph vocabulary | `ESF-014` CONFORMS · 14 cites · **all five sub-items now paired** (#52 added §14 and §19's removed-attribute controls) | **Partial** — `fixture_tool_reads_param.dot` and `fixture_human_gate.dot` are end-to-end for §21/§19; §14, §18, §20 have no shipped example |
+| **C15** run directory as audit trail | `ESF-015` CONFORMS · 4 cites · **no counter-case cited**, and the row's quote covers item 1 only (see below) | **Yes** — capsule runs upload the run directory as evidence |
+| **C16** validation narrowing + lint | `ESF-016` CONFORMS · 4 cites · control: `…custom_handler_with_tool_command_is_not_blocked` | **Partial** — `test_examples_lint_clean.py`, the corpus-sweep arm, **skips: `examples/` is absent** |
+| **C17** bundle composition | `ESF-017` **OPEN-PINNED** · probe `test_row_esf_017` pins today's state in all three directions · ruling at #48 | **Partial** — the shipped bundle is itself the example, but nothing checks the clause |
 
 ---
 
 ## Exactly what is missing
 
-**Clauses with no discriminating pair.**
+**1. C17 needs an owner ruling (#48) — and it is not a coverage gap.** As
+written, C17's subject is **another repository's bundle**. It derives from
+`specs/EXTENSIONS.md` §37, whose three changes landed on the attractor bundle;
+after the split none of those artifacts is here — this repo's root `bundle.md`
+has no `context:` key, there is no `agents/` directory, and its only same-repo
+self-pin is a `session.orchestrator` source, exactly the class §37 keeps
+deliberately. Re-scope to this repo's real bundle surface, move the clause to the
+contract governing `amplifier-bundle-attractor`, or drop it: all three are
+contract edits, and `PROTOCOL.md` §5 makes that the owner's call. `ESF-017`'s
+probe pins the current state so the ruling cannot be quietly pre-empted — port
+the expert agent in, add a `context:` key, or let a module source re-acquire a
+ref, and the row goes red naming #48.
 
-1. **C17** — nothing tests bundle composition at all. A registration regression, or a same-repo source silently re-acquiring a git ref, would ship green. This is the one clause where the implementation is asserted **nowhere**.
-2. **C14** — partial. Each of the five sub-items has behavior coverage, but the clause's own load-bearing claim — *"the same graph with the attribute removed behaves exactly as canonical"* — is asserted only for §21 and §18. §14 (`allow_partial` on timeout) and §19 (freeform/attachments) have no removed-attribute control.
-3. **C10** — one-sided. `thread_id` branch-locality is asserted at clone/unit level; there is no test that runs two sibling branches declaring the same `thread_id` and proves neither sees the other's history, which is the clause's actual claim.
+**2. The contract's own Conformance section is now factually false.** It says:
 
-**Clauses with no worked end-to-end example.** C2, C8, C10, C13, C17; and half of C1 (the `worker=` node attribute), C5 (subscription providers), C9 (`dot_file=` outside a test fixture), C14 (§14, §18).
+> **No `ledger/rows.yaml` row derives from this contract yet**, and none may
+> until it is stamped; seeding them is a separate lane's work.
 
-**The structural gap, which is the real blocker.** Every test above was written
-against a `specs/EXTENSIONS.md` section, not against a clause of this contract.
-There is no join: **no `ledger/rows.yaml` row derives from
-`CONTRACT-engine-surface.v1`, and none may until it is stamped.** Until those
-rows exist, a clause could silently drift and no check would name this contract
-in its failure message. Seeding them is a separate lane by design; this packet
-records the dependency rather than pretending the coverage above already
-constitutes the kit.
+#49 falsified that sentence on the owner's instruction, following this packet's
+own recommended sequence. It needs the owner's edit in the same pass as
+ratification. It is recorded here as a residual rather than silently absorbed,
+and `ledger/rows.yaml`'s own section header records it too.
 
-**One open question the contract deliberately refuses to answer.** §35's
-`report_outcome` **ordering barrier**: WAVE 5 (2026-08-30) removed the tool
+**3. The kit's semantic reach is bounded, and the bound is real.** Sixteen of the
+seventeen clause rows use `assertion.kind: indexed`, which proves the cited test
+**exists** (AST parse), not that it still asserts the claim
+(`LEDGER-FORMAT.md` §8). A cited test that is gutted while keeping its name goes
+unnoticed. Only `ESF-000` (byte-pin) and `ESF-017` (state-pin) are executable
+probes. This does not unmake condition 2 — the pairs are named and falsifiable by
+reading — but a stamp should not be read as claiming more than it does.
+
+**4. Two rows are thinner than their neighbours.**
+`ESF-007` (C7) cites four refusal-side tests and no serviceable control, though
+one exists uncited one file away
+(`test_provider_preflight.py::test_orchestrator_execute_serviceable_graph_runs_unaffected`).
+`ESF-015` (C15) likewise cites no counter-case, and its quote covers item 1 of
+four; items 2–4 are covered by named suites but not separately rowed.
+
+**5. Clauses with no worked end-to-end example.** C2, C8, C10, C13 outright; and
+half of C1 (the `worker=` node attribute), C5 (subscription providers), C9
+(`dot_file=` outside a test fixture), C14 (§14, §18, §20), C16 (the `examples/`
+sweep arm skips), C17 (nothing checks the bundle).
+
+**6. C14.3's last sliver.** `attachments_inline` / `attachments_ref`, globs, and
+the missing-glob case are asserted, and #52 added the removed-attribute control.
+Still unasserted: the byte-cap truncation marker and the unreadable-attachment
+skip-with-warning (`handlers/human.py:118-121`, `:145`).
+
+**7. One open question the contract deliberately refuses to answer.** Unchanged.
+§35's `report_outcome` **ordering barrier**: WAVE 5 (2026-08-30) removed the tool
 module and the `metadata.report_outcome` transport, but
 `modules/loop-agent/amplifier_module_loop_agent/agent_session.py` still gates
 batch execution on a tool named `report_outcome`, the EXTENSIONS body still
 asserts the barrier as behavior, and
 `modules/loop-pipeline/tests/fixtures/report_outcome_convergence.dot` plus
 `modules/loop-amplifier-agent/tests/test_spawn_report_outcome_transport.py`
-survive. WAVE 5's deletion list does not name any of them. Whether that barrier
-is live behavior or unreachable residue is an **owner ruling**, not a lane's
-call, so `engine-surface.v1` states no clause about it and reserves the name.
+survive. WAVE 5's deletion list names none of them. Whether that barrier is live
+behavior or unreachable residue is an **owner ruling**, not a lane's call, so
+`engine-surface.v1` states no clause about it and reserves the name.
 
 ---
 
 ## Recommendation
 
-Do not stamp. The honest sequence is:
+Do not stamp yet. The honest sequence, with what has landed struck out:
 
-1. Ratify or amend the clause text (owner) — this is the only step needing owner attention today.
-2. Seed `ledger/rows.yaml` rows from these clauses, one per checkable clause, with real assertions (separate lane). That is what turns the tests above into *this contract's* kit and satisfies condition 2.
-3. Close the three named coverage gaps — C17, C14's removed-attribute controls, C10's sibling-branch case.
+1. **Ratify or amend the clause text (owner) — still the only step needing owner attention today.** It now carries three things: the clause text itself, C17's referent (#48), and the false Conformance sentence in item 2 above.
+2. ~~Seed `ledger/rows.yaml` rows from these clauses~~ — **landed** (#49, #51, #52). Condition 2 is met.
+3. Close condition 4's per-clause residue — the nine entries in item 5 above. Lane work, no owner input needed.
 4. Rule on the `report_outcome` ordering barrier, then either add a clause or delete the residue.
 5. Then, and only then, the stamp.
+
+**What a stamp today would claim.** That the clause text is the owner's; that
+drift on 16 of 17 clauses is machine-visible and fails naming this contract; that
+one real implementation passes, green.
+
+**What it would not claim.** That every clause has a worked end-to-end example —
+7 of 17 do. That the cited tests still assert what they were cited for — 16 rows
+prove existence, not semantics (item 3). That C17 has been ruled on — it has not,
+and stamping the clause as written would freeze a clause whose subject is not in
+this repo.
+
+**One expected consequence, so it is not a surprise.** The moment the status line
+changes, `ESF-000` goes red on both its hash and its quote. That is the mandatory
+full-ledger re-review firing exactly when `LEDGER-FORMAT.md` §4 says it should —
+not a defect, and not something to fix by bumping the hash.
 
 ---
 
 ## Changelog
 
+- **2026-09-06 — refreshed to post-seeding truth.** Re-assessed all four
+  conditions against `main` at `1dfc78b`. **Condition 2 moved NOT MET → MET**:
+  #49 seeded 18 rows (`ESF-000` plus one per Core clause) with coverage tripwires
+  both directions, #51 closed C10 (ESF-010 GAP → CONFORMS, issue #46), #52 closed
+  C14 (ESF-014 GAP → CONFORMS, issue #47); 16 of 17 clause rows CONFORMS, C17
+  OPEN-PINNED at #48. Condition 4's corpus is unchanged; its count was recomputed
+  under a stated rule (7 fully / 6 partial / 4 absent, replacing "11 of 17").
+  Per-clause table re-pointed at the ledger rows rather than duplicating cite
+  lists. New residuals recorded: the contract's Conformance section is now
+  factually false and needs the owner's edit; 16 rows are existence-indexed, not
+  semantic; `ESF-007` and `ESF-015` cite no counter-case. Still no stamp
+  requested; the contract remains DRAFT.
 - **2026-09-02 — initial packet.** Assessed all four Freeze Bar conditions across
   the 17 Core clauses of `contracts/engine-surface.v1.md`. Verdict: **bar not
   met**, condition 2 blocking. No stamp requested; the contract remains DRAFT.
