@@ -1096,14 +1096,14 @@
 #
 # READ THIS BEFORE TRUSTING THE SECTION -- two honest limits:
 #
-#   1. The contract is DRAFT, not FROZEN. `contracts/engine-surface.v1.md`
-#      states, in its own Conformance section, "No `ledger/rows.yaml` row
-#      derives from this contract yet, and none may until it is stamped."
-#      This section FALSIFIES that sentence. It was seeded anyway, on the
-#      owner's instruction and following the freeze packet's own recommended
-#      sequence -- but the contract sentence now needs an owner edit. That is
-#      recorded as a residual, not silently absorbed: nothing here stamps
-#      anything, and the contract remains DRAFT.
+#   1. The contract is DRAFT, not FROZEN. It was seeded anyway, on the owner's
+#      instruction and following the freeze packet's own recommended sequence.
+#      RESOLVED 2026-09-06: the contract's Conformance section used to say
+#      "No `ledger/rows.yaml` row derives from this contract yet, and none may
+#      until it is stamped" -- a sentence this section falsified. It has been
+#      rewritten to today's truth (18 rows, tripwires both directions, the two
+#      real limits stated). Nothing here stamps anything; the contract remains
+#      DRAFT and unstamped, so none of these rows binds a lane.
 #
 #   2. `assertion.kind: indexed` proves the cited test EXISTS (AST parse), not
 #      that it still asserts the claim (LEDGER-FORMAT.md section 8). Rows below
@@ -1125,7 +1125,12 @@
     # external nlspec's SYNC row (ATX-M-000) carries one because its bytes come
     # from strongdm/attractor; ours come from this tree's own history.
     # Recomputed ONLY as part of a deliberate re-review, never a silent bump.
-    sha256: "2d18eb70a2a4373f3c1a4a4a3edd6889b125a82c854e1e5577e4585ba2cf15d4"
+    # Recomputed 2026-09-06 twice, both deliberate re-reviews of the BODY: once
+    # for the C17 narrowing (#48), once for the owner-authorized
+    # Conformance-sentence and Reserved-section corrections (see that file's
+    # Changelog). The QUOTE below is unchanged both times, deliberately -- the
+    # status line did not move, so neither bump is a stamp.
+    sha256: "c7882758f08a87f281cddd27dd41c1feecd8cd6c7c1e062562a8e0bea4b10177"
   contract:
     file: contracts/engine-surface.v1.md
     clause: "Header"

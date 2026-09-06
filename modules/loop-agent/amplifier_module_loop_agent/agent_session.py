@@ -882,9 +882,7 @@ class AgentSession:
         exception branch was unreachable; batch semantics are now uniformly the
         ordinary spec Section 3.2 ones for every tool.
         """
-        use_parallel = (
-            self._config.supports_parallel_tool_calls and len(tool_calls) > 1
-        )
+        use_parallel = self._config.supports_parallel_tool_calls and len(tool_calls) > 1
 
         if use_parallel:
             try:
