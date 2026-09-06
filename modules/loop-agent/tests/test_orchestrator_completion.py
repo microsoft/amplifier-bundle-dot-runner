@@ -1,35 +1,30 @@
 """Contract tests for the `orchestrator:complete` completion envelope.
 
 EXTENSIONS.md §35 ("Spawned-Agent Outcome Transport and `report_outcome`
-Ordering Barrier").
+Ordering Barrier") — both halves of which are now historical.
 
-WAVE 5 repair (2026-08-30, maintainer ruling): `report_outcome` the VERDICT
-TRANSPORT is REMOVED, no compat window. `_emit_completion`'s `metadata` is
-always `{}` now -- there is no `metadata.report_outcome` channel left for a
-node's semantic verdict to ride out of a spawn boundary on (see
-`amplifier_module_loop_agent/__init__.py`'s WAVE 5 repair notes). The tests
-this file used to carry for that channel (a report's contents reaching
-`metadata.report_outcome`, last-write-wins across a batch, rejection/promotion
-semantics, etc.) tested a mechanism that no longer exists and are deleted
-with it -- see git history for `test_report_outcome_verdict_rides_the_
-completion_envelope` and its siblings.
+WAVE 5 repair (2026-08-30, maintainer ruling) REMOVED the verdict transport,
+no compat window: `_emit_completion`'s `metadata` is always `{}` — there is
+no channel left for a node's semantic verdict to ride out of a spawn boundary
+on. The owner ruling of 2026-09-06 finished the job, deleting the ordering
+barrier in `agent_session.py` as residue: it keyed on a tool that no longer
+exists, so it could never fire again.
 
-Two pieces of `report_outcome`-adjacent behavior are UNCHANGED and remain
-covered below, because they never depended on the metadata channel:
+The tests this file used to carry for both mechanisms — a report's contents
+reaching the envelope metadata, last-write-wins across a batch,
+rejection/promotion semantics, and the barrier's terminate-the-invocation
+control flow — tested mechanisms that no longer exist and are deleted with
+them. See git history for `test_report_outcome_verdict_rides_the_completion_
+envelope`, `test_successful_report_terminates_the_invocation`, and their
+siblings.
 
-  * the ORDERING BARRIER (`agent_session.py`): a successful tool call
-    literally named `report_outcome` still terminates the `execute()`
-    invocation immediately -- no further provider call. This is a
-    tool-loop control-flow mechanic, not a metadata-population mechanic.
-  * lifecycle-only `status` on the completion envelope (success / incomplete
-    / cancelled), independent of any verdict.
-
-`metadata` is asserted to be `{}` on every remaining test below -- this is
-now the universal case (see `__init__.py`), not a special "no report" case.
+What remains covered here never depended on either mechanism: lifecycle-only
+`status` on the completion envelope (success / incomplete / cancelled), and
+per-invocation `turn_count`. `metadata` is asserted to be `{}` on every test
+below — the universal case now, not a special "no report" case.
 """
 
 import asyncio
-from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -60,46 +55,6 @@ def _tool_response(*calls, text: str = "") -> ChatResponse:
         ],
         usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
     )
-
-
-class _ReportOutcomeDouble:
-    """Faithful stand-in for `tool-report-outcome`'s `ReportOutcomeTool`.
-
-    loop-agent does not depend on the tool package, so the two behaviors the
-    envelope actually relies on are reproduced here verbatim:
-
-      * a SUCCESSFUL call overwrites `last_outcome` (last-write-wins);
-      * a call that fails validation returns an unsuccessful ToolResult and
-        leaves `last_outcome` untouched.
-
-    WAVE 5 repair (2026-08-30): the metadata-population half of this
-    contract is gone (see module docstring); this double is kept only to
-    drive the still-real ordering-barrier test below, which depends on the
-    tool call being *named* ``report_outcome`` and *succeeding*, not on
-    anything it writes to ``metadata``.
-    """
-
-    name = "report_outcome"
-    description = "Report the outcome of your work."
-    input_schema: ClassVar[dict] = {
-        "type": "object",
-        "properties": {"status": {"type": "string"}},
-        "required": ["status"],
-    }
-
-    def __init__(self) -> None:
-        self.last_outcome: dict | None = None
-
-    async def execute(self, input: dict) -> ToolResult:
-        status = input.get("status")
-        if status not in {"success", "fail", "partial_success", "retry"}:
-            return ToolResult(
-                success=False,
-                output=f"Invalid status: {status!r}",
-                error={"message": "invalid status"},
-            )
-        self.last_outcome = {k: v for k, v in input.items() if v is not None}
-        return ToolResult(success=True, output={"message": f"Outcome: {status}"})
 
 
 def _make_hooks():
@@ -147,8 +102,8 @@ async def test_execute_still_returns_the_final_string():
 
 
 @pytest.mark.asyncio
-async def test_no_report_outcome_leaves_metadata_empty():
-    """A child that never reports carries NO verdict — `metadata == {}`.
+async def test_a_plain_prose_turn_leaves_metadata_empty():
+    """A child that asserts nothing carries NO verdict — `metadata == {}`.
 
     This is what keeps a downstream goal gate fail-closed (EXTENSIONS.md §25):
     the parent sees a status-only completion and records `is_explicit=False`.
@@ -196,86 +151,6 @@ def _make_noop_tool():
     tool.input_schema = {"type": "object", "properties": {}}
     tool.execute = AsyncMock(return_value=ToolResult(success=True, output="ok"))
     return tool
-
-
-# ---------------------------------------------------------------------------
-# Last-declared-report-wins
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Terminal report path
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_successful_report_terminates_the_invocation():
-    """A successful report ends the invocation — no further provider call.
-
-    The provider below would raise if a second call were made, so this asserts
-    the barrier rather than merely observing a convenient response list.
-    """
-    report = _ReportOutcomeDouble()
-    orch, ctx, provs, tools, hooks = _make_orchestrator(
-        responses=[
-            _tool_response(
-                ("tc1", "report_outcome", {"status": "success"}),
-                text="closing prose emitted alongside the verdict",
-            ),
-            AssertionError("a second provider call was made after report_outcome"),
-        ],
-        tools={"report_outcome": report},
-    )
-
-    result = await orch.execute("go", ctx, provs, tools, hooks)
-
-    assert result == "closing prose emitted alongside the verdict"
-    assert provs["test"].complete.await_count == 1
-    assert _completions(hooks)[0]["turn_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_report_outcome_terminates_even_though_metadata_stays_empty():
-    """WAVE 5 regression: the ordering barrier and the (removed) metadata
-    channel are INDEPENDENT mechanisms. A successful `report_outcome` call
-    still ends the invocation with no further provider call (unchanged tool-
-    loop control flow), even though `metadata` carries none of its content
-    anymore (the transport channel is gone). Proves the repair did not
-    accidentally couple the two -- removing metadata population must not
-    also have silently removed the termination behavior, or vice versa.
-    """
-    report = _ReportOutcomeDouble()
-    orch, ctx, provs, tools, hooks = _make_orchestrator(
-        responses=[
-            _tool_response(
-                (
-                    "tc1",
-                    "report_outcome",
-                    {"status": "fail", "preferred_label": "escalate"},
-                ),
-                text="closing prose",
-            ),
-            AssertionError("a second provider call was made after report_outcome"),
-        ],
-        tools={"report_outcome": report},
-    )
-
-    result = await orch.execute("go", ctx, provs, tools, hooks)
-
-    assert result == "closing prose"
-    assert provs["test"].complete.await_count == 1, (
-        "the ordering barrier must still terminate on a successful "
-        "report_outcome call, independent of metadata population"
-    )
-    envelope = _completions(hooks)[0]
-    assert envelope["status"] == "success"
-    assert envelope["metadata"] == {}, (
-        "report_outcome's content must never populate metadata anymore"
-    )
-    # The double itself still recorded the call (proves the tool DID run
-    # and DID succeed -- the barrier fired for the right reason, not
-    # because the call was silently skipped).
-    assert report.last_outcome == {"status": "fail", "preferred_label": "escalate"}
 
 
 # ---------------------------------------------------------------------------
