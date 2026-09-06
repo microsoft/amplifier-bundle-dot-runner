@@ -1448,24 +1448,48 @@
     quote: |
       **`allow_partial` on timeout** (§14): the canonical attribute gains a second trigger — a node timeout yields `PARTIAL_SUCCESS` rather than FAIL. Call sites accept `True` and `"true"` alike.
     line: 179
-  disposition: GAP
+  disposition: CONFORMS
   assertion:
     kind: indexed
     indexed:
       - modules/loop-pipeline/tests/test_param_expansion.py::test_expand_custom_param
       - modules/loop-pipeline/tests/test_param_expansion.py::test_unknown_param_left_alone
+      - modules/loop-pipeline/tests/test_p9_parse_json.py::TestParseJson::test_parse_json_injects_dict_keys_into_context
+      - modules/loop-pipeline/tests/test_p9_parse_json.py::TestParseJson::test_without_parse_json_does_not_parse
+      - modules/loop-pipeline/tests/test_p10_tool_env.py::TestToolEnv::test_without_tool_env_does_not_inject
+      - modules/loop-pipeline/tests/test_c14_removed_attribute_controls.py::TestWaitHumanFreeformRemovedAttributeControl::test_gate_with_freeform_attrs_is_freeform_and_enriched
+      - modules/loop-pipeline/tests/test_c14_removed_attribute_controls.py::TestWaitHumanFreeformRemovedAttributeControl::test_gate_without_freeform_attrs_is_canonical_accelerator_key_gate
+      - modules/loop-pipeline/tests/test_c14_removed_attribute_controls.py::TestAllowPartialTimeoutRemovedAttributeControl::test_timeout_with_allow_partial_yields_partial_success
+      - modules/loop-pipeline/tests/test_c14_removed_attribute_controls.py::TestAllowPartialTimeoutRemovedAttributeControl::test_timeout_without_allow_partial_fails_as_canonical
       - modules/loop-pipeline/tests/test_retry.py::test_allow_partial_on_exhaustion
       - modules/loop-pipeline/tests/test_pipeline_events.py::TestTimeoutAllowPartialContinuation::test_timeout_with_allow_partial_continues
-      - modules/loop-pipeline/tests/test_parallel_policies.py::TestFailFastErrorPolicy::test_fail_fast_cancels_remaining_on_failure
+      - modules/loop-pipeline/tests/test_parallel.py::test_parallel_continue_error_policy
+      - modules/loop-pipeline/tests/test_parallel.py::test_parallel_wait_all_with_failure
       - modules/loop-pipeline/tests/test_human.py
-  work: "microsoft/amplifier-bundle-dot-runner#47"
   notes: >
-    The quote is item 4, but the GAP is the CLAUSE's own load-bearing claim, stated in its heading and its Probe line: each addition is additive -- "the same graph with each attribute removed" behaves exactly as canonical. That control half is asserted for the section 21 and section 18 sub-items only; section 14 (allow_partial on timeout) and section 19 (wait.human freeform / attachments) have behavior coverage with no removed-attribute control. The cites index the feature half that DOES exist, so the row shows exactly how far the
-    coverage reaches -- including one the freeze packet's C14 line missed:
-    TestTimeoutAllowPartialContinuation pins the section 14 timeout trigger at integration
-    level, in BOTH DOT spellings, which is the clause's "accepts `True` and `\"true\"` alike"
-    half. What is still unpinned is the same graph WITHOUT the attribute: nothing asserts a
-    node timeout FAILs when allow_partial is absent, so the additive claim rests on reading.
+    The quote is item 4, but the row answers the CLAUSE's own load-bearing claim, stated in
+    its heading and again in its Probe: each addition is additive -- "the same graph with
+    each attribute removed" behaves exactly as canonical. CONFORMS as of
+    microsoft/amplifier-bundle-dot-runner#47, which closed the last two holes the freeze
+    packet named ("Exactly what is missing", item 2). All five sub-items now have BOTH
+    halves, and the cites are ordered as pairs so the reach is readable rather than
+    asserted: section 21 (expand_custom_param / unknown_param_left_alone), section 20
+    (parse_json_injects_dict_keys / without_parse_json_does_not_parse, plus
+    without_tool_env_does_not_inject), section 19 and section 14 (the four
+    test_c14_removed_attribute_controls cites -- one graph source per sub-item, rendered
+    twice, differing ONLY in the extension attributes), and section 18
+    (parallel_continue_error_policy / parallel_wait_all_with_failure, the latter a parallel
+    node declaring no error_policy at all).
+    Two things the new pairs measured, both worth carrying here. First, the controls are
+    NOT redundant with the feature cites above them: with the engine mutated to ignore
+    allow_partial entirely, TestTimeoutAllowPartialContinuation and all of test_retry.py
+    stay green (42 passed) and only the new control fires; with the choice-gate path
+    mutated to attach whatever .md files it finds, all 61 test_human.py tests stay green
+    and only the new control fires. Second, a control built on UNCONDITIONAL edges does not
+    discriminate at all -- specs/EXTENSIONS.md section 16's runs_on= gate was removed on
+    2026-08-30 and canonical section 3.3 step 4 restored, so an unconditional edge is
+    followed regardless of outcome status. The section 14 pair therefore routes on
+    condition="outcome=fail", the spec-intended failure route.
 
 - id: ESF-017
   title: bundle composition -- the artifacts this clause governs are not in this repo
