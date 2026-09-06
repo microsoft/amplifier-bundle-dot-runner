@@ -1125,7 +1125,7 @@
     # external nlspec's SYNC row (ATX-M-000) carries one because its bytes come
     # from strongdm/attractor; ours come from this tree's own history.
     # Recomputed ONLY as part of a deliberate re-review, never a silent bump.
-    sha256: "7a67caaea71cff095a92d1972c6be1d0d39793e6db02373eb724645fb3e3fe62"
+    sha256: "2d18eb70a2a4373f3c1a4a4a3edd6889b125a82c854e1e5577e4585ba2cf15d4"
   contract:
     file: contracts/engine-surface.v1.md
     clause: "Header"
@@ -1494,21 +1494,49 @@
     condition="outcome=fail", the spec-intended failure route.
 
 - id: ESF-017
-  title: bundle composition -- the artifacts this clause governs are not in this repo
+  title: same-repo module and skill sources carry no git ref
   contract:
     file: contracts/engine-surface.v1.md
     clause: "C17"
-    heading: "Bundle composition"
+    heading: "Ref-free same-repo sources"
     quote: |
-      `agents/attractor-expert.md` is registered as `attractor:attractor-expert` by the core behavior and the root bundle.
-    line: 209
-  disposition: OPEN-PINNED
-  decision:
-    issue: 48
+      Same-repo module and skill sources are ref-free, because a ref-pinned same-repo source resolves against the installed app's bundle directory rather than this repo.
+    line: 208
+    also:
+      - clause: "C17"
+        quote: |
+          One class is exempt, and §37 **keeps** it pinned deliberately: `session.orchestrator` sources, which foundation resolves against the *composed root's* `base_path` — the app's own bundle directory in a real session — so no relative path written here can reach this snapshot.
+  disposition: CONFORMS
   assertion:
     kind: probe
     ref: test_row_esf_017
-  justification: >
-    Not merely untested: as written, C17's subject is ANOTHER repository's bundle. It derives from specs/EXTENSIONS.md section 37, whose three changes landed on the attractor bundle -- a root bundle.md that gained a `context:` key, `agents/attractor-expert.md` registered by `behaviors/attractor-core.yaml`, and same-repo tools:/hooks:/skills sources made ref-free. After the repo split NONE of those artifacts exist here: this repo's root bundle.md has no `context:` key at all, there is no agents/ directory, and its only bundle file with a same-repo self-pin is a session.orchestrator source -- exactly the class section 37 says it keeps deliberately. Whether C17 should be re-scoped to this repo's real bundle surface, moved to the contract governing amplifier-bundle-attractor, or dropped is a contract edit, and PROTOCOL.md section 5 makes that the owner's call, not a lane's. OPEN-PINNED rather than VIOLATION because the clause's referent is genuinely ambiguous post-split -- calling it a violation would be this lane deciding the ruling by choosing a reading.
   notes: >
-    The probe pins TODAY's state in all three of the clause's directions, so the ruling cannot be pre-empted by a silent change: if the expert agent is ported in, or the root bundle gains a `context:` key, or a module/skill source acquires a self-pinned ref, this row goes red and the owner's ruling is forced then rather than skipped. This is the pin half of "pinning behavior is not the same as deciding it".
+    Was OPEN-PINNED at issue #48, and this row is why that issue existed: as
+    originally drafted C17 named three things, and two of them -- the root bundle's
+    always-on `context:` key, and `agents/attractor-expert.md` registered as
+    `attractor:attractor-expert` -- were the ATTRACTOR bundle's, left there by the repo
+    split. A clause about another repository's artifacts cannot be asserted here, and
+    re-pointing the probe at this repo's reality would have decided an owner question by
+    choosing a reading. The owner ruled (2026-09-06, recorded on #48) for the narrowing:
+    remove those two items, keep section 37's third change, which IS true of this repo
+    and IS testable. That ruling is applied in this same change -- contract clause,
+    changelog entry, and this row together -- so the disposition and the text it quotes
+    never disagree. `decision.issue` is gone with the OPEN-PINNED state it belonged to;
+    an issue records a PENDING decision, and this one is decided. The probe scans the
+    whole bundle surface (root `bundle.md` plus every YAML/md under `behaviors/`, and
+    prospectively `bundles/`, `profiles/`, `agents/`) for a `source:` naming this repo
+    with a git ref, and fails naming file:line. Exactly one class is allow-listed --
+    `session.orchestrator` sources, which section 37 says it "keeps deliberately"
+    because foundation resolves them against the composed root's base_path -- and C17.2
+    is that exemption stated in the contract, so the allow-list is not a carve-out
+    living only in test code. Today's surface holds one such pin
+    (`behaviors/dot-runner-amplifier-agent.yaml:60`) and no violations. Hermetic: YAML
+    parse plus a regex, no engine, no network, no install. RED-proofed twice, both
+    restored: injecting a ref-carrying `tools:` source into `bundle.md` fails naming
+    `bundle.md:14 (tools.0.source)`; and -- the discriminating one -- pasting that
+    SAME URL as a `tools:` source into `behaviors/dot-runner-amplifier-agent.yaml`,
+    the file that already holds the exempt pin, fails naming
+    `behaviors/dot-runner-amplifier-agent.yaml:76 (tools.0.source)` while the
+    `session.orchestrator` pin at line 60 stays exempt. So the allow-list keys on the
+    key path, not on the URL or the filename. Four in-memory self-checks hold the same
+    line without touching disk, so a green run cannot mean "never looked".
