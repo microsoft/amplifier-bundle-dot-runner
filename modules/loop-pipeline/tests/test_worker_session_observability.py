@@ -378,3 +378,161 @@ async def test_end_to_end_real_events_persisted_and_locatable(tmp_path):
 
     # The full response is durable beside it.
     assert TAIL_MARKER in (tmp_path / "work" / "response.md").read_text()
+
+
+# ---------------------------------------------------------------------------
+# 5. The capsule-64 shape: a worker that writes its OWN status.json
+# ---------------------------------------------------------------------------
+#
+# Sections 1-4 above exercise a worker that returns an Outcome and writes no
+# status.json of its own. That is NOT the shape a real pipeline runs in.
+# Every node a pipeline actually asks for a verdict from writes status.json
+# itself, through the Sec 4.5 / Appendix C channel the engine hands it via
+# `current_node_status_path` -- and then `read_status_override` replaces the
+# handler's Outcome with a file-derived one.
+#
+# That replacement used to build a fresh Outcome from the file's fields
+# alone, silently dropping `session_id` (and `response_text`) -- engine-side
+# provenance the file never speaks about and a spawned worker cannot know.
+# Measured: capsule-specify run 34039364352 (issue #64) landed
+# `"session_id": null` in EVERY box node's status.json, orphaning the very
+# event streams sections 1-4 prove are being written.
+#
+# The test below is that exact production shape end to end: real engine,
+# real HookRegistry, the shipped persister, a worker that emits real LLM-call
+# and tool-call events AND writes its own diverging status.json.
+
+
+class StatusWritingWorkerBackend:
+    """The production shape: emits real events, writes its own status.json.
+
+    Mirrors a spawned coding-agent worker: the kernel stamps session_id onto
+    every event (``set_default_fields``), the loop brackets each provider
+    call with ``provider:request``/``provider:response`` and each tool call
+    with ``tool:pre``/``tool:post``, and the node reports its verdict by
+    writing the status.json path the engine exposed to it -- diverging from
+    the handler's parsed Outcome (here: an added ``context_updates``), which
+    is what makes ``read_status_override`` apply the file.
+    """
+
+    def __init__(self, hooks: HookRegistry, session_id: str) -> None:
+        self._hooks = hooks
+        self._session_id = session_id
+
+    async def run(self, node, prompt, context, incoming_edge=None, graph=None):
+        from amplifier_module_loop_pipeline.status_contract import (
+            current_node_status_path,
+        )
+
+        self._hooks.set_default_fields(session_id=self._session_id)
+        await self._hooks.emit("session:start", {"parent_id": None})
+        # One LLM call: request (start) -> response (end), with usage.
+        await self._hooks.emit("provider:request", {"model": "claude-sonnet-4-5"})
+        await self._hooks.emit(
+            "provider:response",
+            {"usage": {"input_tokens": 1200, "output_tokens": 340}},
+        )
+        # One tool call.
+        await self._hooks.emit(
+            "tool:pre", {"tool_name": "bash", "tool_input": {"command": "pytest -q"}}
+        )
+        await self._hooks.emit(
+            "tool:post",
+            {
+                "tool_name": "bash",
+                "tool_input": {"command": "pytest -q"},
+                "result": "14 passed",
+                "call_id": "call-1",
+            },
+        )
+        await self._hooks.emit("session:end", {"status": "completed"})
+
+        # The node writes its own verdict, through the engine-provided path.
+        status_path = current_node_status_path.get()
+        assert status_path is not None, (
+            "the engine must expose the node's status.json path to a spawned "
+            "worker (WAVE 4, status_contract.py) -- without it this fixture "
+            "is not reproducing the production shape"
+        )
+        Path(status_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(status_path).write_text(
+            json.dumps(
+                {
+                    "outcome": "success",
+                    "notes": "worker-authored verdict",
+                    "context_updates": {"gate_round": 2},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        outcome = _parse_outcome(LONG_RESPONSE)
+        outcome.session_id = self._session_id
+        return outcome
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not (
+        Path(__file__).parent.parent.parent
+        / "hooks-pipeline-observability"
+        / "amplifier_module_hooks_pipeline_observability"
+        / "session_events.py"
+    ).is_file(),
+    reason="modules/hooks-pipeline-observability not present (that module stayed in amplifier-bundle-attractor, DESIGN-repo-split.md S3.1)",
+)
+async def test_worker_authored_status_json_keeps_the_session_join_key(tmp_path):
+    """issue #64, end to end.
+
+    A worker that writes its own status.json still lands a NON-NULL
+    session_id in the node's final status record, and that id locates a
+    session directory carrying at least one LLM-call record and at least one
+    tool-call record.
+
+    RED before the fix: `read_status_override` rebuilt the Outcome from the
+    file alone, so `status["session_id"]` was None and the events written
+    beside it were unreachable from the run evidence.
+    """
+    session_events = _load_shipped_persister_module()
+    hooks = HookRegistry()
+    session_events.register_session_event_persister(hooks)
+
+    session_id = "worker-status-writer-1"
+    engine = _make_engine(StatusWritingWorkerBackend(hooks, session_id), str(tmp_path))
+    await engine.run()
+
+    work = tmp_path / "work"
+    status = json.loads((work / "status.json").read_text())
+
+    # The file's verdict won, as it must...
+    assert status["outcome"] == "success"
+    assert status["context_updates"] == {"gate_round": 2}
+    assert status["notes"] == "worker-authored verdict"
+    # ...and the engine-side join key survived it.
+    assert status["session_id"] == session_id, (
+        "the worker-authored status.json overrode the handler Outcome and "
+        "dropped session_id -- this is the issue #64 regression"
+    )
+
+    # The join key resolves to a real, well-formed capture.
+    assert _session_capture_anomaly(work) is None
+    events_path = work / "sessions" / status["session_id"] / "events.jsonl"
+    records = [json.loads(line) for line in events_path.read_text().splitlines()]
+    kinds = [r["event"] for r in records]
+
+    # >= 1 LLM-call record (a bracketed provider call, with model + usage).
+    assert "provider:request" in kinds and "provider:response" in kinds
+    request = records[kinds.index("provider:request")]
+    response = records[kinds.index("provider:response")]
+    assert request["data"]["model"] == "claude-sonnet-4-5"
+    assert response["data"]["usage"]["output_tokens"] == 340
+    # Both carry a timestamp -- the pair IS the call's start and end.
+    assert request["timestamp"] and response["timestamp"]
+
+    # >= 1 tool-call record.
+    assert "tool:pre" in kinds and "tool:post" in kinds
+    assert records[kinds.index("tool:pre")]["data"]["tool_name"] == "bash"
+
+    # response.md is durable beside it -- response_text also survives the
+    # override (it is carried, not re-derived from the file).
+    assert TAIL_MARKER in (work / "response.md").read_text()
