@@ -228,7 +228,7 @@ and appears in exactly one Core clause.
 
 *Names held — removed or never built — not reintroduced without an amendment.*
 - **Removed graph vocabulary:** `runs_on` and `continue_on_fail` as *routing* attributes (§16; `continue_on_fail`'s interaction with C3.4 is the only surviving mention), `requires=` / `outputs=` (§17), `response_schema` (§23), `feedback_from=` (§29), and `join_policy=k_of_n` / `quorum` with `min_success` / `quorum_fraction` (§18).
-- **`report_outcome`** (§35, WAVE 5): the tool module is deleted and `metadata.report_outcome` is dead end-to-end; the name is reserved. **Open — needs an owner ruling:** `loop-agent`'s batch **ordering barrier** still keys on a tool named `report_outcome` (`agent_session.py`), and a `report_outcome_convergence.dot` fixture survives. WAVE 5's deletion list does not name the barrier and the EXTENSIONS body still asserts it, so this contract deliberately states no clause about it.
+- **`report_outcome`** (§35, WAVE 5): the tool module is deleted and `metadata.report_outcome` is dead end-to-end; the name is reserved. **Ruled 2026-09-06 (owner): the batch ordering barrier was RESIDUE, not live behavior — deleted, no new clause.** `loop-agent`'s post-batch gate and sequential-batch barrier, the orphan `report_outcome_convergence.dot` fixture, and `loop-amplifier-agent`'s dead `report_outcome` completion parameter are gone; `modules/loop-pipeline/tests/test_report_outcome_residue_guard.py` fails naming `file:line` if the name re-enters live code. See `specs/EXTENSIONS.md` §35's 2026-09-06 addendum, including the one named residual left out of scope (the `[report_outcome: …]` transcript marker prefix). Reintroducing any live use is an amendment to this section, not a guard edit.
 - **Retired worker names** `direct` and `loop-agent`: reserved as fail-loud rename hints only (C1.4).
 - **Edge-level fan-out** (T0-4): retired; that behavior belongs to the nlspec and is asserted at `ledger/rows.yaml`'s `ATX-10`, not here.
 - **The nlspec's own surface:** no clause here may restate or contradict a clause of `contracts/external/attractor-spec-canonical.md`. Where this engine departs from it, the departure is a ledger row with a decision record — C8.1, C8.2, C11, C12, C13, C15.1 and C16.2 are those departures, named as such.
@@ -236,11 +236,35 @@ and appears in exactly one Core clause.
 ## Conformance
 
 Per-clause fixtures and checks, and the Freeze Bar's condition-by-condition state, are in
-`contracts/FREEZE-PACKET-engine-surface.v1.md`. **No `ledger/rows.yaml` row derives from this
-contract yet**, and none may until it is stamped; seeding them is a separate lane's work.
+`contracts/FREEZE-PACKET-engine-surface.v1.md`. **Eighteen `ledger/rows.yaml` rows derive from
+this contract** — `ESF-000` (a SYNC row byte-pinning this file, plus a quote pinning the status
+line above) and one row per Core clause, `ESF-001`…`ESF-017`. Drift on any of them fails naming
+this contract. Coverage tripwires in `ledger/checks/test_engine_surface_matrix.py` assert the
+join in **both** directions: no Core clause may go un-rowed, and no row may invent a clause this
+file does not carry.
+
+Seeding those rows ahead of a stamp was the owner's instruction (#49, following the freeze
+packet's own recommended sequence), so the rows are real today while this contract is still
+**DRAFT**. What the rows are and are not: 16 of the 17 clause rows use `assertion.kind: indexed`,
+which proves a cited test **exists** (AST-resolved), not that it still asserts what it was cited
+for (`LEDGER-FORMAT.md` §8); only `ESF-000` and `ESF-017` are executable probes — `ESF-017`
+asserts the narrowed C17 directly (#48), the others prove their cited tests exist.
 
 ## Changelog
 
+- **2026-09-06 — DRAFT, two corrections; no clause added, removed, or reworded.** (1) The
+  Conformance section above said *"No `ledger/rows.yaml` row derives from this contract yet,
+  and none may until it is stamped."* That has been false since #49 seeded 18 rows on the
+  owner's instruction, and the freeze packet recorded it as a residual needing the owner's
+  edit (its item 2). Rewritten to today's truth: 18 rows, `ESF-000` plus `ESF-001`…`ESF-017`,
+  drift failing named, tripwires both directions — with the two real limits (existence-indexed
+  assertions; two executable probes) stated rather than softened. (2) The Reserved section's
+  `report_outcome` entry said the ordering barrier was *"Open — needs an owner ruling"*; the
+  owner ruled on 2026-09-06 that it was residue, not live behavior, so the entry now records
+  the ruling and the guard that enforces it. **Neither edit binds a lane:** the contract
+  remains DRAFT and unstamped, and no Core clause text moved. `ESF-000`'s `sha256` is
+  recomputed for these bytes as the deliberate re-review its own note requires — its quote
+  (the status line) is unchanged, because the status is unchanged.
 - **2026-09-06 — DRAFT, pre-freeze correction — C17 narrowed.** Applying the owner
   ruling recorded at [issue #48](https://github.com/microsoft/amplifier-bundle-dot-runner/issues/48),
   which the conformance-ledger seeding lane filed and row `ESF-017` pinned as

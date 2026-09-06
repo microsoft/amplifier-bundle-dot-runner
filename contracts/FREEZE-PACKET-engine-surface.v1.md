@@ -47,10 +47,10 @@ this packet is re-assessed, and the 2026-09-06 assessment snapshot above (`main`
 
 **Overall: conditions 1–3 are met, and 4 is met literally with named per-clause
 residue.** Condition 2 was the structural blocker and it is gone. What blocks a
-stamp today is **not lane work** — it is one owner-only edit to the clause text
-(the Conformance sentence that is now factually false), which falls inside the
-single step the owner already owns. C17's referent was the second such edit; the
-#48 ruling settled it and the narrowing is applied.
+stamp today is **not lane work at all** — both owner-only edits named in the
+2026-09-06 assessment have since been authorized and landed: C17's referent
+(#48, narrowed) and the false Conformance sentence (item 2 below). What is
+left is the owner's ratification of the clause text itself.
 
 ---
 
@@ -139,15 +139,23 @@ that exemption in the contract, and a self-check fails if that sentence ever
 leaves §37. **What this closes:** condition 3's C17 residue, and condition 4's.
 **What it does not close:** nothing — no residue moved from C17 to elsewhere.
 
-**2. The contract's own Conformance section is now factually false.** It says:
+**2. ~~The contract's own Conformance section is factually false.~~ RESOLVED**
+in the PR carrying this update. It said:
 
 > **No `ledger/rows.yaml` row derives from this contract yet**, and none may
 > until it is stamped; seeding them is a separate lane's work.
 
 #49 falsified that sentence on the owner's instruction, following this packet's
-own recommended sequence. It needs the owner's edit in the same pass as
-ratification. It is recorded here as a residual rather than silently absorbed,
-and `ledger/rows.yaml`'s own section header records it too.
+own recommended sequence. The owner authorized the correction on 2026-09-06 and
+it has landed: the Conformance section now states today's truth — 18 rows,
+`ESF-000` plus `ESF-001`…`ESF-017`; drift fails naming this contract; coverage
+tripwires assert the clause↔row join in both directions — and states, rather
+than softens, the two real limits (16 rows are existence-indexed, not semantic;
+`ESF-017` is OPEN-PINNED on #48). `ledger/rows.yaml`'s section header is updated
+to match. **No clause text moved and nothing was stamped**; the contract remains
+DRAFT. `ESF-000`'s `sha256` is recomputed for the new bytes as the deliberate
+re-review its own note requires; its quote is untouched because the status line
+did not move.
 
 **3. The kit's semantic reach is bounded, and the bound is real.** Sixteen of the
 seventeen clause rows use `assertion.kind: indexed`, which proves the cited test
@@ -176,17 +184,34 @@ the missing-glob case are asserted, and #52 added the removed-attribute control.
 Still unasserted: the byte-cap truncation marker and the unreadable-attachment
 skip-with-warning (`handlers/human.py:118-121`, `:145`).
 
-**7. One open question the contract deliberately refuses to answer.** Unchanged.
-§35's `report_outcome` **ordering barrier**: WAVE 5 (2026-08-30) removed the tool
-module and the `metadata.report_outcome` transport, but
-`modules/loop-agent/amplifier_module_loop_agent/agent_session.py` still gates
-batch execution on a tool named `report_outcome`, the EXTENSIONS body still
-asserts the barrier as behavior, and
-`modules/loop-pipeline/tests/fixtures/report_outcome_convergence.dot` plus
-`modules/loop-amplifier-agent/tests/test_spawn_report_outcome_transport.py`
-survive. WAVE 5's deletion list names none of them. Whether that barrier is live
-behavior or unreachable residue is an **owner ruling**, not a lane's call, so
-`engine-surface.v1` states no clause about it and reserves the name.
+**7. ~~One open question the contract deliberately refuses to answer.~~
+RESOLVED — ruled 2026-09-06, residue deleted.** §35's `report_outcome`
+**ordering barrier** was the one open question: WAVE 5 (2026-08-30) removed the
+tool module and the `metadata.report_outcome` transport, but
+`agent_session.py` still gated batch execution on a tool named
+`report_outcome`, the EXTENSIONS body still asserted the barrier as behavior,
+and two orphan artifacts survived. **The owner ruled: residue, not live
+behavior — delete it, no new clause.** Landed: the post-batch gate and the
+sequential-batch barrier are gone (ordinary canonical §3.2 batch semantics
+restored); the orphan `report_outcome_convergence.dot` fixture is deleted;
+`test_spawn_report_outcome_transport.py` is renamed
+`test_spawn_status_file_transport.py` (its content has proven the LIVE
+status-file channel since WAVE 4 — only its name was residue);
+`loop-amplifier-agent`'s dead `report_outcome` completion parameter and its
+unreachable metadata branch are deleted. `modules/tool-report-outcome/`, which
+this packet previously listed alongside them, was in fact already fully removed
+by WAVE 5 — the residue was narrower than stated here, and that correction is
+part of the record. A hermetic guard
+(`modules/loop-pipeline/tests/test_report_outcome_residue_guard.py`) now fails
+naming `file:line` if the name re-enters live code, permitting comments and
+docstrings so the historical record survives; it is RED-proofed against the
+pre-change tree, where it names 9 live occurrences. The contract's Reserved
+entry records the ruling; `specs/EXTENSIONS.md` §35 carries the dated,
+append-only addendum, **including one named residual left deliberately out of
+scope** — `_synthesize_outcome_marker`'s `[report_outcome: …]` transcript
+marker prefix, which since WAVE 5 names a call that cannot have happened.
+Changing transcript vocabulary is a separate call; it is exempted in the guard
+individually, by exact snippet and reason, so it stays visible.
 
 ---
 
@@ -194,10 +219,10 @@ behavior or unreachable residue is an **owner ruling**, not a lane's call, so
 
 Do not stamp yet. The honest sequence, with what has landed struck out:
 
-1. **Ratify or amend the clause text (owner) — still the only step needing owner attention today.** It now carries two things: the clause text itself, and the false Conformance sentence in item 2 above. C17's referent was the third; the #48 ruling settled it and the narrowing is applied.
+1. **Ratify the clause text (owner) — still the only step needing owner attention today**, and now the whole of it. ~~C17's referent~~ — **landed** (#48, narrowed). ~~The false Conformance sentence~~ — **landed**, item 2 above.
 2. ~~Seed `ledger/rows.yaml` rows from these clauses~~ — **landed** (#49, #51, #52). Condition 2 is met.
 3. Close condition 4's per-clause residue — the nine entries in item 5 above. Lane work, no owner input needed.
-4. Rule on the `report_outcome` ordering barrier, then either add a clause or delete the residue.
+4. ~~Rule on the `report_outcome` ordering barrier, then either add a clause or delete the residue~~ — **ruled and landed** (2026-09-06: residue, no clause). Item 7 above.
 5. Then, and only then, the stamp.
 
 **What a stamp today would claim.** That the clause text is the owner's; that
@@ -219,6 +244,23 @@ not a defect, and not something to fix by bumping the hash.
 
 ## Changelog
 
+- **2026-09-06 (third entry, same day) — two residuals closed, no re-assessment.**
+  The Freeze Bar verdicts above are unchanged; this entry records only that two
+  named residuals landed, after the C17 narrowing recorded immediately below. **Item 2** (the contract's false Conformance sentence)
+  was corrected on the owner's authorization — the section now states 18 derived
+  rows with tripwires both directions, and states its two real limits;
+  `ledger/rows.yaml`'s section header and `ESF-000`'s `sha256` are updated to
+  match, the latter as the deliberate re-review its own note requires (the quote
+  is untouched — the status line did not move). **Item 7** (the `report_outcome`
+  ordering barrier) was **ruled by the owner: residue, not live behavior** — the
+  gate, the barrier, the orphan fixture and a dead completion parameter are
+  deleted, the surviving transport test is renamed to the channel it actually
+  proves, and a RED-proofed hermetic guard fails naming `file:line` if the name
+  returns. One residual is deliberately left open and named rather than absorbed:
+  the `[report_outcome: …]` transcript marker prefix. Correction to this packet's
+  own prior text: `modules/tool-report-outcome/` was listed as surviving residue
+  in item 7; it was already fully deleted by WAVE 5 and was never in the tree.
+  **Still no stamp requested; the contract remains DRAFT.**
 - **2026-09-06 — C17 lines only, after the #48 ruling.** Applied on top of the
   refresh below, touching **nothing but the lines that named C17**. The owner ruled
   to narrow: §37's two attractor-repo changes leave the clause, its third — ref-free

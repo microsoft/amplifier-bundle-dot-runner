@@ -2753,6 +2753,90 @@ the explicit-verdict story now. There is no third, tool-call-shaped channel laye
 (`specs/conformance/attractor-matrix.yaml`); see that file's own comments for the specific rows.
 
 ---
+### addendum: the ordering barrier was RESIDUE (2026-09-06, owner ruling)
+
+**Append-only.** Nothing above this line is edited; the WAVE 4 RETCON and the WAVE 5 `status:
+REMOVED` note stand exactly as written. This addendum records what the owner ruled today and
+what landed as a result.
+
+**The question.** WAVE 5 removed the tool module and the `metadata.report_outcome` transport,
+but its deletion list did not name three things, and they survived: `loop-agent`'s
+`agent_session.py` still gated batch execution on a tool *named* `report_outcome`, this entry's
+BODY still asserts that barrier as behavior, and two orphan artifacts survived. That left the
+barrier ambiguous — live behavior, or unreachable residue?
+`contracts/engine-surface.v1.md` therefore stated **no clause** about it and reserved the name;
+`contracts/FREEZE-PACKET-engine-surface.v1.md` item 7 recorded it as the one open question, and
+its Recommendation step 4 put the call to the owner.
+
+**The ruling.** **Residue, not live behavior. Delete it. No new clause.** WAVE 5 removed the
+tool repo-wide, so nothing could call it and nothing could satisfy either check: both code
+paths were dead by construction, not merely unused. The BODY above is unchanged (the ledger is
+append-only and describes what shipped historically); it is simply not a description of any
+live code, and has not been since 2026-08-30.
+
+**The three leftovers, deleted:**
+
+1. **The post-batch gate** (`agent_session.py`, formerly ~:585-603). A successful tool call
+   named `report_outcome` terminated the `execute()` invocation — no further provider call, no
+   follow-up drain. Deleted; the tool loop now continues to the next provider call exactly as
+   it does for any other batch.
+2. **The sequential-batch ordering barrier** (`agent_session.py`, formerly ~:885-905). A batch
+   containing at least one `report_outcome` call ran sequentially rather than under
+   `asyncio.gather()`, so "the last declared report wins" would be deterministic. Deleted;
+   batch semantics are uniformly the ordinary canonical §3.2 ones for every tool.
+3. **The orphan artifacts.** `modules/loop-pipeline/tests/fixtures/report_outcome_convergence.dot`
+   (referenced by nothing) is deleted.
+   `modules/loop-amplifier-agent/tests/test_spawn_report_outcome_transport.py` is **renamed** to
+   `test_spawn_status_file_transport.py`, not deleted: WAVE 4 already re-anchored its content to
+   the status-file contract, so it proves a LIVE channel and only its name was residue.
+
+Note that `modules/tool-report-outcome/` — named in the freeze packet's read-list — was already
+fully deleted by WAVE 5 and is not in the tree; likewise no `pyproject.toml`, workspace, or CI
+matrix entry for it survived. The residue was narrower than the packet's inventory implied, and
+this addendum says so rather than claiming a larger cleanup than happened.
+
+**Also deleted, as the same dead-by-construction class:** `loop-amplifier-agent`'s
+`_emit_completion(..., report_outcome=...)` parameter and its `{"report_outcome": ...}` metadata
+branch. WAVE 4 already forced every caller to pass `None`, so the branch could never be taken;
+`metadata` is now built as always-`{}` with no parameter that could change that.
+
+**Guard.** `modules/loop-pipeline/tests/test_report_outcome_residue_guard.py` — hermetic, no
+network. It AST-parses every live module package (`modules/<m>/<package>/**/*.py`, tests
+excluded) and fails naming `file:line` if `report_outcome` appears as an identifier, attribute,
+argument, keyword, def/class name, or non-docstring string literal; `bundle.md` and `behaviors/`
+are swept for any mention at all. **Comments and docstrings are deliberately permitted** — the
+WAVE 4/5 notes in `backend.py`, `status_file.py`, `direct_worker.py` and their neighbours are
+the historical record, and rewriting a record is falsification, not de-drift. RED-proofed two
+ways: five parametrized cases drive the real detector with reductions of each deleted shape, and
+against `main` before this change the same detector names 9 live occurrences
+(`agent_session.py:598/900/904`, `loop-amplifier-agent/__init__.py:268/286/318/329/330`).
+
+**Found by the guard, fixed here.** Four live *message* strings still taught the removed tool as
+a callable channel — `backend.py`'s prose-recovery warning ("…or call the report_outcome tool"),
+its goal_gate fail-closed warning and `failure_reason`, and `worker-parity-kit`'s M3 fixture
+prompt. All now name `status.json` / JSON. These were instructions to a model to call something
+that does not exist.
+
+**One named residual, deliberately NOT changed.** `backend.py`'s `_synthesize_outcome_marker`
+still prefixes an explicit-verdict marker `[report_outcome: …]` (the §25/§35 marker vocabulary
+above). Since WAVE 5 that prefix names a call that cannot have happened — `is_explicit` is now
+reached only via JSON, `status.json`, or embedded recovery. Changing transcript vocabulary is a
+separate call with its own test surface (~8 assertions in `loop-pipeline/tests/test_backend.py`)
+and is **out of scope for this ruling**, which was about the ordering barrier. It is exempted in
+the guard individually, by exact snippet and with this reason — not by a file-level opt-out —
+so it stays visible rather than silently absorbed.
+
+**Retired tests, named per guard-conservation.** Each tested code this change deletes:
+`test_batch_with_report_outcome_runs_sequentially` and
+`test_batch_without_report_outcome_still_runs_in_parallel` (the latter subsumed by
+`test_parallel_when_enabled_and_multiple`, which already asserts `max_in_flight == 2` for an
+ordinary batch) in `loop-agent/tests/test_parallel_gating.py`;
+`test_successful_report_terminates_the_invocation` and
+`test_report_outcome_terminates_even_though_metadata_stays_empty` plus the `_ReportOutcomeDouble`
+they drove, in `loop-agent/tests/test_orchestrator_completion.py`. No lifecycle-status,
+`turn_count`, parallel-gating, or fail-closed coverage is lost.
+
+---
 
 ## 36. Startup Provider Preflight and No-Fallback Profile Resolution (Fail-Loud)
 

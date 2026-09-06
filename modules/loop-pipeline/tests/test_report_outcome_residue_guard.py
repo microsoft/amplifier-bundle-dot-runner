@@ -147,9 +147,10 @@ def find_live_occurrences(source: str, *, filename: str) -> list[tuple[int, str]
             hits.append((node.lineno, node.arg))
         elif isinstance(node, ast.keyword) and TOKEN in (node.arg or ""):
             hits.append((getattr(node, "lineno", 0), node.arg or ""))
-        elif isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ) and TOKEN in node.name:
+        elif (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and TOKEN in node.name
+        ):
             hits.append((node.lineno, node.name))
     return sorted(set(hits))
 
