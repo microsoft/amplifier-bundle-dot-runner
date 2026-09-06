@@ -202,14 +202,13 @@ and appears in exactly one Core clause.
 
 **Probe.** *Given* `max_retries=-1`, *Then* validation fails naming the attribute; *and given* a `shape=box` node carrying `tool_command`, *Then* validation fails naming the handler mismatch; *and given* a graph whose only finding is `TOPO-010`, *Then* lint exits 0, and `--strict` exits 1.
 
-### C17 — Bundle composition
-*From §37 (LIVE — "a pure addition in an area the canonical spec does not address").*
+### C17 — Ref-free same-repo sources
+*From §37 (LIVE — "a pure addition in an area the canonical spec does not address"), narrowed 2026-09-06 to this one of its three changes by the owner ruling at [issue #48](https://github.com/microsoft/amplifier-bundle-dot-runner/issues/48).*
 
-1. The root bundle carries always-on guidance through its `context:` key.
-2. `agents/attractor-expert.md` is registered as `attractor:attractor-expert` by the core behavior and the root bundle.
-3. Same-repo module and skill sources are ref-free, because a ref-pinned same-repo source resolves against the installed app's bundle directory rather than this repo.
+1. Same-repo module and skill sources are ref-free, because a ref-pinned same-repo source resolves against the installed app's bundle directory rather than this repo.
+2. One class is exempt, and §37 **keeps** it pinned deliberately: `session.orchestrator` sources, which foundation resolves against the *composed root's* `base_path` — the app's own bundle directory in a real session — so no relative path written here can reach this snapshot.
 
-**Probe.** *Given* a fresh install of this bundle, *Then* `attractor:attractor-expert` is present in the agent roster, and no same-repo source in the bundle carries a git ref.
+**Probe.** *Given* a fresh install of this bundle, *Then* no same-repo module or skill source in the bundle carries a git ref.
 
 ---
 
@@ -242,6 +241,26 @@ contract yet**, and none may until it is stamped; seeding them is a separate lan
 
 ## Changelog
 
+- **2026-09-06 — DRAFT, pre-freeze correction — C17 narrowed.** Applying the owner
+  ruling recorded at [issue #48](https://github.com/microsoft/amplifier-bundle-dot-runner/issues/48),
+  which the conformance-ledger seeding lane filed and row `ESF-017` pinned as
+  `OPEN-PINNED`. §37 carries three changes; two of them — the root bundle's always-on
+  `context:` key, and `agents/attractor-expert.md` registered as
+  `attractor:attractor-expert` — govern artifacts the repo split left in
+  `microsoft/amplifier-bundle-attractor`: neither `agents/attractor-expert.md` nor
+  `behaviors/attractor-core.yaml` exists here, and this repo's root `bundle.md` has no
+  `context:` key at all. A clause whose subject is another repository's bundle cannot be
+  asserted by this contract, whose header declares `repo:
+  microsoft/amplifier-bundle-dot-runner`, so both are **removed**. They are not dropped
+  as wrong — they may become an attractor-side contract's clauses; that contract is not
+  authored here. §37's third change is true of this repo and testable, so it becomes the
+  whole of C17, retitled *Ref-free same-repo sources*, keeping its Given/Then. Item 2 is
+  not new scope: it names, inside the clause, the one exemption §37 already states it
+  "keeps deliberately", so the clause and its probe agree about `session.orchestrator`
+  sources rather than the allow-list living only in test code. `ESF-017` flips
+  `OPEN-PINNED` → `CONFORMS` on `test_row_esf_017`, which now asserts the clause instead
+  of pinning the undecided state. Version and `status:` are unmoved: a pre-freeze
+  correction to a DRAFT mints no version, and nothing here binds until the owner stamps.
 - **1.0.0 — 2026-09-02 — DRAFT.** Initial draft: the contract this repo owns for engine
   behavior beyond the external nlspec. Seventeen Core clauses derived, one per live extension
   surface, from a full census of `specs/EXTENSIONS.md` §1–§44 — the promotion that file's own
