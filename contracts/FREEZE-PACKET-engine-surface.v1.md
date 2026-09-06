@@ -21,8 +21,18 @@ guards `test_extensions_ledger_integrity` · `test_doc_consistency` ·
 from this contract's clauses and added the coverage tripwires; #51 closed C10's
 one-sided case (ESF-010 GAP → CONFORMS, issue #46); #52 closed C14's two missing
 removed-attribute controls (ESF-014 GAP → CONFORMS, issue #47); #48 opened the
-C17 ruling. The contract file itself has **not** moved — `ESF-000` pins its bytes
-and is green. Nothing else this packet reads has changed.
+C17 ruling. The contract file itself had **not** moved at assessment time.
+Nothing else this packet reads has changed.
+
+**Amended 2026-09-06, after that assessment — C17 only.** The owner ruled on #48
+(narrow: keep §37's ref-free-same-repo-sources change, remove the two whose
+artifacts the split left in `amplifier-bundle-attractor`), and that ruling is now
+applied. So the contract file HAS moved, `ESF-000`'s `sha256:` is re-pinned as the
+deliberate re-review `LEDGER-FORMAT.md` §4 requires, and `ESF-017` is CONFORMS on a
+real behavioral probe. Every line below that named C17 is updated; nothing else in
+this packet is re-assessed, and the 2026-09-06 assessment snapshot above (`main` at
+`1dfc78b`, `ledger/checks` 294/40) stands as the history it is — that suite now runs
+**300 passed, 40 skipped**, the six added being this probe's own self-checks.
 
 ---
 
@@ -31,15 +41,16 @@ and is green. Nothing else this packet reads has changed.
 | # | Condition (`PROTOCOL.md` §5) | Verdict |
 |---|---|---|
 | 1 | The spec is written | **MET** — unchanged. 17 Core clauses, each deriving from a named live `specs/EXTENSIONS.md` section, each carrying one executable Given/When/Then |
-| 2 | A machine-checkable conformance kit exists, with ≥1 discriminating good/bad fixture pair | **MET — this is what changed.** 18 rows derive from this contract: `ESF-000` (SYNC, byte-pin) plus **one per Core clause C1–C17**, with 70 named test cites. 16 clause rows **CONFORMS**; `ESF-017` is **OPEN-PINNED** on the owner ruling at #48. Coverage tripwires in `ledger/checks/test_engine_surface_matrix.py` assert the join in both directions — no clause un-rowed, no row inventing a clause. Two limits, stated below, not softened |
-| 3 | At least one real implementation passes it | **MET.** One implementation — this engine — and its suites are green. The residue is down to one named sliver (C14.3's byte-cap/unreadable-attachment path) plus C17, whose artifacts are not in this repo at all |
+| 2 | A machine-checkable conformance kit exists, with ≥1 discriminating good/bad fixture pair | **MET — this is what changed.** 18 rows derive from this contract: `ESF-000` (SYNC, byte-pin) plus **one per Core clause C1–C17**, with 70 named test cites. **All 17 clause rows CONFORMS** — `ESF-017` moved OPEN-PINNED → CONFORMS when the owner ruled on #48 and C17 was narrowed to the half that is true of this repo. Coverage tripwires in `ledger/checks/test_engine_surface_matrix.py` assert the join in both directions — no clause un-rowed, no row inventing a clause. Two limits, stated below, not softened |
+| 3 | At least one real implementation passes it | **MET.** One implementation — this engine — and its suites are green. The residue is down to one named sliver (C14.3's byte-cap/unreadable-attachment path); C17's — a clause whose artifacts were not in this repo at all — is closed by the #48 narrowing |
 | 4 | A worked example exists end-to-end | **MET literally** — the three CI-executed capsule pipelines are a real end-to-end example. **Per clause: fully met for 7 of 17, partial for 6, absent for 4.** The corpus has not changed since 2026-09-02; the count has, because the counting rule is now stated (below) |
 
 **Overall: conditions 1–3 are met, and 4 is met literally with named per-clause
 residue.** Condition 2 was the structural blocker and it is gone. What blocks a
-stamp today is **not lane work** — it is two owner-only edits to the clause text
-(C17's referent, and a Conformance sentence that is now factually false), both of
-which fall inside the single step the owner already owns.
+stamp today is **not lane work** — it is one owner-only edit to the clause text
+(the Conformance sentence that is now factually false), which falls inside the
+single step the owner already owns. C17's referent was the second such edit; the
+#48 ruling settled it and the narrowing is applied.
 
 ---
 
@@ -63,8 +74,12 @@ shipped, CI-executed graph exercises the surface the clause governs. **Partial**
 means one half of the clause is exercised and the other is not. **Absent** means
 no shipped graph touches it. A refusal path that no green run can demonstrate
 (C8) is counted absent, not excused. Under that rule: fully met — C3, C4, C6, C7,
-C11, C12, C15 (**7**); partial — C1, C5, C9, C14, C16, C17 (**6**); absent — C2,
-C8, C10, C13 (**4**). The 2026-09-02 packet's "11 of 17" folded partials in
+C11, C12, C15, C17 (**8**); partial — C1, C5, C9, C14, C16 (**5**); absent — C2,
+C8, C10, C13 (**4**). C17 moved partial → fully met on this packet's own stated
+reason for calling it partial: *"the shipped bundle is itself the example, but
+nothing checks the clause."* Something checks it now — `test_row_esf_017` scans the
+shipped bundle surface in CI — and the shipped bundle was always the end-to-end
+artifact. The 2026-09-02 packet's "11 of 17" folded partials in
 inconsistently (C1's partial counted against, C5/C9/C14/C16's counted for); the
 corpus is identical, only the arithmetic is honest now.
 
@@ -102,24 +117,27 @@ Condition 4 — the worked example, or `—`.
 | **C14** additive graph vocabulary | `ESF-014` CONFORMS · 14 cites · **all five sub-items now paired** (#52 added §14 and §19's removed-attribute controls) | **Partial** — `fixture_tool_reads_param.dot` and `fixture_human_gate.dot` are end-to-end for §21/§19; §14, §18, §20 have no shipped example |
 | **C15** run directory as audit trail | `ESF-015` CONFORMS · 4 cites · **no counter-case cited**, and the row's quote covers item 1 only (see below) | **Yes** — capsule runs upload the run directory as evidence |
 | **C16** validation narrowing + lint | `ESF-016` CONFORMS · 4 cites · control: `…custom_handler_with_tool_command_is_not_blocked` | **Partial** — `test_examples_lint_clean.py`, the corpus-sweep arm, **skips: `examples/` is absent** |
-| **C17** bundle composition | `ESF-017` **OPEN-PINNED** · probe `test_row_esf_017` pins today's state in all three directions · ruling at #48 | **Partial** — the shipped bundle is itself the example, but nothing checks the clause |
+| **C17** ref-free same-repo sources | `ESF-017` CONFORMS · probe `test_row_esf_017` scans the bundle surface and fails naming file:line · 4 in-memory self-checks discriminate forbidden / exempt / ref-free · narrowed by the #48 ruling | **Yes** — the shipped bundle is the example, and CI now checks it |
 
 ---
 
 ## Exactly what is missing
 
-**1. C17 needs an owner ruling (#48) — and it is not a coverage gap.** As
-written, C17's subject is **another repository's bundle**. It derives from
-`specs/EXTENSIONS.md` §37, whose three changes landed on the attractor bundle;
-after the split none of those artifacts is here — this repo's root `bundle.md`
-has no `context:` key, there is no `agents/` directory, and its only same-repo
-self-pin is a `session.orchestrator` source, exactly the class §37 keeps
-deliberately. Re-scope to this repo's real bundle surface, move the clause to the
-contract governing `amplifier-bundle-attractor`, or drop it: all three are
-contract edits, and `PROTOCOL.md` §5 makes that the owner's call. `ESF-017`'s
-probe pins the current state so the ruling cannot be quietly pre-empted — port
-the expert agent in, add a `context:` key, or let a module source re-acquire a
-ref, and the row goes red naming #48.
+**1. C17's ruling — CLOSED (#48), and it was never a coverage gap.** As
+originally written, C17's subject was **another repository's bundle**: it derives
+from `specs/EXTENSIONS.md` §37, whose three changes landed on the attractor
+bundle, and after the split none of the artifacts behind two of them was here.
+The owner ruled to **narrow**: those two items are removed — they may become an
+attractor-side contract's clauses, which is not this repo's to author — and §37's
+third change, ref-free same-repo module and skill sources, becomes the whole of
+C17, retitled and keeping its Given/Then. That half was always true here and is
+testable, so `ESF-017` is CONFORMS on `test_row_esf_017`, which scans the bundle
+surface for a `source:` naming this repo with a git ref and fails naming
+file:line. One class is allow-listed, explicitly and with §37's own words:
+`session.orchestrator` sources, which §37 *"keeps deliberately"*; C17.2 states
+that exemption in the contract, and a self-check fails if that sentence ever
+leaves §37. **What this closes:** condition 3's C17 residue, and condition 4's.
+**What it does not close:** nothing — no residue moved from C17 to elsewhere.
 
 **2. The contract's own Conformance section is now factually false.** It says:
 
@@ -135,7 +153,8 @@ and `ledger/rows.yaml`'s own section header records it too.
 seventeen clause rows use `assertion.kind: indexed`, which proves the cited test
 **exists** (AST parse), not that it still asserts the claim
 (`LEDGER-FORMAT.md` §8). A cited test that is gutted while keeping its name goes
-unnoticed. Only `ESF-000` (byte-pin) and `ESF-017` (state-pin) are executable
+unnoticed. Only `ESF-000` (byte-pin) and `ESF-017` (a behavioral probe since the
+#48 narrowing — it was a state-pin while the ruling was open) are executable
 probes. This does not unmake condition 2 — the pairs are named and falsifiable by
 reading — but a stamp should not be read as claiming more than it does.
 
@@ -149,7 +168,8 @@ four; items 2–4 are covered by named suites but not separately rowed.
 **5. Clauses with no worked end-to-end example.** C2, C8, C10, C13 outright; and
 half of C1 (the `worker=` node attribute), C5 (subscription providers), C9
 (`dot_file=` outside a test fixture), C14 (§14, §18, §20), C16 (the `examples/`
-sweep arm skips), C17 (nothing checks the bundle).
+sweep arm skips). C17 has left this list: the shipped bundle is the example and
+`test_row_esf_017` checks it in CI.
 
 **6. C14.3's last sliver.** `attachments_inline` / `attachments_ref`, globs, and
 the missing-glob case are asserted, and #52 added the removed-attribute control.
@@ -174,21 +194,21 @@ behavior or unreachable residue is an **owner ruling**, not a lane's call, so
 
 Do not stamp yet. The honest sequence, with what has landed struck out:
 
-1. **Ratify or amend the clause text (owner) — still the only step needing owner attention today.** It now carries three things: the clause text itself, C17's referent (#48), and the false Conformance sentence in item 2 above.
+1. **Ratify or amend the clause text (owner) — still the only step needing owner attention today.** It now carries two things: the clause text itself, and the false Conformance sentence in item 2 above. C17's referent was the third; the #48 ruling settled it and the narrowing is applied.
 2. ~~Seed `ledger/rows.yaml` rows from these clauses~~ — **landed** (#49, #51, #52). Condition 2 is met.
 3. Close condition 4's per-clause residue — the nine entries in item 5 above. Lane work, no owner input needed.
 4. Rule on the `report_outcome` ordering barrier, then either add a clause or delete the residue.
 5. Then, and only then, the stamp.
 
 **What a stamp today would claim.** That the clause text is the owner's; that
-drift on 16 of 17 clauses is machine-visible and fails naming this contract; that
+drift on **all 17** clauses is machine-visible and fails naming this contract; that
 one real implementation passes, green.
 
 **What it would not claim.** That every clause has a worked end-to-end example —
-7 of 17 do. That the cited tests still assert what they were cited for — 16 rows
-prove existence, not semantics (item 3). That C17 has been ruled on — it has not,
-and stamping the clause as written would freeze a clause whose subject is not in
-this repo.
+8 of 17 do. That the cited tests still assert what they were cited for — 16 rows
+prove existence, not semantics (item 3). C17 is no longer on this list: it has
+been ruled on (#48), narrowed to the half that is true of this repo, and asserted
+by an executable probe.
 
 **One expected consequence, so it is not a surprise.** The moment the status line
 changes, `ESF-000` goes red on both its hash and its quote. That is the mandatory
@@ -199,6 +219,20 @@ not a defect, and not something to fix by bumping the hash.
 
 ## Changelog
 
+- **2026-09-06 — C17 lines only, after the #48 ruling.** Applied on top of the
+  refresh below, touching **nothing but the lines that named C17**. The owner ruled
+  to narrow: §37's two attractor-repo changes leave the clause, its third — ref-free
+  same-repo module and skill sources — becomes the whole of it. Consequences recorded
+  here: `ESF-017` OPEN-PINNED → **CONFORMS** on `test_row_esf_017`, so condition 2 now
+  reads 17 of 17 clause rows CONFORMS; condition 3's C17 residue is closed; condition
+  4's per-clause count moves **7 fully / 6 partial → 8 fully / 5 partial** (absent
+  unchanged at 4), C17 moving on this packet's own stated reason for having called it
+  partial; residue items 1 and 5 updated; the owner's remaining clause-text edits drop
+  from three to two. `ledger/checks` runs **300 passed, 40 skipped** (was 294/40 — the
+  six new ones are the probe's self-checks). The contract file has moved, so
+  `ESF-000`'s hash is re-pinned; its quote is untouched because version, status and
+  date did not move — a pre-freeze correction to a DRAFT mints no version. Still no
+  stamp requested; the contract remains DRAFT.
 - **2026-09-06 — refreshed to post-seeding truth.** Re-assessed all four
   conditions against `main` at `1dfc78b`. **Condition 2 moved NOT MET → MET**:
   #49 seeded 18 rows (`ESF-000` plus one per Core clause) with coverage tripwires
