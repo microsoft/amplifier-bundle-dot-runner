@@ -1498,6 +1498,69 @@ entropy heuristic that WOULD have eaten it); the redaction proved to be AT the w
 (`events.jsonl` opened exactly once, append-only, the bytes handed to `write()` already clean,
 so no post-hoc rewrite could be what cleaned it); and the fail-loud path.*
 
+*Addendum (2026-09-06, issue #64): **THIS ENTRY'S FORENSIC NAVIGATION CONTRACT WAS DEAD ON THE
+NAMED-WORKER PATH, IN BOTH DIRECTIONS, FOR EVERY RUN.** Not degraded — dead, silently, while every
+test above stayed green. Measured on capsule-specify run 34039364352: four agent nodes ran 42, 84,
+47 and 38 minutes; every node's `status.json` carried `"session_id": null`; not one `events.jsonl`
+existed anywhere in the run dir. "84 minutes of what?" was unanswerable. Three independent causes,
+each individually sufficient:*
+
+***1. The join key was dropped by the status-file override.** `status_file.read_status_override()`
+built a fresh `Outcome` from the node-written `status.json`'s own fields and returned it in place
+of the handler's — silently discarding `session_id` and `response_text`. Both are ENGINE-SIDE
+provenance: established on this side of the seam, before the file is ever read, and unknowable to
+a spawned worker. Every node that writes its own verdict — which is every node a pipeline actually
+asks one from — therefore landed a null join key, so the "read `session_id`, then open
+`sessions/<session_id>/events.jsonl`" contract above could not be entered at step one. Fixed by
+CARRYING both from the handler outcome onto the file-derived candidate; the file still wins on
+every field it actually speaks about, and these two it never speaks about at all.*
+
+***2. The persister was never mounted.** This entry's own mechanism paragraph says
+`hooks-pipeline-observability` is "already mounted into the parent session by the attractor-core
+behavior, and composed into every spawned worker session by `PreparedBundle.spawn`'s parent+child
+bundle composition". The composition half is true. The premise is not, for any `--worker` run:
+`pipeline-runner`'s `default_worker._synthesize_agent_bundle_yaml()` composes the run's BASE
+bundle itself (it REPLACES `runner._bare_base_bundle()`), and it emitted `providers:`, `tools:`,
+and `session:` — but no `hooks:` section at all. With nothing to compose, both halves of the
+ContextVar seam no-oped forever. This is the third instance of one recurring bug in that one
+function: issue #338 restored the missing `providers:`, a later live-gate finding restored the
+missing `tools:`, and this restores the missing `hooks:`. It survived both earlier fixes because
+it is the only one of the three that breaks NOTHING a run can feel — a missing provider kills the
+run instantly, a missing tool surface kills every `must_write=` contract within minutes, a missing
+observer just makes the run unobservable and ships a capsule anyway. Fixed via
+`default_worker._HOOK_MODULE_SOURCES`, using the same runtime `source:` mechanism the providers
+and tools already use.*
+
+***3. LLM-call boundaries were not in the persisted set.** The curated list above
+(`session:start` … `orchestrator:complete`) answers "which tools did the worker call?" but not
+"where did the wall clock go?" — and on these nodes the honest answer is overwhelmingly "waiting
+on the model", which no tool event can show. `provider:request`, `provider:response` and
+`provider:error` are now persisted. This is NOT a relaxation of the streaming-delta exclusion:
+`*_delta`/`content_block:*` remain excluded as UI cadence, whereas these are call BOUNDARIES —
+exactly one bracketed pair per provider call, and with each record's own `timestamp` that pair IS
+the call's start and end. `loop-agent`'s `provider:request` now carries `{"model": ...}` (it
+emitted `{}`), so calls in a stream are attributable to a model.*
+
+***Consumers added at the CI seam,** because a contract nothing reads is a contract nothing
+notices breaking: `.github/capsule-pipeline/node_timing_table.py` joins `trace.jsonl` to these
+streams and prints per-node duration / LLM calls / tool calls / longest single call into the job
+summary — rendering "not captured" as `-` and never as `0`, and reporting a recorded `session_id`
+with no stream beside it as CAPTURE FAILURE (the invariant
+`test_worker_session_observability.py::_session_capture_anomaly` already pinned, now surfaced
+where a human sees it). `.github/capsule-pipeline/cap_session_evidence.py` bounds each stream's
+size, keeping head and tail and leaving one `evidence:truncated` record naming what went — the
+first thing in this design that ever DROPS captured bytes, so it drops them loudly.*
+
+***Files touched:** `modules/loop-pipeline/amplifier_module_loop_pipeline/status_file.py`
+(carry `session_id`/`response_text` through the override, including the malformed path);
+`modules/pipeline-runner/amplifier_module_pipeline_runner/default_worker.py`
+(`_HOOK_MODULE_SOURCES` + the `hooks:` section);
+`modules/hooks-pipeline-observability/…/session_events.py` (`PERSISTED_SESSION_EVENTS`);
+`modules/loop-agent/amplifier_module_loop_agent/agent_session.py` (`provider:request` payload).
+Pinned by `modules/loop-pipeline/tests/test_worker_session_observability.py` section 5 — the
+production shape sections 1–4 never covered, a worker that writes its OWN `status.json` — and
+`modules/pipeline-runner/tests/test_synthesized_bundle_hooks.py`.*
+
 ---
 
 ## 27. `must_write=` Node Attribute — Fail-Closed Artifact Contract

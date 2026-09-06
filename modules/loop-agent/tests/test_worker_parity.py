@@ -56,20 +56,41 @@ from amplifier_module_loop_agent import AgentOrchestrator
 #: `approvals_posture`, `provider_preferences_precedence`, and
 #: `telemetry_session_id` also pass green, but VACUOUSLY: they clear the
 #: TARGET tier's shallow no-crash / not-silently-dropped smoke bar, not
-#: genuine handling -- grepping this module's source for approval /
-#: provider_preferences / telemetry / session-id stamping turns up zero
-#: hits, and the kit's own probe configs for these three are either empty
-#: (`telemetry_session_id`) or a duplicate of the `llm_provider` probe
-#: (`provider_preferences_precedence`), so there is nothing distinguishing
-#: for the smoke check to exercise. That absence is deliberate, not a gap:
-#: loop-agent has no approval subsystem (an approval-free posture per the
-#: coding-agent-loop spec Sec8) and no telemetry/preferences-precedence
-#: layer of its own (those concerns, where they exist, ride other layers,
-#: not this orchestrator). `declared_absences` stays empty below -- the
-#: kit's TARGET bar doesn't distinguish "handled" from "nothing here to
-#: mishandle", so there is no real absence to declare -- but this comment
-#: must not claim more than the suite proves; see this PR's report for the
-#: full genuine-vs-vacuous breakdown.
+#: genuine handling -- and the kit's own probe configs for these three are
+#: either empty (`telemetry_session_id`) or a duplicate of the
+#: `llm_provider` probe (`provider_preferences_precedence`), so there is
+#: nothing distinguishing for the smoke check to exercise. That absence is
+#: deliberate, not a gap: loop-agent has no approval subsystem (an
+#: approval-free posture per the coding-agent-loop spec Sec8) and no
+#: preferences-precedence layer of its own (that concern, where it exists,
+#: rides another layer, not this orchestrator). `declared_absences` stays
+#: empty below -- the kit's TARGET bar doesn't distinguish "handled" from
+#: "nothing here to mishandle", so there is no real absence to declare --
+#: but this comment must not claim more than the suite proves; see this
+#: PR's report for the full genuine-vs-vacuous breakdown.
+#:
+#: TELEMETRY CORRECTION (2026-09-06, issue #64). The sentence above used to
+#: read "grepping this module's source for approval / provider_preferences /
+#: telemetry / session-id stamping turns up zero hits". For session-id that
+#: was never true and is now materially misleading, so it is struck:
+#: `agent_session.py` holds its own `self._session_id` and emits it on
+#: `agent:session_start`. What is true is that the PIPELINE-visible
+#: telemetry session id is a different id on a different path -- the
+#: amplifier-core kernel's, stamped onto every event via
+#: `hooks.set_default_fields`, returned by `PreparedBundle.spawn` and
+#: carried to `status.json` as `Outcome.session_id`. That path was BROKEN
+#: end to end until 2026-09-06 (see EXTENSIONS.md Sec 26's addendum: the
+#: status-file override dropped the id, and the observability hooks were
+#: never mounted on the named-worker path at all), which is precisely the
+#: kind of end-to-end break this vacuously-green TARGET row cannot see and
+#: was never designed to. `telemetry_session_id` therefore stays green and
+#: stays UNDECLARED here -- nothing about loop-agent's own surface changed
+#: -- but the real coverage now lives where the break was:
+#: `modules/loop-pipeline/tests/test_worker_session_observability.py`
+#: section 5 and
+#: `modules/pipeline-runner/tests/test_synthesized_bundle_hooks.py`. Read
+#: this row as "loop-agent does not mishandle it", never as "the telemetry
+#: session id works".
 DECLARED_ABSENCES: frozenset[str] = frozenset()
 
 
