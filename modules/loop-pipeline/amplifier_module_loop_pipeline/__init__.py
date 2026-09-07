@@ -26,7 +26,11 @@ from .engine import PipelineEngine
 from .handlers import HandlerRegistry
 from .handlers.context import HandlerContext
 from .outcome import Outcome
-from .preflight import check_provider_preflight, check_provider_selection_attrs
+from .preflight import (
+    check_provider_preflight,
+    check_provider_selection_attrs,
+    check_tool_env_names,
+)
 from .transforms import apply_transforms
 from .validation import validate_or_raise
 
@@ -412,6 +416,15 @@ class PipelineOrchestrator:
             # serve; it is a static graph-authoring check that is equally true
             # for an injected/mock backend.
             check_provider_selection_attrs(graph)
+
+            # 5a-bis. A tool_env name that is not a POSIX identifier can never
+            # reach the command: /bin/sh (dash) drops the entry before exec,
+            # so the node runs with the value absent and reports SUCCESS
+            # (issue #64). Same fail-closed doctrine, and -- like 5a --
+            # deliberately NOT gated on `backend is None`: it makes no claim
+            # about what this run can serve, it is a static graph-authoring
+            # check that is equally true for an injected/mock backend.
+            check_tool_env_names(graph)
 
             if kwargs.get("backend") is None:
                 _coordinator = kwargs.get("coordinator")

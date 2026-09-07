@@ -111,6 +111,13 @@ _REQUIRED_ENGINE_SYMBOLS: list[tuple[str, str]] = [
     # startup; with it, the runner names the required engine and the reinstall
     # command instead.
     ("amplifier_module_loop_pipeline.preflight", "check_provider_selection_attrs"),
+    # issue #64: drive_engine imports check_tool_env_names to refuse a graph
+    # whose tool_env declares a name that is not a POSIX identifier -- a name
+    # /bin/sh drops before exec, so the value silently never reaches the
+    # command and the node still reports SUCCESS. Without this entry a stale
+    # engine turns that import into a bare ImportError mid-startup; with it,
+    # the runner names the required engine and the reinstall command instead.
+    ("amplifier_module_loop_pipeline.preflight", "check_tool_env_names"),
 ]
 
 # Human-readable minimum description for the actionable error message.
@@ -118,7 +125,8 @@ _ENGINE_MIN_DESCRIPTION = (
     "engine with remote_dot support (commit bc6cbec or later, PR #96) and the "
     "shared spawn-resolver / resolvable_profiles preflight argument "
     "(commit ccbd89f or later, PR #280) and the non-canonical "
-    "provider-selection-attribute preflight (check_provider_selection_attrs)"
+    "provider-selection-attribute preflight (check_provider_selection_attrs) "
+    "and the tool_env identifier preflight (check_tool_env_names)"
 )
 
 

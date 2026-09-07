@@ -407,6 +407,7 @@ async def drive_engine(
         from amplifier_module_loop_pipeline.preflight import (
             check_provider_preflight,
             check_provider_selection_attrs,
+            check_tool_env_names,
         )
 
         # ONE profiles dict, shared with the AmplifierBackend constructed
@@ -429,6 +430,13 @@ async def drive_engine(
         # a deliberate model choice. Refuse -- same fail-closed doctrine, same
         # entry-point parity as check_provider_preflight below.
         check_provider_selection_attrs(graph)
+        # A tool_env name that is not a POSIX identifier can never reach the
+        # command -- /bin/sh (dash) drops the entry before exec, so the node
+        # runs with the value absent and still reports SUCCESS (issue #64,
+        # support#506/#507: an empty output file from a green run). Refuse
+        # here too, unconditionally: `validate=False` skips the lint rule
+        # above, and this path IS the shipped CLI's invoker.
+        check_tool_env_names(graph)
         check_provider_preflight(
             graph,
             profiles=resolved_profiles,

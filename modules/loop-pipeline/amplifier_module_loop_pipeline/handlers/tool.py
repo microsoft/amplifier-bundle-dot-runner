@@ -9,7 +9,11 @@ Supported attributes:
                      inject each key-value into context and context_updates;
                      on JSONDecodeError logs WARNING and continues (SUCCESS)
     tool_env       — Comma-separated list of context variable names to expose
-                     as uppercase environment variables to the subprocess
+                     as uppercase environment variables to the subprocess.
+                     Each name MUST be a POSIX identifier
+                     (``[A-Za-z_][A-Za-z0-9_]*``); a name that is not one is
+                     refused at lint and at startup preflight and never
+                     reaches this handler (issue #64, EXTENSIONS.md §20).
 
 Routing via tool.last_line:
     The last non-empty line of stdout is extracted and stored in context as ``tool.last_line``.
@@ -48,7 +52,7 @@ if TYPE_CHECKING:
     from ..engine import PipelineEngine
 
 from ..context import PipelineContext
-from ..graph import Graph, Node, resolve_bool_attr
+from ..graph import Graph, Node, parse_tool_env_names, resolve_bool_attr
 from ..outcome import Outcome, StageStatus
 from ..substitution import substitute_context
 
@@ -122,7 +126,10 @@ class ToolHandler:
         tool_env_attr = node.attrs.get("tool_env", "")
         if tool_env_attr:
             env = dict(os.environ)
-            var_names = [v.strip() for v in tool_env_attr.split(",") if v.strip()]
+            # ONE shared splitter with the lint rule and the startup preflight
+            # (graph.py) -- the two surfaces that REFUSE a name must judge
+            # exactly the list this loop exports, never a lookalike rebuild.
+            var_names = parse_tool_env_names(tool_env_attr)
             for var_name in var_names:
                 value = context.get(var_name)
                 if value is not None:
