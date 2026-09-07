@@ -3338,7 +3338,7 @@ mounts, passes preflight, SELECTS the instance for the node's completion, and sa
 record.*
 
 *Addendum 3 (2026-09-07, the last two facts a reader still had to infer): the provider events now
-carry `provider_instance` and `reasoning_effort` as well, on BOTH workers.* Addendum 2 put
+carry `provider_instance` and `reasoning_effort` as well, on ALL THREE workers.* Addendum 2 put
 `provider` / `provider_module` / `model` on loop-agent's provider events and closed the misroute
 question. Two facts were still not on the record, and both were reachable only by inference --
 which is the exact failure mode this section exists to remove, applied one level down.
@@ -3370,6 +3370,16 @@ still NOT bridged: the hosted runtime emits its own, and re-emitting would doubl
 call count. So the parity contract binds `provider:response` -- the event usage and cost ride on,
 and the only provider event both workers own; loop-agent carrying identity on its request too is
 a strict bonus, checked for agreement rather than required.
+
+**The `direct` worker too, so the vocabulary is not per-worker.** `llm-direct` already emitted
+`provider` and `model` on its own provider events; it now emits the same five. Two of them are
+structurally fixed there, and that IS the honest answer rather than a placeholder:
+`provider_module` equals `provider` (a pure unified-llm client addresses an SDK adapter by name --
+there is no mounted amplifier provider module underneath it to be a different thing, which is
+exactly why `SUBSCRIPTION_ONLY_PROVIDERS` cannot be served on that path at all), and
+`provider_instance` is always `None` (configured instances are an amplifier-core mount-time
+concept; nothing here can be mounted under an alias). Its parity harness supplies
+`provider_events` from the real emission path rather than declaring the row absent.
 
 The instance rule is DUPLICATED in the two adapter packages rather than imported: they are
 independent modules and neither may depend on the other at runtime. The shared contract is
@@ -3412,13 +3422,16 @@ harness reads exactly this: `served_by = openai/terra/gpt-5.6-terra`, `served_by
   `_provider_identity`
 - `modules/loop-amplifier-agent/amplifier_module_loop_amplifier_agent/__init__.py` --
   `_provider_instance_id`, `_attach_child_session_telemetry`'s `_bridge_llm_response`
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/workers/direct_worker.py` -- `_identity`
 - `modules/worker-parity-kit/worker_parity_kit/{protocol,suite,doubles,broken_worker}.py` --
   `TurnResult.provider_events`, `telemetry_provider_identity`, `FakeProvider`,
   `AnonymousTelemetryBrokenWorker`
 - Tests (all RED-proofed):
   `modules/loop-agent/tests/test_provider_instance_child_selection.py` (section 5),
   `modules/loop-amplifier-agent/tests/test_child_session_telemetry.py` (identity section),
-  `modules/worker-parity-kit/tests/test_broken_worker_meta.py`
+  `modules/worker-parity-kit/tests/test_broken_worker_meta.py`;
+  the row itself runs against all three workers via each module's own
+  `tests/test_worker_parity.py`
 
 
 ---

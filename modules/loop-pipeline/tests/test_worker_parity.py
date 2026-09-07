@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from worker_parity_kit.doubles import CapturingHooks
 from worker_parity_kit.protocol import TurnResult
 from worker_parity_kit.suite import *
 
@@ -114,7 +115,15 @@ class DirectWorkerHarness:
         orchestrator_config: dict[str, Any] | None = None,
     ) -> TurnResult:
         client = _FakeUnifiedClient(reply_text=f"reply to: {prompt}"[:500])
-        backend = AmplifierBackend(provider=object(), unified_client=client)
+        # A capturing hook registry, so this worker's own provider events are
+        # observable at the kit's `provider_events` seam. `direct` emits
+        # provider:request/provider:response itself (direct_worker.py), and
+        # `AmplifierBackend` threads `hooks` straight through to it -- so
+        # this is the REAL emission path, not a stand-in for one.
+        hooks = CapturingHooks()
+        backend = AmplifierBackend(
+            provider=object(), unified_client=client, hooks=hooks
+        )
 
         attrs: dict[str, Any] = {
             "llm_model": "test-model",
@@ -178,6 +187,11 @@ class DirectWorkerHarness:
             messages_sent_to_provider=sent or None,
             completion_envelope=completion_envelope,
             warnings=[],
+            provider_events=[
+                {"event": name, **data}
+                for name, data in hooks.events
+                if name in ("provider:request", "provider:response")
+            ],
         )
 
 

@@ -66,6 +66,38 @@ from ..outcome import Outcome, StageStatus
 from ..pipeline_events import PROVIDER_ERROR, PROVIDER_REQUEST, PROVIDER_RESPONSE
 
 
+def _identity(
+    provider_name: str, model: str, reasoning_effort: str | None
+) -> dict[str, Any]:
+    """The four identity keys that ride alongside ``provider`` on this
+    worker's provider events (EXTENSIONS.md Sec 36 addendum 3, 2026-09-07).
+
+    Same five-key vocabulary the two spawn workers emit, so a reader of a
+    node's evidence never has to know which worker produced it -- and the
+    node-matrix harness can report `served_by` for a `llm-direct` row from
+    the run's own events instead of from what the row DECLARED.
+
+    Two of the five are structurally fixed for this worker, and that is the
+    honest answer rather than a placeholder:
+
+    * ``provider_module`` IS ``provider``. This worker is a pure unified-llm
+      client addressing an SDK adapter by name -- there is no mounted
+      amplifier provider MODULE underneath it to be a different thing, which
+      is exactly why ``SUBSCRIPTION_ONLY_PROVIDERS`` above cannot be served
+      here at all.
+    * ``provider_instance`` is always ``None``. Configured provider
+      instances are an amplifier-core mount-time concept (``instance_id``
+      remap); nothing in this path can be mounted under an alias, so there
+      is never an instance to report.
+    """
+    return {
+        "provider_module": provider_name,
+        "provider_instance": None,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+    }
+
+
 def _clone_tool(tool: Any) -> Any:
     """Reset stateful-tool instance state for a branch clone.
 
@@ -234,7 +266,7 @@ class DirectWorker:
                 PROVIDER_REQUEST,
                 {
                     "provider": provider_name,
-                    "model": model,
+                    **_identity(provider_name, model, reasoning_effort),
                     "node_id": node.id,
                     "tool_names": [t.name for t in tools] if tools else [],
                     "message_count": len(generate_kwargs.get("messages", [])) or 1,
@@ -274,7 +306,7 @@ class DirectWorker:
             PROVIDER_RESPONSE,
             {
                 "provider": provider_name,
-                "model": model,
+                **_identity(provider_name, model, reasoning_effort),
                 "node_id": node.id,
                 "usage": {
                     "input_tokens": result.total_usage.input_tokens,
