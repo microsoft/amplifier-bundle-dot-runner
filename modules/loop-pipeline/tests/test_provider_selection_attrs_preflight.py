@@ -52,11 +52,11 @@ def test_refuses_provider_instead_of_llm_provider():
 
 def test_refuses_model_instead_of_llm_model():
     with pytest.raises(ProviderPreflightError) as exc:
-        check_provider_selection_attrs(_graph(_box("author", model="gpt-5")))
+        check_provider_selection_attrs(_graph(_box("author", model="gpt-5.6-luna")))
 
     message = str(exc.value)
     assert "author" in message
-    assert 'model="gpt-5"' in message
+    assert 'model="gpt-5.6-luna"' in message
     assert "llm_model" in message
 
 
@@ -81,7 +81,7 @@ def test_names_every_offending_node_in_one_error():
         check_provider_selection_attrs(
             _graph(
                 _box("a", provider="openai"),
-                _box("b", model="gpt-5"),
+                _box("b", model="gpt-5.6-luna"),
                 _box("c", llm_provider="anthropic"),  # canonical -- fine
             )
         )
@@ -103,7 +103,7 @@ def test_canonical_attributes_pass():
             _box(
                 "ok",
                 llm_provider="openai",
-                llm_model="gpt-5",
+                llm_model="gpt-5.6-luna",
                 reasoning_effort="medium",
             )
         )

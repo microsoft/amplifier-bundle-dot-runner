@@ -153,10 +153,11 @@ def check_provider_selection_attrs(graph: Graph) -> None:
     """Refuse to start when an LLM node declares a NON-canonical
     provider-selection attribute.
 
-    A node that writes ``provider="openai"`` or ``model="gpt-5"`` instead of
-    the nlspec's ``llm_provider`` / ``llm_model`` reads as a deliberate model
-    choice to every human who looks at the graph, and is read by nothing at
-    all: the run quietly takes the engine's default provider and reports
+    A node that writes ``provider="openai"`` or ``model="gpt-5.6-luna"``
+    instead of the nlspec's ``llm_provider`` / ``llm_model`` reads as a
+    deliberate model choice to every human who looks at the graph, and is
+    read by nothing at all: the run quietly takes the engine's default
+    provider and reports
     success.  There is no legitimate outcome behind that silence -- either the
     author meant the canonical attribute (a typo worth one clear error at
     startup) or they meant a selection surface this engine does not have (also

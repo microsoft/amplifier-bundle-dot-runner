@@ -24,7 +24,7 @@ def build_environment_context(
     Args:
         working_dir: The current working directory path.
         provider_name: Provider identifier (e.g., "openai", "anthropic").
-        model: Model name (e.g., "gpt-5.2-codex").
+        model: Model name (e.g., "gpt-5.6-luna").
 
     Returns:
         A string wrapped in <environment> tags containing runtime info.
