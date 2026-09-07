@@ -3619,6 +3619,100 @@ timeline) record what WAS and are not rewritten; hermetic test fixtures that
 pin the engine's documented `openai` family default must keep naming it or
 they stop testing it.
 
+### Addendum 5 (2026-09-07): `capsule.dot` -- the last gpt-5 route retired, and `author` pinned by measurement
+
+Addendum 4 above left ONE pair alone by design (`capsule.dot` /
+`capsule-specify.yml` -- a concurrent lane owned those bytes), and the guard it
+shipped carried an explicit hole saying so. This closes it, and adds the one
+pin that graph never had.
+
+**Why the glob survived a `gpt-5` sweep.** `capsule.dot`'s `critique` declared
+`llm_provider="openai", llm_model="gpt-[5-9]*"`. A literal `grep gpt-5` does
+not match `gpt-[5-9]*`, so the node that most needed re-pointing was the node
+least likely to be found. The guard now asserts on the ATTRIBUTE, not on a
+spelling, which is why a future glob cannot hide the same way.
+
+| graph | node | was | now |
+|---|---|---|---|
+| `.github/capsule-pipeline/capsule.dot` | `critique` | `llm_provider="openai", llm_model="gpt-[5-9]*"` | `llm_provider="luna"` |
+| `.github/capsule-pipeline/capsule.dot` | `author` | *(no provider declared -- engine's implicit Anthropic default)* | `llm_provider="luna", reasoning_effort="high"` |
+
+**The `author` pin is a measurement, not a preference.** Addendum 4's cost rows
+were k=1 per arm; one sample proves no quantifier, and this is the pin every
+capsule run spends its budget through. k=3 per arm on the fixed node-matrix
+workload (capsule `author`, issue #64 round 1, subject pinned at `e6781cf6`,
+engine `a27ab61`, `20260907T194732Z`/`20260907T200231Z-k3-author`):
+
+| arm | red_ok | wall (s) | $ per visit |
+|---|---|---|---|
+| `luna` @ high | **3/3** | 392.0 / 283.2 / 326.6 | 0.193 / 0.180 / 0.246 |
+| `terra` @ high | **3/3** | 379.4 / 272.4 / 331.6 | 2.792 / 2.002 / 3.114 |
+
+Winner rule (owner): `red_ok` 3/3 first, then wall, then dollars. Both arms went
+3/3. **Wall did not separate them** and the honest reading says so out loud:
+mean favours `terra` by 6.1 s, median favours `luna` by 5.0 s, and the
+within-arm spread (109 s / 107 s) is ~18x the between-arm difference -- a 1.8%
+gap inside that much noise is not a signal. The rule therefore falls through to
+dollars, where the arms are not close: **$0.206 vs $2.636 per visit, 12.8x**.
+`luna` takes the pin.
+
+**`medium` was probed and REFUSED by the evidence** (k=1,
+`20260907T201716Z-luna-medium`): 87.8 s, $0.03 -- 3.8x faster and 8x cheaper
+than the high rows -- and the gate it produced is **GREEN AT BASE**
+(`green_on_main`), i.e. a capsule that does not catch the defect it exists for.
+`red_ok` is the bar every arm had to clear before wall or dollars were even
+read; a cheaper effort has to earn the pin, and this one did not. One sample,
+so it quantifies nothing -- it is a reason not to take the cheap option
+unmeasured, not a proof that medium can never work.
+
+**OPEN CALL FOR THE OWNER -- the judge and the maker are now one family.**
+A judge pin exists so the critic is INDEPENDENT of the maker. Until this
+addendum that held here by accident of the default: maker Anthropic (implicit),
+judge OpenAI. With `author` on `luna`, **both** are mounts of module
+`provider-openai`, and the charter line this graph rests on -- *"nothing with a
+measured miss record gets acquittal power over an executed result"* -- is no
+longer satisfied by the pins alone. Nothing pretends otherwise: the collapse is
+stated in `capsule.dot` at the `author` node and **guarded**
+(`test_model_policy.py::JudgeFamilyCollapseIsNeverSilent`), pinned in BOTH
+directions -- a collapse without the note fails, and a note without the collapse
+fails too, so a stale acknowledgement cannot teach a future reader something
+false. The test forbids SILENCE, not the state; which pin is right is the
+owner's call.
+
+- **Recommendation: re-point `critique` to an Anthropic INSTANCE.** It restores
+  judge != maker while KEEPING the cheap maker -- `author` on the Anthropic
+  default measured $11.13 per visit (`20260907T043835Z`) against $0.21 here,
+  53x. Judge visits are the rarer of the two.
+- The alternative -- leave `author` unpinned -- keeps independence and forfeits
+  that 53x.
+- Either way it is one attribute, and it is ledgered when it moves.
+
+**CI routing and the secret that is deliberately NOT provisioned.**
+`capsule-specify.yml`'s `preflight` now writes `~/.amplifier/settings.yaml`
+defining `luna` (placeholders only; no secret VALUE reaches disk), exactly as
+addendum 4's two workflows do, and `OPENAI_BASE_URL` is registered with
+`scrub_secrets.py` via `SCRUB_WATCH_ENV` on all three scan/scrub/gate steps.
+The runner today carries `ANTHROPIC_API_KEY`, `CAPSULE_PR_TOKEN` and
+`OPENAI_API_KEY` -- it does **not** carry `OPENAI_BASE_URL`. That is left
+FAILING LOUD on purpose: preflight refuses naming the missing secret before a
+multi-hour budget is spent, and it neither weakens nor stands in for the
+engine's own #155 provider preflight. **Action required by the owner: add
+`OPENAI_BASE_URL` as a repo secret** before the next `capsule-specify` run.
+
+**Implementation locations:**
+
+- `.github/capsule-pipeline/capsule.dot` -- `critique` (re-pointed), `author`
+  (pinned + the dated collapse note)
+- `.github/workflows/capsule-specify.yml` -- `preflight` writes the instance;
+  every evidence-handling step gains `OPENAI_BASE_URL` + `SCRUB_WATCH_ENV`
+- `.github/capsule-pipeline/test_model_policy.py` -- the `capsule.dot` ->
+  `capsule-specify.yml` row addendum 4 left a note to add, plus the new
+  `JudgeFamilyCollapseIsNeverSilent` guard. RED-proofed: all 5 pre-existing
+  tests fail against the pre-change bytes (each naming this pair), and the new
+  guard fails in both of its directions when either half is removed.
+
+---
+
 ---
 
 ## 37. Bundle Composition: Always-On Guidance, Agent Registration, and Ref-Free Same-Repo Sources
