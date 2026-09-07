@@ -44,6 +44,7 @@ engine-side default.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import tempfile
@@ -403,7 +404,10 @@ async def drive_engine(
         #   * a discovery CRASH becomes the empty set (refuse), never None:
         #     unknowable-because-it-broke must not silently re-open the hole.
         from amplifier_module_loop_pipeline import _spawn_resolvable_agents
-        from amplifier_module_loop_pipeline.preflight import check_provider_preflight
+        from amplifier_module_loop_pipeline.preflight import (
+            check_provider_preflight,
+            check_provider_selection_attrs,
+        )
 
         # ONE profiles dict, shared with the AmplifierBackend constructed
         # below, so the map the preflight judges is literally the object the
@@ -419,6 +423,12 @@ async def drive_engine(
             resolvable_profiles = _spawn_resolvable_agents(coordinator)
         except Exception:
             resolvable_profiles = frozenset()
+        # Non-canonical provider-selection attributes (e.g. provider="openai"
+        # instead of llm_provider="openai") are inert: nothing reads them, so
+        # the run silently takes the default provider while the graph reads as
+        # a deliberate model choice. Refuse -- same fail-closed doctrine, same
+        # entry-point parity as check_provider_preflight below.
+        check_provider_selection_attrs(graph)
         check_provider_preflight(
             graph,
             profiles=resolved_profiles,
@@ -580,6 +590,78 @@ async def _resolve_agent_bundle(agent_name: str, config: dict[str, Any]) -> Any:
     )
 
 
+def apply_orchestrator_config(child_bundle: Any, orchestrator_config: Any) -> Any:
+    """Return a per-spawn copy of *child_bundle* whose OWN
+    ``session.orchestrator.config`` carries *orchestrator_config*.
+
+    THE CHANNEL THE CHILD ACTUALLY READS.  ``PreparedBundle.spawn`` accepts an
+    ``orchestrator_config=`` argument and merges it into a **top-level**
+    ``mount_plan["orchestrator"]["config"]`` key.  The orchestrator a spawned
+    pipeline node actually mounts is declared at
+    ``mount_plan["session"]["orchestrator"]`` -- a different key, which that
+    merge never touches.  Measured on this repo at ``5562a78`` (probe printed
+    from inside ``PreparedBundle.spawn`` and from inside ``loop-agent``'s
+    provider selection, one ``--worker coding-agent`` run of a node declaring
+    ``llm_provider="openai" llm_model="gpt-5" reasoning_effort="medium"``)::
+
+        PROBE-BACKEND   oc={'reasoning_effort': 'medium', 'llm_provider': 'openai'}
+        PROBE-PLAN2     top_orch    = {'config': {'reasoning_effort': 'medium',
+                                                  'llm_provider': 'openai'}}
+                        session_orch= {'module': 'loop-agent', 'config':
+                                       {..., 'llm_provider': 'anthropic'}}
+        PROBE-LOOPAGENT cfg_keys=['dot_source','llm_provider','logs_root',
+                                  'profiles','worker']  llm_provider='anthropic'
+
+    Every value the engine sends per node -- ``llm_provider``,
+    ``reasoning_effort``, ``max_turns``, ``user_instructions``, ``thread_key``
+    -- was therefore dropped in flight, and the child ran on whatever the
+    synthesized agent bundle happened to declare
+    (``default_worker._synthesize_agent_bundle_yaml``'s ``llm_provider:
+    anthropic``).  Silently: nothing in the run mentioned the substitution.
+    That is the defect this function closes, on the engine's own side of the
+    seam, without depending on an upstream release.
+
+    Non-mutating by construction.  ``_agent_cache`` holds ONE resolved
+    ``Bundle`` per agent name and every node reuses it, so writing the
+    per-node overlay into the cached bundle would leak one node's provider
+    onto the next.  A shallow copy plus a freshly-built ``session`` dict keeps
+    the cached bundle pristine.
+
+    Fail-loud (never a silent no-op): a child bundle with no inline
+    ``session.orchestrator`` mapping cannot receive the overlay at all, and a
+    spawn that silently ignores its node's declared provider is exactly the
+    class of failure this function exists to remove -- so that raises instead.
+    ``_resolve_agent_bundle``'s recursion-avoidance contract already requires
+    that mapping on every pipeline-node agent.
+    """
+    if not orchestrator_config:
+        return child_bundle
+
+    session = getattr(child_bundle, "session", None)
+    orchestrator = session.get("orchestrator") if isinstance(session, dict) else None
+    if not isinstance(orchestrator, dict):
+        raise ValueError(
+            f"Agent bundle '{getattr(child_bundle, 'name', '<unknown>')}' declares no "
+            f"inline 'session.orchestrator' mapping, so this node's orchestrator "
+            f"config ({sorted(orchestrator_config)}) -- including its declared "
+            f"llm_provider/reasoning_effort -- cannot be delivered to the child "
+            f"session. Refusing to spawn a child that would silently ignore its "
+            f"node's declared provider. Every pipeline-node agent must carry an "
+            f"inline session.orchestrator (see _resolve_agent_bundle)."
+        )
+
+    new_orchestrator = dict(orchestrator)
+    new_orchestrator["config"] = {
+        **(new_orchestrator.get("config") or {}),
+        **orchestrator_config,
+    }
+    new_session = {**session, "orchestrator": new_orchestrator}
+
+    overlaid = copy.copy(child_bundle)
+    overlaid.session = new_session
+    return overlaid
+
+
 def make_spawn_fn(
     prepared: Any,
     cwd: Path | None = None,
@@ -651,6 +733,17 @@ def make_spawn_fn(
 
         if child_constraint is not None:
             child_bundle = child_constraint(child_bundle)
+
+        # Deliver this node's orchestrator config on the channel the child
+        # actually reads (session.orchestrator.config) -- see
+        # apply_orchestrator_config's docstring for the measured proof that
+        # PreparedBundle.spawn's own orchestrator_config= merge lands on a
+        # top-level key nothing mounts. Applied AFTER child_constraint so a
+        # caller-supplied constraint can never drop the overlay. The
+        # orchestrator_config= argument below is still passed: it is harmless,
+        # and it keeps working automatically if that seam is ever repaired
+        # upstream (both channels then carry identical values).
+        child_bundle = apply_orchestrator_config(child_bundle, orchestrator_config)
 
         spawn_coro = prepared.spawn(
             child_bundle=child_bundle,
