@@ -3337,6 +3337,89 @@ establish before. The addendum-1 residual is therefore closed: an instance id no
 mounts, passes preflight, SELECTS the instance for the node's completion, and says so on the
 record.*
 
+*Addendum 3 (2026-09-07, the last two facts a reader still had to infer): the provider events now
+carry `provider_instance` and `reasoning_effort` as well, on BOTH workers.* Addendum 2 put
+`provider` / `provider_module` / `model` on loop-agent's provider events and closed the misroute
+question. Two facts were still not on the record, and both were reachable only by inference --
+which is the exact failure mode this section exists to remove, applied one level down.
+
+**Was this an instance at all?** A reader had to compare `provider` against `provider_module` AND
+know the naming-variant rule: `provider-openai` differs from `openai` and is NOT a configured
+instance, while `terra` differs and IS one. That rule lives in `canonical_provider` and nowhere a
+reader of an events file can see it. `provider_instance` now states it outright --
+`provider_instance_id(mount_key, module_name)`: identical names are not an instance, a name that
+`canonical_provider` resolves back to the same family is a naming variant and not an instance,
+anything else is the instance alias, and either half unknown yields `None` rather than a guess.
+A pipeline's `llm_provider` attribute can now be joined to what served it without the reader
+reimplementing an engine-internal rule.
+
+**At what effort?** Nowhere on the stream at all. `reasoning_effort` reaches the model on
+`ChatRequest.reasoning_effort` and appeared on no event, so the node-matrix rows that vary effort
+across an otherwise identical workload could be told apart only by trusting the matrix file --
+not the run's own evidence. The same model at `high` and at `low` is a different price and
+latency regime, so a cost read without it is unattributable. It is now reported from the same
+`self._config` the request is built from, and a node that declared none reports `None`, never a
+default it did not ask for.
+
+**Both workers, one vocabulary.** `loop-amplifier-agent` bridges the hosted runtime's
+`llm:response` into the canonical `provider:response` (Section 26 addendum 2); that bridge now
+stamps the same five keys. The provider MODULE's own report of what it is (`payload["provider"]`)
+outranks the adapter's request for it -- their disagreement IS the misroute signal, so the
+request can only ever be the fallback for a module that reported nothing. `provider:request` is
+still NOT bridged: the hosted runtime emits its own, and re-emitting would double every row's
+call count. So the parity contract binds `provider:response` -- the event usage and cost ride on,
+and the only provider event both workers own; loop-agent carrying identity on its request too is
+a strict bonus, checked for agreement rather than required.
+
+The instance rule is DUPLICATED in the two adapter packages rather than imported: they are
+independent modules and neither may depend on the other at runtime. The shared contract is
+therefore pinned executably, not structurally -- `worker_parity_kit.suite`'s new
+`telemetry_provider_identity` TARGET row drives BOTH workers through the SAME assertion, so the
+two copies cannot drift apart silently.
+
+**The parity row is itself the point.** The kit's README already recorded that its
+`telemetry_session_id` row "stayed green through TWO total, silent, end-to-end breaks" -- its
+probe config is `{}`, so it clears a no-crash bar and observes nothing, and a row that observes
+nothing cannot fail. The `ca-terra` misroute is the third break in that family. Closing it
+worker-side while leaving the parity row blind would have repeated the mistake, so the new row
+reads the turn's own `provider:response` payloads back off `TurnResult.provider_events` and
+asserts all five keys are present, agree across the turn, and echo the declared effort. A harness
+that cannot see its provider events FAILS the row, naming `declared_absences` -- it never passes
+by default. Its non-vacuity proof (`AnonymousTelemetryBrokenWorker`) replays the measured
+`20260907T081003Z` payload verbatim: a usage block, and no answer to who served it.
+
+**Live proof (2026-09-07, the SAME one-row matrix as addendum 2, engine = this branch).** From
+the run's own persisted worker stream:
+
+```json
+{"event": "provider:response", "data": {"model": "gpt-5.6-terra", "provider": "terra",
+                                        "provider_instance": "terra",
+                                        "provider_module": "openai",
+                                        "reasoning_effort": "high",
+                                        "usage": {"cache_read_tokens": 79084,
+                                                  "cache_write_tokens": 15115,
+                                                  "reasoning_tokens": 370,
+                                                  "cost_usd": "0.0604263", ...}}}
+```
+
+Read end to end off one line, with nothing inferred: an OpenAI-family provider module, mounted as
+the configured instance `terra`, calling `gpt-5.6-terra` at `high` effort, for six cents. The
+harness reads exactly this: `served_by = openai/terra/gpt-5.6-terra`, `served_by_source = event`.
+
+**Implementation locations:**
+
+- `modules/loop-agent/amplifier_module_loop_agent/agent_session.py` -- `provider_instance_id`,
+  `_provider_identity`
+- `modules/loop-amplifier-agent/amplifier_module_loop_amplifier_agent/__init__.py` --
+  `_provider_instance_id`, `_attach_child_session_telemetry`'s `_bridge_llm_response`
+- `modules/worker-parity-kit/worker_parity_kit/{protocol,suite,doubles,broken_worker}.py` --
+  `TurnResult.provider_events`, `telemetry_provider_identity`, `FakeProvider`,
+  `AnonymousTelemetryBrokenWorker`
+- Tests (all RED-proofed):
+  `modules/loop-agent/tests/test_provider_instance_child_selection.py` (section 5),
+  `modules/loop-amplifier-agent/tests/test_child_session_telemetry.py` (identity section),
+  `modules/worker-parity-kit/tests/test_broken_worker_meta.py`
+
 
 ---
 
