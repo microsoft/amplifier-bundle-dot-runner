@@ -10,6 +10,9 @@ Key behaviors:
 - SteeringTurns become user-role messages.
 - ToolResultsTurn entries are mapped to individual tool-role messages
   with matching tool_call_id from the preceding AssistantTurn.
+- Tool-result RETENTION (``tool_result_retention_turns``): tool results
+  older than the retention window are replaced by a short stub. See
+  ``_elision_stub`` and specs/EXTENSIONS.md Sec 45.
 """
 
 from __future__ import annotations
@@ -33,19 +36,68 @@ from .turns import (
 )
 
 
+#: Marker every elided tool result carries. Public so tests, log scanners,
+#: and downstream consumers can detect an elision without string-matching a
+#: format that may gain fields later.
+TOOL_RESULT_ELIDED_MARKER = "[tool result elided:"
+
+
+def _elision_stub(tool_name: str, char_count: int) -> str:
+    """Replacement content for a tool result outside the retention window.
+
+    Mirrors the truncation hook's contract (spec Section 5.1): say plainly
+    that content was removed, how much, and how to get it back -- never
+    silently drop it. The full output remains in the event stream
+    (``agent:tool_call_end`` carries it untruncated), so "re-run to see" is
+    the model's recovery path and the transcript is the operator's.
+    """
+    return f"{TOOL_RESULT_ELIDED_MARKER} {tool_name} {char_count} chars; re-run to see]"
+
+
 def convert_history_to_messages(
     turns: Iterable[Turn],
+    *,
+    tool_result_retention_turns: int = 0,
 ) -> list[Message]:
     """Convert typed turn history to Message objects for ChatRequest.
 
     System messages are collected and placed first. All other messages
     preserve their relative order.
+
+    Args:
+        turns: The session's typed turn history.
+        tool_result_retention_turns: How many of the MOST RECENT
+            ``ToolResultsTurn`` groups keep their content verbatim. Older
+            tool results are replaced by :func:`_elision_stub` -- the
+            message itself (role, ``tool_call_id``, position) is always
+            preserved, so provider-side tool_use/tool_result pairing is
+            never broken. ``0`` (the default) disables elision entirely and
+            reproduces the pre-retention behavior byte-for-byte.
+
+            Only ``role="tool"`` content is ever elided. Assistant text,
+            assistant reasoning, user turns and steering turns are always
+            verbatim: the model's own record of what it decided and why is
+            what makes an elided result recoverable, and eliding it would
+            make the loop forget its own plan.
     """
+    turn_list = list(turns)
+
+    # Ordinal of the oldest tool-results turn that keeps its content. A
+    # tool-results turn at ordinal < keep_from is elided. -1 keeps
+    # everything (retention disabled, or history shorter than the window).
+    keep_from = -1
+    if tool_result_retention_turns > 0:
+        total_tool_turns = sum(
+            1 for t in turn_list if isinstance(t, ToolResultsTurn)
+        )
+        keep_from = total_tool_turns - tool_result_retention_turns
+
     system_messages: list[Message] = []
     other_messages: list[Message] = []
     pending_tool_calls: list[dict[str, Any]] = []
+    tool_turn_ordinal = 0
 
-    for turn in turns:
+    for turn in turn_list:
         if isinstance(turn, SystemTurn):
             system_messages.append(Message(role="system", content=turn.content))
 
@@ -63,14 +115,21 @@ def convert_history_to_messages(
             other_messages.append(msg)
 
         elif isinstance(turn, ToolResultsTurn):
+            elide = tool_turn_ordinal < keep_from
+            tool_turn_ordinal += 1
             for i, result in enumerate(turn.results):
-                call_id = (
-                    pending_tool_calls[i]["id"] if i < len(pending_tool_calls) else None
+                call = pending_tool_calls[i] if i < len(pending_tool_calls) else None
+                call_id = call["id"] if call else None
+                serialized = result.get_serialized_output()
+                content = (
+                    _elision_stub((call or {}).get("name") or "tool", len(serialized))
+                    if elide
+                    else serialized
                 )
                 other_messages.append(
                     Message(
                         role="tool",
-                        content=result.get_serialized_output(),
+                        content=content,
                         tool_call_id=call_id,
                     )
                 )
