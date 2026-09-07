@@ -428,6 +428,31 @@ def amplifier_agent_available() -> bool:
     return _worker_available(AMPLIFIER_AGENT_NAME)
 
 
+def _adapter_importable(adapter_module: str) -> bool:
+    """Can amplifier-core import this adapter package from THIS environment?
+
+    Deliberately NARROWER than :func:`_worker_available`, and deliberately a
+    separate function rather than a second call to it: this asks only "will
+    the loader's own entry-point discovery find the adapter here", which is
+    the exact question :func:`_synthesize_agent_bundle_yaml` needs when
+    deciding whether the agent's orchestrator still needs a lazy-activation
+    ``source:`` hint.  ``_worker_available`` additionally requires the
+    worker's heavy PEER library (``amplifier_agent_lib``), which is a
+    question about whether the worker can RUN -- already answered, fail-loud,
+    by :func:`resolve` before synthesis is ever reached.  Keeping them apart
+    also keeps ``resolve``'s ladder probing exactly one worker, which its own
+    tests pin.
+
+    Same ``find_spec`` mechanism and same tolerance as ``_worker_available``:
+    no import, no network, and a weird environment degrades to "not
+    importable" (so the source hint is emitted) rather than crashing.
+    """
+    try:
+        return importlib.util.find_spec(adapter_module) is not None
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
+
+
 def selected_provider_instances(
     dot_source: str | None = None,
     *,
@@ -547,6 +572,42 @@ def _synthesize_agent_bundle_yaml(
     adapter_module, _probe_module, adapter_source, orch_module = _ADAPTER_REGISTRY[
         worker_name
     ]
+    # WHICH COPY OF THE WORKER ACTUALLY RUNS (EXTENSIONS.md Sec 36 addendum,
+    # 2026-09-07 -- measured, not theorised).
+    #
+    # A `source:` on the agent's orchestrator is a lazy-activation hint:
+    # amplifier-foundation FETCHES that ref into `~/.amplifier/cache/` and
+    # amplifier-core inserts the fetched path at `sys.path[0]` before
+    # importing the entry point.  So an engine running from a checkout --
+    # `uv run --project <checkout> dot-runner run ...`, the exact shape every
+    # evaluation harness and every lane uses -- spawned its nodes on
+    # `@main`'s worker code, not on its own.  Measured: a one-node probe on
+    # this branch, with the worker-side fix installed in the run's venv,
+    # failed with `@main`'s error text (no "(mounted from module ...)"
+    # clause) and its `provider:response` events carried none of the identity
+    # keys the installed copy emits.  Silent, and it makes a checkout's own
+    # worker changes structurally unobservable.
+    #
+    # The pin is also redundant wherever it does harm.  Both adapters became
+    # UNCONDITIONAL root dependencies (WAVE 6 for amplifier-agent, issue #338
+    # point 2 for loop-agent, "a name the CLI advertises must resolve on a
+    # fresh install"), so on a healthy install the adapter is already
+    # importable and amplifier-core's own entry-point discovery finds it --
+    # `_load_direct`, reached because an absent source hint raises
+    # `module_sources.ModuleNotFoundError`, the one exception the loader
+    # catches to fall back on.  For a `uv tool install git+...@main` the two
+    # copies are the same bytes; for a checkout the installed copy is the
+    # one the operator actually asked to run.
+    #
+    # The hint is still emitted when the adapter is NOT importable -- an
+    # abnormal, broken-install state (see :func:`resolve`'s
+    # BROKEN_INSTALL_HINT) where fetching a known-good copy is strictly
+    # better than failing to mount.
+    orchestrator_source_line = (
+        ""
+        if _adapter_importable(adapter_module)
+        else f"\n        source: {adapter_source}"
+    )
     # THREE-TABLE SYNC GUARD: the profiles routing map's key set is the
     # SAME registry _PROVIDER_MODULE_SOURCES and detection derive from --
     # every KNOWN provider (not just the configured subset) is routed to
@@ -679,8 +740,7 @@ agents:
       {adapter_module} adapter (modules/{worker_name}).
     session:
       orchestrator:
-        module: {orch_module}
-        source: {adapter_source}
+        module: {orch_module}{orchestrator_source_line}
         config:
           llm_provider: anthropic
 """

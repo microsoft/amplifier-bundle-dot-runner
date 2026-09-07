@@ -170,3 +170,72 @@ def test_the_id_key_does_not_disturb_the_module_entries(isolated_host: Path) -> 
         if entry.get("instance_id"):
             continue
         assert "id" not in entry, f"module entry grew an instance id: {entry}"
+
+
+# ---------------------------------------------------------------------------
+# WHICH COPY of the worker runs
+# ---------------------------------------------------------------------------
+
+
+def test_the_importability_probe_answers_about_this_environment() -> None:
+    """The probe is a real ``find_spec``, not a constant: it says yes for a
+    module that IS importable here and no for one that is not (including a
+    malformed name, which ``find_spec`` raises on rather than returning
+    None)."""
+    assert default_worker._adapter_importable("amplifier_module_pipeline_runner")
+    assert not default_worker._adapter_importable("amplifier_module_not_installed_xyz")
+    assert not default_worker._adapter_importable("")
+
+
+def test_no_source_pin_when_the_adapter_is_importable(
+    isolated_host: Path, monkeypatch
+) -> None:
+    """The agent's orchestrator must not drag `@main`'s worker into a run
+    whose own worker is already installed.
+
+    A ``source:`` is a lazy-activation hint: foundation fetches that ref and
+    core inserts the fetched path at ``sys.path[0]`` before importing the
+    entry point.  With the pin present, an engine run from a checkout spawns
+    its nodes on ``@main``'s worker code -- measured on this branch, where a
+    worker-side fix installed in the run's venv did not execute and the run
+    failed with ``@main``'s error text instead.  The adapter is an
+    unconditional root dependency, so on a healthy install core's own
+    entry-point discovery finds it and the hint is pure harm.
+
+    The probe is patched rather than relied on: ``loop-agent`` is not a
+    dependency of THIS module's test venv, so an unpatched assertion here
+    would be measuring the venv's contents instead of the emitter's branch.
+    ``test_the_importability_probe_answers_about_this_environment`` covers
+    the probe itself.
+    """
+    monkeypatch.setattr(default_worker, "_adapter_importable", lambda _module: True)
+
+    bundle = yaml.safe_load(
+        default_worker._synthesize_agent_bundle_yaml("coding-agent", dot_source=_DOT)
+    )
+    orchestrator = bundle["agents"][default_worker.DEFAULT_AGENT_NAME]["session"][
+        "orchestrator"
+    ]
+    assert orchestrator["module"] == "loop-agent", "the module name still names it"
+    assert "source" not in orchestrator, (
+        "the adapter is importable, so the run must mount the copy it "
+        "actually ships -- not whatever @main happens to hold"
+    )
+
+
+def test_source_pin_survives_for_a_broken_install(
+    isolated_host: Path, monkeypatch
+) -> None:
+    """The hint is narrowed, never deleted.  When the adapter genuinely is
+    not importable -- an abnormal, broken-install state -- fetching a
+    known-good copy beats failing to mount at all."""
+    monkeypatch.setattr(default_worker, "_adapter_importable", lambda _module: False)
+
+    bundle = yaml.safe_load(
+        default_worker._synthesize_agent_bundle_yaml("coding-agent", dot_source=_DOT)
+    )
+    orchestrator = bundle["agents"][default_worker.DEFAULT_AGENT_NAME]["session"][
+        "orchestrator"
+    ]
+    assert orchestrator["source"].startswith("git+https://github.com/microsoft/")
+    assert orchestrator["source"].endswith("#subdirectory=modules/loop-agent")
