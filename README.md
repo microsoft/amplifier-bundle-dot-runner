@@ -51,7 +51,7 @@ docs) lives in the repos that consume this one.
 | `ledger/checks/` | The executable checks the ledger rows reference. Run inside `modules/loop-pipeline`'s own test job — no separate CI job. |
 | `docs/VISION.md` | Desired end state + the Compatibility doctrine that decides every disposition. |
 | `docs/SPEC_CONFORMANCE_HISTORY.md` | The retired `SPEC_CONFORMANCE.md`, frozen: the dated decision record for every `ATX-*`/`ULM-*`/`CAL-*` id. |
-| `.github/capsule-pipeline/` | Issue -> attractor -> PR pipeline (ported from `amplifier-bundle-attractor`): label an issue `ready:spec`/`ready:feature-spec` and an autonomous pipeline proposes a work capsule, then (on merge) a fix PR. See `.github/capsule-pipeline/README.md` and [docs/ISSUE_PIPELINE.md](docs/ISSUE_PIPELINE.md). |
+| `.github/capsule-pipeline/` | Issue -> attractor -> PR pipeline (ported from `amplifier-bundle-attractor`): label an issue `ready:spec`/`ready:feature-spec` and an autonomous pipeline proposes a work capsule, then (on merge) a fix PR. Needs repo secrets `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`; `OPENAI_BASE_URL` is an OPTIONAL Actions **variable** (unset -> the provider module's own default endpoint). See `.github/capsule-pipeline/README.md` and [docs/ISSUE_PIPELINE.md](docs/ISSUE_PIPELINE.md). |
 
 Python distribution and import names are unchanged from their original
 home (`amplifier-module-loop-pipeline`, `import amplifier_module_loop_pipeline`,
