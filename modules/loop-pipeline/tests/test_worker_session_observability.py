@@ -536,3 +536,114 @@ async def test_worker_authored_status_json_keeps_the_session_join_key(tmp_path):
     # response.md is durable beside it -- response_text also survives the
     # override (it is carried, not re-derived from the file).
     assert TAIL_MARKER in (work / "response.md").read_text()
+
+
+# ---------------------------------------------------------------------------
+# 6. A worker whose real session is NOT the spawned session
+# ---------------------------------------------------------------------------
+#
+# Sections 1-5 all assume the spawned session IS the worker: the id foundation
+# returns from `PreparedBundle.spawn` is the id the kernel stamps on the
+# events, so `status.json`'s join key and the persisted directory name are the
+# same string by construction.
+#
+# `loop-amplifier-agent` breaks that assumption. It hosts a SECOND,
+# self-built amplifier-agent session, and every provider and tool event
+# belongs to that one; the spawned (adapter) session emits lifecycle brackets
+# only. Taking the spawn result's own `session_id` therefore named a real
+# directory with no telemetry in it, while the directory that HAD the
+# telemetry went unnamed -- measured as two fully PASSing, fully unmeasurable
+# rows (node-matrix run 20260907T043835Z, `aa-anthropic-default` /
+# `aa-gpt5-medium`).
+#
+# The worker reports the real id in its completion metadata; these pin the
+# parent-side resolution, including that nothing else about metadata changed.
+
+
+def test_spawn_session_id_is_used_when_no_worker_reports_otherwise():
+    """Unchanged behavior for every worker that IS the spawned session."""
+    from amplifier_module_loop_pipeline.backend import _session_id_from_spawn_result
+
+    assert (
+        _session_id_from_spawn_result(
+            {"output": "done", "session_id": "kernel-abc", "metadata": {}}
+        )
+        == "kernel-abc"
+    )
+
+
+def test_worker_reported_session_id_wins_over_the_spawn_result():
+    """The hosted session's id is the one the node's events are filed under."""
+    from amplifier_module_loop_pipeline.backend import _session_id_from_spawn_result
+
+    assert (
+        _session_id_from_spawn_result(
+            {
+                "output": "done",
+                "session_id": "adapter-session-with-no-telemetry",
+                "metadata": {"worker_session_id": "dot-runner-thread-author"},
+            }
+        )
+        == "dot-runner-thread-author"
+    )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {},
+        {"worker_session_id": ""},
+        {"worker_session_id": None},
+        {"worker_session_id": 17},
+        None,
+        "not-a-dict",
+    ],
+)
+def test_malformed_worker_session_id_falls_back_rather_than_corrupting(metadata):
+    """A junk value must never become the join key.
+
+    status.json's `session_id` is read by the collector to locate a directory;
+    a non-string or empty value there is worse than the spawn id, which is at
+    least a real session.
+    """
+    from amplifier_module_loop_pipeline.backend import _session_id_from_spawn_result
+
+    assert (
+        _session_id_from_spawn_result(
+            {"output": "done", "session_id": "kernel-abc", "metadata": metadata}
+        )
+        == "kernel-abc"
+    )
+
+
+def test_no_session_id_anywhere_is_none_not_a_fabrication():
+    from amplifier_module_loop_pipeline.backend import _session_id_from_spawn_result
+
+    assert _session_id_from_spawn_result({"output": "done"}) is None
+    assert _session_id_from_spawn_result("not a dict") is None
+
+
+def test_worker_reported_metadata_is_not_a_verdict_channel():
+    """WAVE 5 stands: `metadata` still cannot make an Outcome explicit.
+
+    The observability key rides in the same dict the removed `report_outcome`
+    verdict key used to; this pins that carrying it changes nothing about how
+    an outcome is decided.
+    """
+    from amplifier_module_loop_pipeline.backend import _outcome_from_spawn_result
+
+    outcome = _outcome_from_spawn_result(
+        {
+            "output": "",
+            "status": "success",
+            "session_id": "adapter-session",
+            "metadata": {
+                "worker_session_id": "dot-runner-thread-author",
+                # A verdict-shaped key is still inert.
+                "report_outcome": {"status": "success"},
+            },
+        }
+    )
+    assert outcome is not None
+    assert outcome.status is StageStatus.SUCCESS
+    assert outcome.is_explicit is False

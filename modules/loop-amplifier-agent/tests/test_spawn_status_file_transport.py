@@ -57,7 +57,7 @@ import pytest
 from amplifier_module_loop_amplifier_agent import AmplifierAgentOrchestrator
 from amplifier_module_loop_pipeline.status_contract import build_status_file_contract
 
-from ._fakes import FakeContextManager
+from ._fakes import FakeContextManager, assert_no_fabricated_verdict
 
 pytest.importorskip(
     "amplifier_agent_lib",
@@ -141,7 +141,7 @@ async def test_real_amplifier_agent_writes_status_file_via_its_own_tools():
 
         # metadata never carries a fabricated verdict -- this module mounts
         # no reach-in tool (WAVE 4 ruling 5; channel removed WAVE 5).
-        assert result["metadata"] == {}
+        assert_no_fabricated_verdict(result["metadata"])
 
         assert os.path.exists(status_path), (
             "the hosted amplifier-agent never wrote the status.json path "

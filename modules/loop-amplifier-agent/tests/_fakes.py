@@ -27,6 +27,35 @@ from types import SimpleNamespace
 from typing import Any, Self
 
 
+def assert_no_fabricated_verdict(metadata: dict[str, Any] | None) -> None:
+    """The WAVE 4/5 invariant, stated as what it actually is.
+
+    These assertions used to read ``metadata == {}``, which conflated two
+    different claims: "this adapter never fabricates a verdict" (the real,
+    load-bearing invariant -- ruling 5, and WAVE 5's repo-wide removal of the
+    verdict key) and "this envelope carries nothing at all" (an incidental
+    consequence, true only while the dict happened to be empty).
+
+    The 2026-09-07 telemetry fix adds ONE observability key,
+    ``worker_session_id`` -- the id of the hosted amplifier-agent session, so
+    the parent's status.json can name the stream that holds this node's
+    provider and tool events. It is read on exactly one line
+    (``backend._session_id_from_spawn_result``) and never as an outcome.
+
+    So the invariant is asserted directly: no key OTHER than that one may
+    appear. A future verdict key sneaking back into this envelope still fails
+    here, which is what the original assertion was protecting.
+    """
+    keys = set((metadata or {}).keys())
+    allowed = {"worker_session_id"}
+    assert keys <= allowed, (
+        f"ORCHESTRATOR_COMPLETE metadata carries unexpected key(s) "
+        f"{sorted(keys - allowed)} -- this adapter must never fabricate a "
+        f"verdict (WAVE 4 ruling 5 / WAVE 5); the only permitted key is the "
+        f"observability join key {sorted(allowed)}"
+    )
+
+
 class FakeHookRegistry:
     """Mirrors amplifier_core's Rust-backed HookRegistry seam this module uses.
 
@@ -35,15 +64,59 @@ class FakeHookRegistry:
     AmplifierSession (``amplifier_core/session.py``) and the vendored
     ``make_turn_handler`` both call this to stamp ``session_id``/``turn_id``
     (etc.) onto every subsequent event the coordinator's hooks emit. This
-    fake just records every call so a test can assert the right fields were
+    fake records every call so a test can assert the right fields were
     stamped (gap 5).
+
+    ``register`` / ``emit`` (2026-09-07) model the other half of the same
+    registry, the half the child-session telemetry seam depends on:
+
+      * ``register(event, handler, priority=..., name=...)`` -- the real
+        signature ``amplifier_foundation.bundle._prepared.spawn`` itself
+        calls (``hooks.register("orchestrator:complete", fn, priority=999,
+        name=...)``), returning an unregister callable.
+      * ``emit(event, data)`` -- dispatches ``handler(event, data)`` to each
+        registered handler for that name, with the default fields MERGED into
+        ``data`` first. That merge is not decoration: the shipped
+        ``SessionEventPersister`` keys its output directory off
+        ``data["session_id"]`` and drops any event without one, so a fake
+        that skipped it would make the persister silently no-op and the test
+        vacuous.
+
+    Existing-field precedence follows the kernel: a field the emitter set
+    explicitly is not overwritten by a default.
     """
 
     def __init__(self) -> None:
         self.default_fields_calls: list[dict[str, Any]] = []
+        self.default_fields: dict[str, Any] = {}
+        self.handlers: dict[str, list[Any]] = {}
+        self.emitted: list[tuple[str, dict[str, Any]]] = []
 
     def set_default_fields(self, **kwargs: Any) -> None:
         self.default_fields_calls.append(kwargs)
+        self.default_fields.update(kwargs)
+
+    def register(
+        self,
+        event: str,
+        handler: Any,
+        priority: int = 0,
+        name: str | None = None,
+    ) -> Any:
+        self.handlers.setdefault(event, []).append(handler)
+
+        def _unregister() -> None:
+            self.handlers.get(event, []).remove(handler)
+
+        return _unregister
+
+    async def emit(self, event: str, data: dict[str, Any] | None = None) -> None:
+        payload = dict(data or {})
+        for key, value in self.default_fields.items():
+            payload.setdefault(key, value)
+        self.emitted.append((event, payload))
+        for handler in list(self.handlers.get(event, [])):
+            await handler(event, payload)
 
 
 class FakeContextManager:
@@ -198,10 +271,17 @@ class FakeSession:
         reply_text: str = "",
         raise_on_execute: Exception | None = None,
         context_module: Any = None,
+        emit_events: list[tuple[str, dict[str, Any]]] | None = None,
     ) -> None:
         self.coordinator = FakeSessionCoordinator(context_module=context_module)
         self._reply_text = reply_text
         self._raise_on_execute = raise_on_execute
+        # Events the hosted runtime emits onto THIS session's own registry
+        # during the turn -- what the real loop-streaming orchestrator and the
+        # real provider module do (`provider:request` / `llm:response` /
+        # `tool:pre` / `tool:post`). Empty by default, so every pre-existing
+        # test is unchanged.
+        self._emit_events = list(emit_events or [])
         self.prompt_seen: str | None = None
         # Set during execute() if an "approval.request" capability is
         # registered (gap 3) -- mirrors a real child turn that hits at
@@ -231,6 +311,11 @@ class FakeSession:
         self.prompt_seen = prompt
         if self._raise_on_execute is not None:
             raise self._raise_on_execute
+        # The hosted runtime's own emissions, on the hosted session's own
+        # registry -- the exact seam `_attach_child_session_telemetry`
+        # registers against.
+        for event_name, event_data in self._emit_events:
+            await self.coordinator.hooks.emit(event_name, dict(event_data))
         # Mirrors what the REAL hosted loop-streaming orchestrator does
         # before every provider call: ask the mounted context module for
         # the request-ready message list. Only meaningful for context
@@ -386,6 +471,7 @@ def make_fake_deps(
     agents_mount_plan: dict[str, Any] | None = None,
     spawn_sub_session_result: dict[str, Any] | None = None,
     context_module: Any = None,
+    emit_events: list[tuple[str, dict[str, Any]]] | None = None,
 ) -> tuple[SimpleNamespace, dict[str, Any]]:
     """Build a fake ``_load_dependencies()``-shaped namespace + capture dict.
 
@@ -429,6 +515,7 @@ def make_fake_deps(
         reply_text=reply_text,
         raise_on_execute=raise_on_execute,
         context_module=context_module,
+        emit_events=emit_events,
     )
     prepared = FakePreparedBundle(session)
     if agents_mount_plan is not None:

@@ -41,7 +41,7 @@ from unittest.mock import MagicMock
 import pytest
 from amplifier_module_loop_amplifier_agent import AmplifierAgentOrchestrator
 
-from ._fakes import CapturingHooks, FakeContextManager
+from ._fakes import CapturingHooks, FakeContextManager, assert_no_fabricated_verdict
 
 pytest.importorskip(
     "amplifier_agent_lib",
@@ -95,7 +95,7 @@ async def test_seeded_history_is_recalled_by_the_real_hosted_model():
 
     # WAVE 4 (ruling 5): metadata never carries a fabricated verdict --
     # this module no longer mounts that reach-in tool.
-    assert hooks.completion.get("metadata", {}) == {}
+    assert_no_fabricated_verdict(hooks.completion.get("metadata"))
 
     assert _SECRET.upper() in reply.upper(), (
         f"the hosted model did not recall the seeded secret {_SECRET!r} -- "
