@@ -4758,10 +4758,12 @@ declaring `openai`/`gpt-5`/`medium`), reading each run's own `provider:response`
 > worker paths, and means a different thing on each), Section 46 (node-declared values
 > reaching the spawned child -- the delivery channel this cap rides).
 >
-> **upstream action:** none proposed. The canonical spec never names `max_agent_turns`
+> **upstream action:** not applicable -- the canonical spec never names `max_agent_turns`
 > (grep of `contracts/external/attractor-spec-canonical.md`: zero hits), and Section 4.5
-> delegates backend internals to the implementer. This entry is a decision RECORD for a
-> surface the engine already implements and nothing documented.
+> delegates backend internals to the implementer, so a per-node turn cap is an implementer
+> surface the spec is silent about rather than a gap in it. Nothing here changes the
+> engine's own behavior; this entry is a decision RECORD for a surface the engine already
+> implements and nothing documented.
 
 **Classification: implementer extension on a spec-silent surface. No `ledger/rows.yaml` row
 -- that ledger binds to clauses in `attractor-spec-canonical.md`, and there is no clause
