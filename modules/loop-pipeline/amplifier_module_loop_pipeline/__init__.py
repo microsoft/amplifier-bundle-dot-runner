@@ -26,7 +26,7 @@ from .engine import PipelineEngine
 from .handlers import HandlerRegistry
 from .handlers.context import HandlerContext
 from .outcome import Outcome
-from .preflight import check_provider_preflight
+from .preflight import check_provider_preflight, check_provider_selection_attrs
 from .transforms import apply_transforms
 from .validation import validate_or_raise
 
@@ -403,6 +403,16 @@ class PipelineOrchestrator:
             # mock-backend tests honest -- they are not making provider
             # claims).  The auto-constructed backend path (production) is
             # always checked.
+            # 5a. Non-canonical provider-selection attributes (e.g.
+            # provider="openai" instead of llm_provider="openai") are inert:
+            # nothing reads them, so the run silently takes the default
+            # provider while the graph reads as a deliberate model choice.
+            # Refuse. Deliberately NOT gated on `backend is None` -- unlike
+            # serviceability, this makes no claim about what the run can
+            # serve; it is a static graph-authoring check that is equally true
+            # for an injected/mock backend.
+            check_provider_selection_attrs(graph)
+
             if kwargs.get("backend") is None:
                 _coordinator = kwargs.get("coordinator")
                 # Resolve profiles for the preflight through the SAME function

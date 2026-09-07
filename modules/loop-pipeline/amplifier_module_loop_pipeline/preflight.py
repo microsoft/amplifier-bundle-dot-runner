@@ -61,6 +61,40 @@ PROVIDER_KEY_ENV: dict[str, str] = {
 # Handler types that consume the LLM backend (and therefore a provider).
 _LLM_HANDLER_TYPES = frozenset({"codergen", "stack.manager_loop"})
 
+#: Near-miss node attribute name -> the canonical nlspec name it was meant to
+#: be.  The canonical set is fixed by the spec, not by this engine:
+#: ``attractor-spec-canonical.md`` Section 2.6 (:160-162) and Appendix A
+#: (:2018-2020) define EXACTLY three provider/model-selection node attributes
+#: -- ``llm_model``, ``llm_provider``, ``reasoning_effort`` -- and Section 8.6's
+#: ``model_stylesheet`` grammar (:1460) admits the same three and no others.
+#:
+#: Every name below is inert today: nothing in the engine reads it, so a graph
+#: declaring one gets the engine's DEFAULT provider with no warning of any
+#: kind.  That is the same silent-substitution class as issue #155 Mode B (a
+#: run reports a dual-family critique while both critics ran on one family),
+#: reached by a typo instead of by a missing profile -- so it gets the same
+#: answer: refuse at startup, name the node and the attribute, and name the
+#: canonical attribute to write instead.
+#:
+#: Deliberately a CURATED table, not "any unknown attribute".  The nlspec's
+#: node-attribute surface is open by design (Section 2.6 passes unrecognized
+#: attributes through, and EXTENSIONS Section 40's ``worker=`` is itself an
+#: additive attribute), so refusing every unknown name would break conformant
+#: graphs.  These are only the names that *look like* provider selection and
+#: could therefore be believed to work.
+PROVIDER_SELECTION_ALIASES: dict[str, str] = {
+    "provider": "llm_provider",
+    "provider_name": "llm_provider",
+    "llm": "llm_provider",
+    "model": "llm_model",
+    "model_name": "llm_model",
+    "llm_model_name": "llm_model",
+    "reasoning": "reasoning_effort",
+    "effort": "reasoning_effort",
+    "reasoning_level": "reasoning_effort",
+    "llm_reasoning_effort": "reasoning_effort",
+}
+
 
 class ProviderPreflightError(Exception):
     """Raised before the walk begins when nodes declare unserviceable providers.
@@ -112,6 +146,62 @@ def collect_declared_llm_providers(graph: Graph) -> dict[str, list[str]]:
     for node_ids in declared.values():
         node_ids.sort()
     return declared
+
+
+def check_provider_selection_attrs(graph: Graph) -> None:
+    """Refuse to start when an LLM node declares a NON-canonical
+    provider-selection attribute.
+
+    A node that writes ``provider="openai"`` or ``model="gpt-5"`` instead of
+    the nlspec's ``llm_provider`` / ``llm_model`` reads as a deliberate model
+    choice to every human who looks at the graph, and is read by nothing at
+    all: the run quietly takes the engine's default provider and reports
+    success.  There is no legitimate outcome behind that silence -- either the
+    author meant the canonical attribute (a typo worth one clear error at
+    startup) or they meant a selection surface this engine does not have (also
+    worth one clear error).  Substituting a different model and saying nothing
+    is the one answer that is never right (issue #155 ruling R6; EXTENSIONS
+    Section 36's fail-closed doctrine).
+
+    Scope mirrors :func:`check_provider_preflight` exactly: root graph, LLM
+    node types only (an inert attribute on a tool node selects nothing and is
+    not policed), static, no live call, zero nodes executed.
+
+    Raises:
+        ProviderPreflightError: naming every offending node, the attribute it
+        declared, and the canonical attribute to write instead.
+    """
+    failures: list[str] = []
+    nodes = getattr(graph, "nodes", None) or {}
+    for node in nodes.values():
+        if _effective_handler_type(node) not in _LLM_HANDLER_TYPES:
+            continue
+        attrs = getattr(node, "attrs", None) or {}
+        for attr in sorted(attrs):
+            canonical = PROVIDER_SELECTION_ALIASES.get(attr)
+            if canonical is None:
+                continue
+            failures.append(
+                f"  - node '{node.id}' declares {attr}=\"{attrs[attr]}\", which this "
+                f"engine does not read; the canonical attribute is "
+                f"'{canonical}' (attractor-spec-canonical.md Section 2.6 / Appendix A)"
+            )
+
+    if not failures:
+        return
+
+    raise ProviderPreflightError(
+        "PROVIDER PREFLIGHT FAILED -- refusing to start the pipeline. The "
+        "following nodes declare a provider/model-selection attribute this "
+        "engine cannot honor:\n"
+        + "\n".join(failures)
+        + "\nSuch an attribute selects nothing: the run would take the engine's "
+        "default provider and report success, so a graph that reads as a "
+        "deliberate model choice would silently measure a different model. "
+        "Fix: rename each attribute above to its canonical name. The complete "
+        "set of provider/model-selection node attributes is llm_provider, "
+        "llm_model, reasoning_effort."
+    )
 
 
 def check_provider_preflight(
