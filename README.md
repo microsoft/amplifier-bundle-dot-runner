@@ -45,6 +45,7 @@ docs) lives in the repos that consume this one.
 | `modules/tool-pipeline-run` | Agent-facing `run_pipeline` tool module: lets an interactive session invoke a DOT graph pipeline at runtime via `session.spawn`. Its defaults name no bundle -- a mounting bundle supplies its own `runner_agent` / `mention_example`. |
 | `contracts/external/` | Byte-pinned vendored copies of the upstream `strongdm/attractor`, `coding-agent-loop`, and `unified-llm` nlspecs. |
 | `specs/EXTENSIONS.md` | Append-only ledger of every place this implementation extends or deviates from the canonical specs. |
+| `contracts/engine-surface.v1.md` | Owned contract, **FROZEN 2026-09-07** — 17 Core clauses governing engine behavior *beyond* the external nlspec, each pinned by a `ledger/rows.yaml` row (`ESF-000`…`ESF-017`). Locked: it changes only by a ratified `engine-surface.v2-candidate.md` proposal, never by an edit in place. Freeze Bar evidence and the open residue: `contracts/FREEZE-PACKET-engine-surface.v1.md`. |
 | `contracts/recipe-substrate.v1.md` | Owned contract, **DRAFT/paused** — does not meet the Freeze Bar; governs nothing yet. |
 | `ledger/rows.yaml` | The conformance ledger ([Converge format](docs/VISION.md)): one row per normative statement cluster, each check-verified against contract bytes. |
 | `ledger/checks/` | The executable checks the ledger rows reference. Run inside `modules/loop-pipeline`'s own test job — no separate CI job. |

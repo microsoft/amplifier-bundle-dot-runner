@@ -1,11 +1,29 @@
-# CONTRACT: engine surface beyond the nlspec, v1
+# CONTRACT: engine surface beyond the nlspec, v1 (FROZEN 2026-09-07)
 
-> **DRAFT.** Only the owner stamps FROZEN, by editing `status:` below and adding a
-> dated Changelog entry. Freeze Bar evidence — condition by condition, clause by
-> clause — is in the sibling `FREEZE-PACKET-engine-surface.v1.md`. This contract
-> does not self-stamp; until stamped, nothing here binds a lane.
+> **FROZEN 2026-09-07.** Stamped on the owner's one-word ruling — *"stamp"* —
+> recorded by the manager session on the owner's behalf. The Freeze Bar evidence it
+> was stamped on — condition by condition, clause by clause — is the sibling
+> `FREEZE-PACKET-engine-surface.v1.md`, which carries the same ruling as a dated
+> STAMPED record.
+>
+> **What the stamp claims.** That the clause text is the owner's; that drift on
+> **all 17** Core clauses is machine-visible and fails naming this contract; that one
+> real implementation — this engine — passes it, green.
+>
+> **What it does not claim.** That every clause has a worked end-to-end example: the
+> packet's summary table counts **7 of 17** and its stated per-clause counting rule
+> counts **8 of 17** (the two differ over C17 alone, which moved after that table was
+> written), with 5 partial and 4 absent. That the cited tests still assert what they
+> were cited for: 16 of the 17 clause rows are existence-indexed, not semantic. The
+> residue is deliberately not restated here — it lives in the packet, items 3–6, and
+> the packet is where it is worked down.
+>
+> **Locked: no edit in place, by anyone.** A change to this file goes by written
+> proposal in a sibling `engine-surface.v2-candidate.md` (Converge skill
+> `proposing-a-change`) — target line, exact change, evidence of a cost paid or a
+> failure caught, and what does not change — which only the owner ratifies.
 
-- **id:** `CONTRACT-engine-surface.v1` · **version:** 1.0.0 · **status:** **DRAFT** · **date:** 2026-09-02
+- **id:** `CONTRACT-engine-surface.v1` · **version:** 1.0.0 · **status:** **FROZEN** · **date:** 2026-09-02 · **frozen:** 2026-09-07
 - **owner:** maintainer · **repo:** `microsoft/amplifier-bundle-dot-runner`
 
 **Scope.** The behavior of this engine **beyond** the external nlspec vendored at
@@ -243,15 +261,31 @@ this contract. Coverage tripwires in `ledger/checks/test_engine_surface_matrix.p
 join in **both** directions: no Core clause may go un-rowed, and no row may invent a clause this
 file does not carry.
 
-Seeding those rows ahead of a stamp was the owner's instruction (#49, following the freeze
-packet's own recommended sequence), so the rows are real today while this contract is still
-**DRAFT**. What the rows are and are not: 16 of the 17 clause rows use `assertion.kind: indexed`,
-which proves a cited test **exists** (AST-resolved), not that it still asserts what it was cited
-for (`LEDGER-FORMAT.md` §8); only `ESF-000` and `ESF-017` are executable probes — `ESF-017`
-asserts the narrowed C17 directly (#48), the others prove their cited tests exist.
+Those rows were seeded ahead of the stamp on the owner's instruction (#49, following the freeze
+packet's own recommended sequence); as of the **2026-09-07** stamp they answer to a FROZEN
+contract, so a drifting clause is a broken promise rather than a moving draft. What the rows are
+and are not: 16 of the 17 clause rows use `assertion.kind: indexed`, which proves a cited test
+**exists** (AST-resolved), not that it still asserts what it was cited for (`LEDGER-FORMAT.md`
+§8); only `ESF-000` and `ESF-017` are executable probes — `ESF-017` asserts the narrowed C17
+directly (#48), the others prove their cited tests exist.
 
 ## Changelog
 
+- **2026-09-07 — 1.0.0 STAMPED FROZEN.** Locked on the owner's word — *"stamp"* — recorded
+  by the manager session on the owner's behalf, on the evidence in
+  `contracts/FREEZE-PACKET-engine-surface.v1.md`: Freeze Bar conditions 1–3 **MET**;
+  condition 4 met literally, with named per-clause residue (worked end-to-end examples for
+  7 of 17 by the packet's summary table, 8 of 17 by its stated counting rule; 5 partial, 4
+  absent). The stamp was made knowing that residue; what it claims and does not claim is
+  stated in the header above, and the residue list stays in the packet. **No clause text
+  moved** — this entry, the H1 stamp, the `status:` field, the header's proposal pointer and
+  the Conformance paragraph's tense are the whole of the change; the version is unmoved at
+  1.0.0 because a stamp mints no new version. From today this file changes only by a sibling
+  `engine-surface.v2-candidate.md` proposal the owner ratifies, never by an edit in place.
+  `ESF-000` is re-pinned to these bytes and its quote re-reads the new status line — the
+  mandatory full-ledger re-review (`LEDGER-FORMAT.md` §4) firing exactly when this contract
+  and its packet said it would, not a defect. All 17 clause rows were re-read against
+  unchanged clause text; none moved disposition.
 - **2026-09-06 — DRAFT, two corrections; no clause added, removed, or reworded.** (1) The
   Conformance section above said *"No `ledger/rows.yaml` row derives from this contract yet,
   and none may until it is stamped."* That has been false since #49 seeded 18 rows on the

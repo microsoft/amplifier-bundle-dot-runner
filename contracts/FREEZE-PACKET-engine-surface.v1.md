@@ -1,5 +1,21 @@
 # FREEZE PACKET — `contracts/engine-surface.v1.md`
 
+> **STAMPED 2026-09-07 — the contract is FROZEN.** The owner ruled in one word,
+> *"stamp"*, recorded by the manager session on the owner's behalf, on the evidence
+> below exactly as it stands: conditions 1–3 MET, condition 4 met literally with
+> named per-clause residue (7 of 17 worked end-to-end examples by the at-a-glance
+> table, 8 of 17 by the counting rule stated under "The worked-example corpus" — the
+> two differ over C17 alone, which moved after that table was written; 5 partial, 4
+> absent). **Nothing below is re-assessed or rewritten by this record**, including
+> the Recommendation's "do not stamp yet": that was this packet's honest advice on
+> 2026-09-06 and it stands as the history it is. The owner stamped anyway, knowing
+> the residue, and that ruling is recorded here and in the contract's own Changelog.
+> The residue — items 3, 4, 5 and 6 under "Exactly what is missing" — is **not
+> closed** by the stamp and stays this packet's open work; the contract's header
+> states what the stamp does and does not claim. From 2026-09-07 the contract is
+> locked: it changes only by a sibling `engine-surface.v2-candidate.md` proposal the
+> owner ratifies, never by an edit in place.
+
 **What this is.** The Freeze Bar evidence for `CONTRACT-engine-surface.v1`,
 condition by condition and clause by clause, so the owner can decide from
 artifacts rather than from a self-report.
@@ -244,6 +260,20 @@ not a defect, and not something to fix by bumping the hash.
 
 ## Changelog
 
+- **2026-09-07 — STAMPED. Record only; no re-assessment, no verdict moved.** The
+  owner ruled *"stamp"* and `contracts/engine-surface.v1.md` went DRAFT → FROZEN in
+  one commit: H1 and `status:` stamped, Changelog entry written, header pointer added
+  saying the file now changes only by proposal. `ESF-000`'s `sha256` **and** its quote
+  are re-pinned — both tripwires fired exactly as this packet said they would ("One
+  expected consequence, so it is not a surprise"), the full-ledger re-review was done
+  against unchanged clause text, and no clause row moved disposition. This entry is
+  the only thing added to this packet besides the banner under its title: the
+  assessment, the per-clause table, "Exactly what is missing" and the Recommendation
+  are untouched, deliberately, so the evidence the owner ruled on stays readable as it
+  was. **What the stamp did not close:** residue items 3 (existence-indexed rows), 4
+  (`ESF-007`/`ESF-015` thin cites), 5 (clauses with no worked end-to-end example) and
+  6 (C14.3's byte-cap / unreadable-attachment sliver). They remain this packet's open
+  work and are lane work, needing no owner input.
 - **2026-09-06 (third entry, same day) — two residuals closed, no re-assessment.**
   The Freeze Bar verdicts above are unchanged; this entry records only that two
   named residuals landed, after the C17 narrowing recorded immediately below. **Item 2** (the contract's false Conformance sentence)
