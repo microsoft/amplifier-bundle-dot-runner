@@ -232,24 +232,72 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: "Preflight: dual-family critique is unserviceable without an OpenAI key"
+      - name: "Preflight: the critique judge's provider instance must be serviceable"
         id: preflight
         if: steps.locate.outputs.skip != 'true'
-        # task-runner.dot's critique_b node hard-declares llm_provider="openai"
-        # (dual-family critique -- an independent, cross-provider reviewer is
-        # the point). With `--worker coding-agent`, that attribute flows
-        # straight through the named-worker path (no dual-provider bundle
-        # mount needed). Check the one precondition that makes it
-        # serviceable BEFORE spending the run's 30-90+ minute budget.
+        # task-runner.dot's critique_b node declares llm_provider="luna" -- a
+        # CONFIGURED PROVIDER INSTANCE of module provider-openai, i.e. still
+        # a second model family, deliberately (owner model policy
+        # 2026-09-07; EXTENSIONS Sec 36 addendum 4 -- it replaced a bare
+        # llm_provider="openai", llm_model="gpt-[5-9]*" pin). With
+        # `--worker coding-agent` that attribute flows straight through the
+        # named-worker path -- no dual-provider bundle mount needed.
+        #
+        # An instance is addressable ONLY if the settings this run reads
+        # DECLARE it (provider_instances.settings_scope_paths:
+        # $AMPLIFIER_HOME/settings.yaml, then
+        # <cwd>/.amplifier/settings*.yaml). A GitHub runner has neither, so
+        # this step writes the one the engine will read, into the DEFAULT
+        # home (~/.amplifier) -- outside $GITHUB_WORKSPACE on purpose, so it
+        # can never dirty the subject tree the gates reset and re-prove.
+        #
+        # NO SECRET IS WRITTEN TO DISK: the file carries ${VAR} placeholders
+        # verbatim, and provider_instances expands them at load time from
+        # the environment (os.environ first, keys.env second), leaving an
+        # unresolvable one verbatim so a mis-set key surfaces as the
+        # provider's own loud auth failure naming the literal ${VAR} --
+        # never as a silent empty credential.
+        #
+        # This does NOT replace, weaken, or stand in for the engine's own
+        # #155 provider preflight: that still refuses to start when 'luna'
+        # cannot be resolved and mounted, exactly as loud. This runs FIRST
+        # so a missing secret is visible before the run's 30-90+ minute budget is
+        # spent rather than after.
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
         run: |
           set -euo pipefail
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::capsule-implement: OPENAI_API_KEY secret is missing. task-runner.dot's critique_b node requires llm_provider=\"openai\" (dual-family critique) and the engine cross-checks every declared provider at startup, refusing to start without a serviceable credential for it. Refusing to start here too, so the failure is visible before the run's 30-90+ minute budget is spent. Provision OPENAI_API_KEY as a repo secret, then re-run." >&2
+          missing=""
+          [ -n "${OPENAI_API_KEY:-}" ] || missing="$missing OPENAI_API_KEY"
+          [ -n "${OPENAI_BASE_URL:-}" ] || missing="$missing OPENAI_BASE_URL"
+          if [ -n "$missing" ]; then
+            echo "::error::capsule-implement: missing repo secret(s):$missing. task-runner.dot's critique_b node declares llm_provider=\"luna\" -- a configured provider INSTANCE of module provider-openai -- and a second model family is the point: the judge must be independent of the maker's family. This workflow defines that instance and it reads its credential and endpoint from those two secrets; the engine additionally cross-checks every declared provider at startup and refuses to start without a serviceable one. Refusing to start here too, so the failure is visible before the run's 30-90+ minute budget is spent. Provision the named secret(s) as repo secrets, then re-run." >&2
             exit 1
           fi
-          echo "OPENAI_API_KEY is present -- dual-family critique (Anthropic + OpenAI) can be honored. Proceeding."
+
+          # The instance definition the engine will read. Shape mirrors the
+          # app CLI's own config.providers[] entries; the `id` key is what
+          # makes this an ADDRESSABLE instance (an entry without one is a
+          # plain module-level override and is deliberately NOT addressable
+          # -- provider_instances.load_provider_instances drops it).
+          mkdir -p "$HOME/.amplifier"
+          cat > "$HOME/.amplifier/settings.yaml" <<'SETTINGS'
+          config:
+            providers:
+              - id: luna
+                module: provider-openai
+                source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
+                config:
+                  api_key: ${OPENAI_API_KEY}
+                  base_url: ${OPENAI_BASE_URL}
+                  default_model: gpt-5.6-luna
+                  enable_long_context: 'false'
+                  reasoning_effort: high
+          SETTINGS
+          echo "--- wrote $HOME/.amplifier/settings.yaml (placeholders only; no secret VALUE is on disk) ---"
+          cat "$HOME/.amplifier/settings.yaml"
+          echo "OPENAI_API_KEY and OPENAI_BASE_URL are present and the 'luna' provider instance is declared -- the second-family critique judge can be honored. Proceeding."
 
       - name: "Stage the capsule's vendored gate fixtures beside the gate"
         id: fixtures
@@ -317,6 +365,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/capsule-implement/logs"
@@ -436,6 +485,8 @@ jobs:
         if: always() && steps.locate.outputs.skip != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          SCRUB_WATCH_ENV: OPENAI_BASE_URL
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CAPSULE_PR_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -641,6 +692,8 @@ jobs:
         if: always() && steps.locate.outputs.skip != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          SCRUB_WATCH_ENV: OPENAI_BASE_URL
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CAPSULE_PR_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
