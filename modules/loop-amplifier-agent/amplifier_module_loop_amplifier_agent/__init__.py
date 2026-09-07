@@ -99,6 +99,47 @@ def _slugify_thread_key(thread_key: str) -> str:
 #: (amplifier_module_loop_agent/__init__.py's ``_emit_completion``).
 ORCHESTRATOR_NAME = "loop-amplifier-agent"
 
+#: Provider families whose module name can be read out of an address by
+#: substring (``provider-openai`` -> ``openai``), and the compound names that
+#: must NOT be (``azure-openai`` is a distinct, differently configured
+#: provider, not the openai family under another spelling).  Both mirror
+#: loop-agent's ``agent_session.KNOWN_PROVIDERS`` /
+#: ``_DISTINCT_COMPOUND_PROVIDERS`` deliberately rather than importing them:
+#: the two worker adapters are independent packages and neither may depend on
+#: the other at runtime.  The SHARED contract is pinned executably by
+#: ``worker_parity_kit.suite``'s ``telemetry_provider_identity`` TARGET row,
+#: which drives BOTH workers through the SAME assertion -- that is the seam
+#: that catches drift between these two copies, not a shared import.
+_KNOWN_PROVIDER_FAMILIES = ("anthropic", "openai", "gemini")
+_DISTINCT_COMPOUND_PROVIDERS = (
+    "azure-openai",
+    "azure_openai",
+    "openai-chatgpt",
+    "openai_chatgpt",
+)
+
+
+def _provider_instance_id(mount_key: str | None, module_name: str | None) -> str | None:
+    """The configured INSTANCE id this provider address is, or ``None``.
+
+    Same rule as ``loop-agent``'s ``agent_session.provider_instance_id`` (see
+    that docstring for the full reasoning): an address that is neither the
+    module's own name nor a mere naming VARIANT of it is an instance alias.
+    ``None`` whenever either half is unknown -- a worker that cannot tell
+    must say so rather than invent a configured instance that does not exist.
+    """
+    if not mount_key or not module_name:
+        return None
+    if mount_key == module_name:
+        return None
+    lowered = mount_key.lower()
+    if any(compound in lowered for compound in _DISTINCT_COMPOUND_PROVIDERS):
+        return mount_key
+    for family in _KNOWN_PROVIDER_FAMILIES:
+        if family in lowered:
+            return None if family == module_name else mount_key
+    return mount_key
+
 #: amplifier-agent's own baked-in default (bundle.md: ``default_provider:
 #: anthropic``), used when the pipeline node's orchestrator_config carries no
 #: ``llm_provider`` override and no parent ``provider_preferences`` resolve.
@@ -648,7 +689,16 @@ class AmplifierAgentOrchestrator:
             # set_default_fields above -- the persister keys its output
             # directory off each event's own `session_id` field, and an
             # unstamped event is one it drops.
-            self._attach_child_session_telemetry(session.coordinator)
+            # The identity handed in is this turn's RESOLVED routing (gap 4's
+            # precedence already applied above), not the raw node attributes
+            # -- reporting what was asked for rather than what was resolved is
+            # exactly the inference this event exists to retire.
+            self._attach_child_session_telemetry(
+                session.coordinator,
+                requested_provider=effective_provider,
+                requested_model=model_override,
+                reasoning_effort=reasoning_effort,
+            )
 
             session.coordinator.register_capability("display.emit", ctx.display.emit)
 
@@ -812,7 +862,14 @@ class AmplifierAgentOrchestrator:
             return f"dot-runner-thread-{_slugify_thread_key(thread_key)}"
         return f"engine-{uuid.uuid4().hex}"
 
-    def _attach_child_session_telemetry(self, coordinator: Any) -> None:
+    def _attach_child_session_telemetry(
+        self,
+        coordinator: Any,
+        *,
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> None:
         """Persist the HOSTED session's own events under the pipeline run.
 
         THE DEFECT THIS CLOSES. EXTENSIONS.md Sec 26's persister reaches a
@@ -867,6 +924,28 @@ class AmplifierAgentOrchestrator:
         ``provider:request`` is NOT bridged for the mirror-image reason:
         loop-streaming already emits one per LLM call, and ``llm:request``
         would double the call count.
+
+        WHO SERVED IT (2026-09-07, the same addendum that put identity on
+        loop-agent's provider events).  ``llm:response`` already carries the
+        provider MODULE's own answer to "what am I" (``provider``) and the
+        model it called (``model``); those ride through verbatim, and the
+        module's answer always outranks this adapter's request.  The three
+        this adapter alone knows are stamped alongside them:
+
+        * ``provider_module`` -- the family that served.  Taken from the
+          payload's own ``provider`` when the module reported one, else the
+          provider this adapter injected.
+        * ``provider_instance`` -- the configured instance id when the node
+          addressed one (``_provider_instance_id``), ``None`` otherwise.
+        * ``reasoning_effort`` -- the ``effort_override`` handed to
+          ``inject_provider`` for this turn.  It reaches the model but
+          appears on no event the hosted runtime emits, so a cost read off
+          an ``amplifier-agent`` node could not tell ``high`` from ``low``.
+
+        Same five keys, same meanings, as loop-agent's own
+        ``_provider_identity`` -- one vocabulary across both workers, so the
+        harness that reads a node's evidence never has to know which worker
+        produced it.
 
         KNOWN LIMIT: a grandchild session (the hosted agent's own ``delegate``
         spawns) gets its own coordinator, which this does not reach -- its
@@ -934,6 +1013,17 @@ class AmplifierAgentOrchestrator:
                 value = payload.get(key)
                 if value is not None:
                     bridged[key] = value
+            # The provider module's own report of what it is outranks this
+            # adapter's request for it; the request is the fallback for a
+            # module that reported nothing, never an override.
+            served_by = payload.get("provider") or requested_provider
+            bridged.setdefault("provider", served_by)
+            bridged.setdefault("model", requested_model)
+            bridged["provider_module"] = served_by
+            bridged["provider_instance"] = _provider_instance_id(
+                requested_provider, served_by
+            )
+            bridged["reasoning_effort"] = reasoning_effort
             try:
                 await coordinator.hooks.emit(PROVIDER_RESPONSE, bridged)
             except Exception:  # never break the turn for observability

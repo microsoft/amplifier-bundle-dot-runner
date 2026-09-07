@@ -39,6 +39,7 @@ from amplifier_module_loop_agent import AgentOrchestrator
 from amplifier_module_loop_agent.agent_session import (
     mounted_provider_default_model,
     mounted_provider_module_name,
+    provider_instance_id,
 )
 
 #: The instance id a node would declare as ``llm_provider``.  Deliberately
@@ -290,3 +291,114 @@ async def test_explicit_config_model_outranks_the_mounts_default():
     )
     responses = [d for event, d in hooks._emitted if event == "provider:response"]
     assert responses[0]["model"] == "explicitly-configured-model"
+
+
+# ---------------------------------------------------------------------------
+# 5. The residual two: INSTANCE id and REASONING EFFORT
+# ---------------------------------------------------------------------------
+#
+# `provider` + `provider_module` + `model` (sections 3-4 above) left two
+# facts still un-evidenced, both of which a reader had to infer:
+#
+#   * WAS this an instance at all?  A reader had to compare the two names AND
+#     know the naming-variant rule (`provider-openai` is the openai family,
+#     not an instance called "provider-openai").  Inference, on the exact
+#     question the addendum exists to answer.
+#   * At what EFFORT?  Nowhere on the stream.  The node-matrix varies effort
+#     across rows, so `high` vs `low` could only be told apart by trusting
+#     the matrix file -- not the run's own evidence.
+
+
+@pytest.mark.asyncio
+async def test_provider_response_names_the_instance_id_as_an_instance():
+    providers = _providers()
+    _, hooks = await _run(
+        {
+            "llm_provider": INSTANCE_ID,
+            "reasoning_effort": "high",
+            "max_tool_rounds_per_input": 1,
+        },
+        providers,
+    )
+
+    responses = [d for event, d in hooks._emitted if event == "provider:response"]
+    assert responses
+    for data in responses:
+        assert data["provider_instance"] == INSTANCE_ID, (
+            "the mount key is an instance alias and the event must SAY so -- "
+            "not leave a reader to derive it from provider != provider_module"
+        )
+        assert data["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_provider_request_carries_instance_and_effort_too():
+    providers = _providers()
+    _, hooks = await _run(
+        {
+            "llm_provider": INSTANCE_ID,
+            "reasoning_effort": "high",
+            "max_tool_rounds_per_input": 1,
+        },
+        providers,
+    )
+
+    requests = [d for event, d in hooks._emitted if event == "provider:request"]
+    assert requests
+    for data in requests:
+        assert data["provider_instance"] == INSTANCE_ID
+        assert data["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_the_effort_reported_is_the_effort_the_request_carries():
+    """Not a re-echo of config: the value on the event must equal the value
+    that actually rode on the ``ChatRequest`` to the provider. One source of
+    truth, proven against the object the provider received."""
+    providers = _providers()
+    _, hooks = await _run(
+        {
+            "llm_provider": INSTANCE_ID,
+            "reasoning_effort": "low",
+            "max_tool_rounds_per_input": 1,
+        },
+        providers,
+    )
+
+    request = providers[INSTANCE_ID].complete.call_args[0][0]
+    responses = [d for event, d in hooks._emitted if event == "provider:response"]
+    assert request.reasoning_effort == "low"
+    assert responses[0]["reasoning_effort"] == request.reasoning_effort
+
+
+@pytest.mark.asyncio
+async def test_a_module_named_mount_reports_no_instance():
+    """The ordinary case must report ``None``, never the module name dressed
+    up as an instance -- an invented instance id is the same substitution
+    class as an invented family."""
+    providers = _providers()
+    _, hooks = await _run(
+        {"llm_provider": "anthropic", "max_tool_rounds_per_input": 1}, providers
+    )
+
+    responses = [d for event, d in hooks._emitted if event == "provider:response"]
+    assert responses
+    assert responses[0]["provider_instance"] is None
+    assert responses[0]["reasoning_effort"] is None, (
+        "a node that declared no effort must report None, never a default it "
+        "did not ask for"
+    )
+
+
+def test_provider_instance_id_rules():
+    """The reader on its own, over the four cases that matter."""
+    # A real instance: the key answers to no family.
+    assert provider_instance_id("terra", "openai") == "terra"
+    # The ordinary mount: key IS the module name.
+    assert provider_instance_id("openai", "openai") is None
+    # A naming variant of the same family is NOT a configured instance.
+    assert provider_instance_id("provider-openai", "openai") is None
+    assert provider_instance_id("Provider-OpenAI", "openai") is None
+    # Either half unknown -> say nothing.
+    assert provider_instance_id(None, "openai") is None
+    assert provider_instance_id("terra", None) is None

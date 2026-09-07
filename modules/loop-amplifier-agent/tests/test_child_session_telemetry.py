@@ -267,3 +267,117 @@ async def test_failed_turn_still_reports_the_worker_session_id(
         hooks.completion["metadata"]["worker_session_id"]
         == "dot-runner-thread-author--round-2"
     )
+
+
+# ---------------------------------------------------------------------------
+# Identity -- the bridged event NAMES who served the call
+# ---------------------------------------------------------------------------
+#
+# The usage block alone answers "how much did this cost", never "who was paid
+# for it". Measured (node-matrix ``20260907T081003Z``, row ``ca-terra``, the
+# sibling worker): a node declared one provider, another served it, and
+# proving that took fitting $11.19 against a price table because the events
+# named nobody. loop-agent's own provider events now carry five identity keys;
+# these pin the SAME five on the bridged event, so a reader of a node's
+# evidence never has to know which worker produced it.
+
+
+def _bridged_response(records: list[dict[str, Any]]) -> dict[str, Any]:
+    responses = [r for r in records if r["event"] == "provider:response"]
+    assert len(responses) == 1, (
+        f"expected exactly one bridged provider:response, got {len(responses)}"
+    )
+    return responses[0]["data"]
+
+
+@pytest.mark.asyncio
+async def test_bridged_response_names_the_family_and_effort(tmp_path: Path) -> None:
+    """The ordinary case: a module-named provider, at a declared effort.
+
+    ``reasoning_effort`` is the one of the five that reaches the model and
+    appears on NO event the hosted runtime emits -- so an ``amplifier-agent``
+    row's cost could not be told apart at ``high`` vs ``low`` from its own
+    evidence.
+    """
+    hooks, _ = await _run_turn_with_persistence(
+        tmp_path, orchestrator_config={"reasoning_effort": "high"}
+    )
+
+    worker_session_id = hooks.completion["metadata"]["worker_session_id"]
+    data = _bridged_response(_read_stream(tmp_path / worker_session_id / "events.jsonl"))
+
+    assert data["provider"] == "anthropic"
+    assert data["provider_module"] == "anthropic"
+    assert data["provider_instance"] is None
+    assert data["model"] == "claude-sonnet-5"
+    assert data["reasoning_effort"] == "high"
+    assert data["usage"] == _HOSTED_TURN_EVENTS[1][1]["usage"], (
+        "identity is ADDITIVE -- the forwarded usage block must survive"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bridged_response_names_an_instance_as_an_instance(
+    tmp_path: Path,
+) -> None:
+    """A node addressing a configured INSTANCE: the alias and the family are
+    two different facts and the event must carry both, so a reader never has
+    to derive "was this an instance?" by comparing names."""
+    served_by_openai = [
+        ("provider:request", {"provider": "openai", "iteration": 0}),
+        (
+            "llm:response",
+            {
+                "provider": "openai",
+                "model": "gpt-5.6-terra",
+                "status": "ok",
+                "usage": {"input_tokens": 10, "output_tokens": 5, "cost_usd": "0.01"},
+            },
+        ),
+    ]
+    hooks, _ = await _run_turn_with_persistence(
+        tmp_path,
+        orchestrator_config={"llm_provider": "terra", "reasoning_effort": "low"},
+        emit_events=served_by_openai,
+    )
+
+    worker_session_id = hooks.completion["metadata"]["worker_session_id"]
+    data = _bridged_response(_read_stream(tmp_path / worker_session_id / "events.jsonl"))
+
+    assert data["provider"] == "openai", (
+        "the provider MODULE's own report of what it is outranks the "
+        "adapter's request -- that disagreement IS the misroute signal"
+    )
+    assert data["provider_module"] == "openai"
+    assert data["provider_instance"] == "terra"
+    assert data["model"] == "gpt-5.6-terra"
+    assert data["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_a_node_that_declared_no_effort_reports_none(tmp_path: Path) -> None:
+    """Never a default the node did not ask for: an absent effort is ``None``,
+    which reads as "not declared", not as "low"."""
+    hooks, _ = await _run_turn_with_persistence(tmp_path)
+
+    worker_session_id = hooks.completion["metadata"]["worker_session_id"]
+    data = _bridged_response(_read_stream(tmp_path / worker_session_id / "events.jsonl"))
+
+    assert data["reasoning_effort"] is None
+    assert data["provider_instance"] is None
+
+
+def test_instance_reader_matches_loop_agents_rule() -> None:
+    """The duplicated rule, over the cases that separate an instance alias
+    from a naming variant. Kept byte-comparable with loop-agent's
+    ``agent_session.provider_instance_id`` (see this module's
+    ``_provider_instance_id`` docstring for why it is duplicated, not
+    imported)."""
+    assert laa._provider_instance_id("terra", "openai") == "terra"
+    assert laa._provider_instance_id("openai", "openai") is None
+    assert laa._provider_instance_id("provider-openai", "openai") is None
+    assert laa._provider_instance_id("Provider-OpenAI", "openai") is None
+    # A distinct compound is NOT the base family under another spelling.
+    assert laa._provider_instance_id("azure-openai", "openai") == "azure-openai"
+    assert laa._provider_instance_id(None, "openai") is None
+    assert laa._provider_instance_id("terra", None) is None

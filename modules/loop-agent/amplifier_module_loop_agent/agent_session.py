@@ -178,6 +178,41 @@ def mounted_provider_default_model(provider: Any) -> str | None:
     return declared if isinstance(declared, str) and declared else None
 
 
+def provider_instance_id(mount_key: str | None, module_name: str | None) -> str | None:
+    """The configured INSTANCE id this mount is, or ``None`` if it is not one.
+
+    A configured provider instance (``terra``, ``luna``) reaches a spawned
+    child as a mount whose KEY is the instance id while the mounted object
+    still declares its own module family (``openai``) -- that is exactly what
+    amplifier-core's ``instance_id`` remap does (``_session_init``: the
+    provider self-mounts at its module's default name, then core REMAPS the
+    mount to ``instance_id``).  So "the mount key is not this module's own
+    name" IS the instance signal, read off the two facts the session already
+    holds rather than re-reading settings from inside the worker.
+
+    Two things are deliberately NOT instances:
+
+    * an identical key (``openai`` mounted as ``openai``);
+    * a mere NAMING VARIANT of the same family (``provider-openai``,
+      ``Provider-OpenAI``) -- ``canonical_provider`` resolves those back to
+      the family, and reporting one as an instance id would invent a
+      configured instance that does not exist.  ``canonical_provider`` is
+      also what returns ``None`` for a real instance id (``terra``), which is
+      what makes the two cases separable at all.
+
+    Returns ``None`` whenever either half is unknown: a session that cannot
+    tell must say so, never guess (same contract as
+    :func:`mounted_provider_module_name`).
+    """
+    if not mount_key or not module_name:
+        return None
+    if mount_key == module_name:
+        return None
+    if canonical_provider(mount_key) == module_name:
+        return None
+    return mount_key
+
+
 class AgentSession:
     """Manages a single coding agent session with the core agentic loop.
 
@@ -272,17 +307,43 @@ class AgentSession:
     def _provider_identity(self) -> dict[str, Any]:
         """Who is about to serve / just served this call.
 
-        The SAME three keys on both ``provider:request`` and
+        The SAME five keys on both ``provider:request`` and
         ``provider:response`` so a persisted stream can be read either way
         round, and every value normalized to ``None`` rather than a bare
         empty string (an empty string reads as "known to be blank"; ``None``
         reads as "this session could not determine it", which is the honest
         state for a bare test double).
+
+        The five, and why each is its own key rather than something a reader
+        derives:
+
+        * ``provider`` -- the mount KEY the node addressed. Kept as-is; it is
+          what a graph's ``llm_provider`` attribute says, so a reader can
+          join the event back to the DOT that asked for it.
+        * ``provider_module`` -- the family that mount is an instance OF,
+          read off the live object (:func:`mounted_provider_module_name`).
+        * ``provider_instance`` -- the configured instance id, or ``None``
+          when this mount is not an instance at all
+          (:func:`provider_instance_id`). Derivable from the previous two
+          ONLY if the reader also knows the naming-variant rule, which is
+          exactly the kind of inference this event exists to retire.
+        * ``model`` -- what this session will actually call.
+        * ``reasoning_effort`` -- the effort that rides on the request
+          (``ChatRequest.reasoning_effort`` below, from the same
+          ``self._config``), ``None`` when the node declared none. A run's
+          cost is unreadable without it: the same model at ``high`` and at
+          ``low`` are different price/latency regimes, and the node-matrix
+          rows that vary effort could otherwise only be told apart by
+          trusting the matrix file rather than the run's own evidence.
         """
         return {
             "provider": self._provider_name or None,
             "provider_module": self._provider_module_name or None,
+            "provider_instance": provider_instance_id(
+                self._provider_name or None, self._provider_module_name or None
+            ),
             "model": self._model or None,
+            "reasoning_effort": self._config.reasoning_effort or None,
         }
 
     async def _call_provider(self, request: ChatRequest) -> dict[str, Any]:
@@ -597,7 +658,9 @@ class AgentSession:
             # price table -- forensics, on a question the event should simply
             # answer.  It now does: `provider` is the mount key the node
             # addressed, `provider_module` the family that mount is an
-            # instance OF, `model` what it was configured to call.
+            # instance OF, `provider_instance` the configured instance id (or
+            # None when the mount is not one), `model` what it was configured
+            # to call, and `reasoning_effort` the effort the request carries.
             await self._hooks.emit(
                 PROVIDER_RESPONSE, {"usage": usage_data, **self._provider_identity()}
             )
