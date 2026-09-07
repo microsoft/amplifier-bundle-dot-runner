@@ -41,12 +41,16 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 WORKFLOWS = HERE.parent / "workflows"
 
-#: Graph -> the workflow that invokes it.  `capsule.dot` / `capsule-specify.yml`
-#: are deliberately absent: a concurrent lane owns that pair, and this file
-#: must not assert on bytes it does not own.  Add the row when it lands.
+#: Graph -> the workflow that invokes it.  Every pipeline this repo SHIPS is
+#: a row here; a graph absent from this table is a graph the policy does not
+#: reach.  `capsule.dot` / `capsule-specify.yml` were the one pair #81 could
+#: not assert on (a concurrent lane owned those bytes); that lane landed on
+#: 2026-09-07 and the row is now here, which is what closes the last live
+#: gpt-5 route in the repo.
 SHIPPED_PAIRS: dict[str, str] = {
     "feature-capsule.dot": "feature-specify.yml",
     "task-runner.dot": "capsule-implement.yml",
+    "capsule.dot": "capsule-specify.yml",
 }
 
 #: Provider MODULE names -- the closed table an id may be without being a
