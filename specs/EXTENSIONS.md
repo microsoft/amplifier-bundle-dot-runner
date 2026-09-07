@@ -4010,3 +4010,143 @@ fails loud before attempting it, naming the fix -- an explicit concrete id, or o
   invariant), `modules/loop-pipeline/tests/test_subscription_provider_direct_worker.py`,
   `test_sole_mounted_provider_default.py`,
   `modules/loop-agent/tests/test_subscription_provider_prompt_profile.py`
+
+---
+
+## 45. Bounded Per-Call Context: Tool-Result Retention Window (coding-agent-loop §5/§8)
+
+> **depends-on:** none
+> **upstream action:** not applicable -- coding-agent-loop §8 designates this an extension
+> point ("The following features are intentionally excluded from this core spec. They are
+> valuable extensions that can be added on top of the architecture defined here"), and
+> nothing here changes the attractor engine's own surface. No upstream filing is proposed.
+
+**Classification: an extension in an area the coding-agent-loop spec explicitly designates
+for extension, deliberately narrower than the feature §8 defers.** The contract in play is
+`contracts/external/coding-agent-loop-spec-canonical.md`, not the attractor nlspec, so this
+entry carries no `ledger/rows.yaml` row (that ledger answers to
+`attractor-spec-canonical.md` and `contracts/engine-surface.v1.md`). `docs/
+SPEC_CONFORMANCE_HISTORY.md`, the old home for `CAL-*` records, is frozen; per its own
+successor note a new record belongs here.
+
+### The measured problem
+
+Read-only evidence, capsule-64-run2, worker session
+`c2e6940c-4582-4569-9f51-d8d90ff44c48` (`events.jsonl`, 793 KB):
+
+| | round 1 (`e1063bd1`) | round 2 (`c2e6940c`) |
+|---|---|---|
+| provider calls in ONE node visit | 92 | **164** |
+| input tokens, first call | 17,000 | **24,334** |
+| input tokens, median call | -- | **161,866** |
+| input tokens, last call | 142,000 | **227,605** |
+| wall clock | ~20 min | **~60 min** |
+
+The node visit's cost is `Σ(input tokens)`, and that sum is quadratic in the number of
+tool calls because the entire accumulated history is re-sent on every call. The 164-call
+visit carried 166 tool results totalling 382,222 chars (~95K tokens) by the end.
+
+**The finding that decides the design:** not one of those 166 results exceeded its per-tool
+character limit. The largest was 17,112 chars against bash's 30,000 default (§5.2); the
+median was ~2,300. Per-result truncation -- §5.1's MUST, which this repo implements in
+`modules/hooks-tool-truncation` -- would not have moved that run at all. The leak is
+ACCUMULATION, which §5.1 does not address and §5.5 explicitly hands to the host.
+
+### What changed
+
+**1. Conformance restoration (not an extension): §5.1's truncation is actually mounted.**
+`modules/pipeline-runner/.../default_worker.py`'s `_HOOK_MODULE_SOURCES` gains
+`hooks-tool-truncation`. The module has shipped in this repo, fully tested, since the spec
+was vendored -- and, exactly like the Sec 26 session persister before issue #64, it was
+never composed into the spawned named-worker session, so §5.1's MUST was unenforced on that
+entire path. Mounted with NO `config:` block: the hook's own defaults ARE §5.2's per-tool
+table, and overriding them here would be an engine author silently overruling a normative
+table on every consumer's behalf.
+
+**2. The extension: a tool-result retention window in loop-agent.**
+`SessionConfig.tool_result_retention_turns` (default **20**, `0` disables). At request-build
+time -- `messages.convert_history_to_messages`, reached through
+`AgentSession._convert_history_to_messages`, the single seam every provider request is built
+through -- tool results older than the window have their CONTENT replaced by:
+
+```
+[tool result elided: <tool> <n> chars; re-run to see]
+```
+
+Invariants, each pinned by a test in `modules/loop-agent/tests/test_context_bounding.py`:
+
+- **Only `role="tool"` content is ever elided.** Assistant text, assistant reasoning, user
+  turns and steering turns are always verbatim. The model's own record of what it decided
+  is what makes an elided result recoverable; eliding it would make the loop forget its
+  plan. (`test_assistant_text_is_never_elided`)
+- **Elision replaces content, never the message.** Role, position and `tool_call_id` are
+  preserved, so provider-side `tool_use`/`tool_result` pairing cannot break -- deleting old
+  tool messages would make every request invalid the moment the window slid.
+  (`test_elided_messages_keep_their_tool_call_id_and_position`)
+- **The stub says what was removed and how to get it back**, mirroring §5.1's own marker
+  contract. The full output is still in the event stream (`agent:tool_call_end` carries it
+  untruncated, §4's "TOOL_CALL_END carries FULL untruncated output"), so the operator's copy
+  is untouched and the model's recovery path is "re-run the tool".
+- **`0` reproduces prior behavior byte-for-byte**, and that path is asserted permanently
+  (`test_disabled_retention_reproduces_the_measured_leak`) so the plateau assertions can
+  never become tautological.
+
+Measured on the hermetic driver (40 rounds, 50,000-char tool result): with retention off,
+late-window growth is 450,738 chars per 9 calls -- identical to early growth (450,711), the
+24K→228K curve. With the window on, the same late growth is under 2% of it.
+
+### Why this is §8's extension point and not §8's deferred feature
+
+§5.5 says the agent "does NOT perform automatic compaction or summarization (that is out of
+scope for this spec)" and §8 defers **"Compaction / Context Summarization. Automatic
+conversation history summarization when approaching context limits ... a complex feature
+with significant tradeoffs (information loss, summarization cost, pinned turns)."**
+
+Every one of the three tradeoffs §8 names is the reason it defers summarization, and this
+mechanism has none of them:
+
+- **summarization cost** -- there is none. No model call, no second provider round trip.
+  Elision is a pure string substitution at request-build time.
+- **pinned turns** -- there is no pinning problem to solve, because the categories that
+  would need pinning (system, user, assistant, steering) are never touched at all. The rule
+  is categorical, not heuristic.
+- **information loss** -- bounded, signposted and recoverable: the stub names the tool and
+  the exact size, the full bytes remain in the event stream, and the model can re-run.
+  §5.1 already establishes that lossy-with-a-marker is the spec's own accepted shape for
+  keeping oversized content out of the window.
+
+The honest counter-reading, stated plainly rather than argued away: §5.5's sentence is a
+statement about observable agent behavior, and making retention default-ON changes that
+behavior for every consumer of this module. A reader who takes that sentence as normative
+would call this a divergence rather than an extension. That reading has an exact escape
+hatch and it is one config key -- `tool_result_retention_turns: 0` restores §5.5's letter
+byte-for-byte, which is why the disabled path is asserted permanently rather than left as
+dead code. Default-ON is chosen because the measured alternative is a 60-minute node visit
+whose last call carries 227,605 input tokens, and because §5.5's own stated purpose for the
+80%-usage warning is to let "the host application ... implement its own context management
+strategy" -- on this path, loop-agent's session IS that host, and the strategy is this one.
+
+### Interaction with prompt caching (disclosed, not hidden)
+
+A rolling window mutates the request prefix one message earlier on each successive call, so
+a provider-side prompt cache keyed on the prefix will miss more often than it would against
+an append-only history. This is a real cost and it is not measured here. It is accepted
+because the two effects are not the same size: the window removes the bytes entirely
+(bounded payload, bounded `Σ(input tokens)`), while caching only makes re-sending them
+cheaper. A batched boundary (advance the elision point every K rounds instead of every
+round, trading a slightly larger window for a prefix that is stable for K calls) is the
+obvious refinement if caching evidence later says it is worth the extra knob; it is
+deliberately NOT built now, on this repo's minimum-viable-change rule.
+
+**Implementation locations:**
+- `modules/loop-agent/amplifier_module_loop_agent/messages.py` --
+  `TOOL_RESULT_ELIDED_MARKER`, `_elision_stub`, `convert_history_to_messages`'s
+  `tool_result_retention_turns` keyword
+- `modules/loop-agent/amplifier_module_loop_agent/config.py` --
+  `SessionConfig.tool_result_retention_turns`
+- `modules/loop-agent/amplifier_module_loop_agent/agent_session.py` --
+  `AgentSession._convert_history_to_messages`
+- `modules/pipeline-runner/amplifier_module_pipeline_runner/default_worker.py` --
+  `_HOOK_MODULE_SOURCES` gains `hooks-tool-truncation`
+- Tests: `modules/loop-agent/tests/test_context_bounding.py` (new),
+  `modules/pipeline-runner/tests/test_synthesized_bundle_hooks.py` (extended)
