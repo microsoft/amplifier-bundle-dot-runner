@@ -3251,6 +3251,92 @@ instance-specific, it is not fixed here, and it is tracked separately as the dec
 honored defect. This addendum's claim is therefore exactly: an instance id RESOLVES, MOUNTS, and
 PASSES PREFLIGHT. It does not yet claim the model behind it served the call.*
 
+*Addendum 2 (2026-09-07, the residual above, closed): an instance id now SELECTS the instance for
+the node's completion, and the events NAME who served it.* The addendum above ended on an honest
+residual -- mounted and routed is not served -- and the follow-up measurement is worse than it
+looked. node-matrix run `20260907T081003Z-verify-provider-instance-routing`, row `ca-terra`, on
+the addendum-1 engine: preflight passed, the node ran to completion, and every one of its **142
+provider calls was served by Anthropic Sonnet** -- 34.3 minutes and $11.19 spent under a label
+that said `terra`. Establishing that took reading Anthropic-shaped usage KEYS
+(`cache_creation_input_tokens`) off the events and fitting the cost against two price tables,
+because the stream named neither a provider nor a model. Three independent causes, each of which
+alone reproduces the misroute.
+
+**1. The node's provider never reached the child.** Fixed separately (Section 46): the per-node
+`orchestrator_config` landed on a mount-plan key nothing mounts, so the child ran the synthesized
+agent's own `llm_provider: anthropic`. Without that repair none of the rest is observable, which
+is why this addendum composes with it rather than duplicating it.
+
+**2. loop-agent could not run an instance id even once it arrived.** The Layer-1 base prompt is
+resolved from the mount KEY, and an instance is mounted under an alias no family can be read out
+of -- `canonical_provider("terra")` is `None` -- so a correctly resolved, correctly mounted,
+correctly routed instance died on `_resolve_base_prompt`'s fail-loud branch instead. The family is
+now read off the LIVE mounted provider object (`mounted_provider_module_name`:
+`OpenAIProvider.name == "openai"`), which is the provider's own answer to "what am I" and cannot
+be spoofed by a mount alias; the same fallback repairs `_resolve_provider_id`'s doc discovery. The
+fail-loud branch is NARROWED, never removed -- a mount whose family is genuinely unknowable still
+refuses, now naming both the key and the module it reported. Both readers
+(`mounted_provider_module_name`, `mounted_provider_default_model`) return `None` rather than guess:
+a guessed family is precisely the silent substitution this section exists to remove.
+
+**3. The node's `llm_model` never reached the instance.** Two layers key on two different fields:
+amplifier-core remaps the mount from `instance_id`, while amplifier-foundation indexes mount-plan
+entries by `id` (`spawn_utils._build_provider_lookup` / `_find_provider_index`) -- and that index
+is what a `ProviderPreference` is matched against. `backend.py` sends the node's resolved
+`llm_model` as exactly such a preference, so an entry carrying only `instance_id` was invisible to
+it: preference silently dropped, instance runs whatever `default_model` its settings file happens
+to carry. Both keys are now emitted from the one resolved field, so they cannot name different
+things. (The same missing `id` also collapsed the entry under bundle composition's merge-by-
+identity rule, which keys on `id` first, else `module`: the instance and its own module entry both
+keyed to `provider-openai` and merged into one -- measured live as `No preferred providers found
+in mount plan. Preferences: ['terra'], Available: ['provider-openai-chatgpt', 'provider-gemini',
+'provider-openai', 'provider-anthropic']`, four entries where five were emitted.)
+
+**Telemetry, and why it is part of the fix rather than a nicety.** `provider:response` carried
+`usage` and nothing else, and `provider:request` carried a `model` that was `null` on every event
+because `AgentSession` was never passed one. A run could therefore misroute for 34 minutes and
+$11 with no reading of its own stream able to say so. Both events now carry `provider` (the mount
+key the node addressed), `provider_module` (the family that mount is an instance of) and `model`
+-- the same three keys on both, normalized to `None` rather than `""` so "could not determine"
+never reads as "known to be blank". This is ADDITIVE: `usage` is unchanged, and Section 26's
+persister writes the whole `data` payload verbatim (with its own write-time redaction), so the
+keys land in `<logs>/<node>/sessions/<id>/events.jsonl` with no persister change at all.
+
+**Which COPY of the worker runs -- found while trying to prove the above.** The synthesized agent
+stanza pinned its orchestrator to `source: git+...@main#subdirectory=modules/loop-agent`. A
+`source:` is a lazy-activation hint: foundation fetches that ref into `~/.amplifier/cache/` and
+core inserts the fetched path at `sys.path[0]` before importing the entry point. So an engine run
+from a checkout -- `uv run --project <checkout> dot-runner run ...`, the shape every evaluation
+harness and every lane uses -- spawned its nodes on `@main`'s worker code, not its own, and a
+checkout's own worker-side change was structurally unobservable. Measured on this branch: with the
+worker-side fix installed in the run's venv, the run still failed with `@main`'s error text (no
+"(mounted from module ...)" clause) and its events carried none of the new identity keys. The pin
+is also redundant wherever it does harm -- both adapters are UNCONDITIONAL root dependencies (WAVE
+6; issue #338 point 2, "a name the CLI advertises must resolve on a fresh install"), so on a
+healthy install core's own entry-point discovery finds the adapter (`_load_direct`, reached
+because an absent source hint raises `module_sources.ModuleNotFoundError`, the one exception the
+loader catches to fall back on). The hint is now emitted only when the adapter is NOT importable,
+an abnormal broken-install state where fetching a known-good copy beats failing to mount.
+
+**Live proof (2026-09-07, one-node `dot-runner run` declaring `llm_provider="terra"
+llm_model="gpt-5.6-terra"`, engine = this branch).** From the run's own persisted worker stream:
+
+```json
+{"event": "provider:request",  "data": {"model": "gpt-5.6-terra", "provider": "terra",
+                                        "provider_module": "openai", ...}}
+{"event": "provider:response", "data": {"model": "gpt-5.6-terra", "provider": "terra",
+                                        "provider_module": "openai",
+                                        "usage": {"reasoning_tokens": 140,
+                                                  "cache_write_tokens": 5915,
+                                                  "cost_usd": "0.0179615", ...}}}
+```
+
+OpenAI-shaped usage (`reasoning_tokens` present, no `cache_creation_input_tokens`), the model the
+node declared, and the instance id it addressed -- the same three facts that took cost-fitting to
+establish before. The addendum-1 residual is therefore closed: an instance id now resolves,
+mounts, passes preflight, SELECTS the instance for the node's completion, and says so on the
+record.*
+
 
 ---
 
