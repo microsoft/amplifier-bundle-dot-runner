@@ -4751,3 +4751,106 @@ declaring `openai`/`gpt-5`/`medium`), reading each run's own `provider:response`
 - Tests (both RED-proofed):
   `modules/pipeline-runner/tests/test_node_provider_honored_on_spawn.py`,
   `modules/loop-pipeline/tests/test_provider_selection_attrs_preflight.py`
+
+## 47. `max_agent_turns`: a Spec-Silent Per-Node Turn Cap, and What Its Unit Actually Is
+
+> **depends-on:** Section 40 (`worker=` selection -- this attribute is honored on BOTH
+> worker paths, and means a different thing on each), Section 46 (node-declared values
+> reaching the spawned child -- the delivery channel this cap rides).
+>
+> **upstream action:** none proposed. The canonical spec never names `max_agent_turns`
+> (grep of `contracts/external/attractor-spec-canonical.md`: zero hits), and Section 4.5
+> delegates backend internals to the implementer. This entry is a decision RECORD for a
+> surface the engine already implements and nothing documented.
+
+**Classification: implementer extension on a spec-silent surface. No `ledger/rows.yaml` row
+-- that ledger binds to clauses in `attractor-spec-canonical.md`, and there is no clause
+here to bind to.** Dated 2026-09-07.
+
+### Why this entry exists now
+
+`max_agent_turns` has been a real, working, tested node attribute on both worker paths since
+before the worker registry split, and it was used by **no graph in this repository**. The
+capsule pipeline review (`docs/designs/REVIEW-pipelines-2026-09.md` Sec3.4 item 4) found it
+by reading `backend.py`, proposed the first two uses of it, and asked whether its numbers
+were right (that review's Q3). Answering Q3 required measuring, and the measurement produced
+a fact about the attribute that nothing in the repo stated: **its unit is not a provider
+call.**
+
+### What the attribute does, per path
+
+| worker | where it lands | what bounds |
+|---|---|---|
+| spawn (`coding-agent`, `amplifier-agent`) | `orchestrator_config["max_turns"]` (`backend.py:402-404` -> `:700`), overlaid onto the child bundle's own `session.orchestrator.config` (Sec 46) | `loop-agent`'s session-wide turn wall: `self._history.turn_count >= self._config.max_turns` (`agent_session.py:560-563`) |
+| `llm-direct` | `generate(max_tool_rounds=...)` (`workers/direct_worker.py:206-218`) | `unified_llm`'s tool-loop rounds, replacing the `_MAX_TOOL_LOOP_ROUNDS = 20` default (`backend.py:84`) |
+
+Absent, the spawn path is **unbounded** (`SessionConfig.max_turns` defaults to `0` =
+unlimited, `config.py:31`) and the direct path is bounded at 20.
+
+### The measured unit: ~2 turns per provider call
+
+`SessionHistory.turn_count` is `len(self._turns)` (`turns.py:88`), and the loop appends a
+`UserTurn` once, an `AssistantTurn` per provider call (`agent_session.py:702`), **and a
+`ToolResultsTurn` per tool round** (`:743`). A node that calls tools on nearly every turn
+therefore spends about two turns per provider call.
+
+Measured exactly, not estimated. The capsule review proposed `author max_agent_turns=110`
+believing that bought ~110 provider calls. Run on this branch against the `node-matrix`
+`ca-anthropic-default` workload (the capsule `author` node on issue #64, engine = this
+branch, `provider-anthropic` `d7355b6`):
+
+| | measured |
+|---|---|
+| provider calls before the wall | **55** |
+| tool calls | 56 |
+| turns at the wall | `1 UserTurn + 55 AssistantTurns + 54 ToolResultsTurns` = **110, exactly** |
+| wall clock | 24.8 min |
+| what the node produced | **nothing** -- `dot-runner: status=fail`, `must_write= contract: the artifact at '.../.ai/capsule/DEFINITION.verify.sh' does not exist` |
+
+### The consequence that decides how caps are chosen
+
+**A turn cap is a wall, not a truncation.** When it trips, `loop-agent` ends the session and
+the node then fails its `must_write=` contract with no artifact at all. A cap set below a
+visit that has already been observed to converge does not produce a smaller capsule -- it
+produces no capsule, and (in `capsule.dot`) routes the round to `triage`.
+
+So a cap must sit above the largest CONVERGING visit measured for that node, in the
+attribute's own units, with headroom. The two caps this repo now ships:
+
+| node | largest converging visit | evidence | 1.25x headroom | cap shipped |
+|---|---|---|---|---|
+| `author` | 164 provider calls | Actions `34064448082`, session `c2e6940c`, status success | 205 calls | `2 x 205` = **410** |
+| `critique` | 125 provider calls | `capsule-64-run3`, session `9b7537d2`, status success, 39.9 min | `ceil(156.25)` = 157 calls | `2 x 157` = **314** |
+
+Both review-proposed numbers (110, 90) were below their node's own measured converging visit
+and are not shipped. `.github/capsule-pipeline/test_turn_caps.py` pins the floors so a later
+"tighten the budget" edit fails in CI rather than in a 5-hour capsule run.
+
+### Related finding: `llm-direct` has NO tools on the CLI / Actions path
+
+Recorded here because it is the reason the same review's change 3 (moving `postmortem` and
+`diagnose` onto `worker="llm-direct"` for a *bounded* budget) is **not** applied, and because
+the bound above is the only part of that proposal that survives.
+
+`drive_engine` constructs `AmplifierBackend(...)` with no `tools=` argument, so
+`self._tools` is `{}` (`backend.py:190`), `_build_unified_tools({})` is `[]`, and
+`DirectWorker.run` sends `"tools": tools or None` -- i.e. `None`. Measured live on this
+branch: a one-node graph declaring `worker="llm-direct" llm_provider="anthropic"`, run
+through the real CLI, instructed to `read_file` a file or else answer `NO TOOLS AVAILABLE`,
+answered `NO TOOLS AVAILABLE.` and wrote nothing. `postmortem`'s own measured shape is 18
+`read_file` + 2 `write_file` calls, and both nodes declare `must_write=`; the move would
+convert a working salvage path into a guaranteed artifact-contract failure.
+
+**Implementation locations:**
+
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/backend.py` -- `:402-404` (read +
+  int-convert), `:700` (`orchestrator_config["max_turns"]`)
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/workers/direct_worker.py` --
+  `:206-218` (`max_tool_rounds`)
+- `modules/loop-agent/amplifier_module_loop_agent/agent_session.py:560-563` -- the wall
+- `.github/capsule-pipeline/capsule.dot` -- `author`, `critique` (the first two uses)
+- Tests (all RED-proofed):
+  `modules/loop-pipeline/tests/test_attribute_passthrough.py` (both paths, pre-existing),
+  `modules/pipeline-runner/tests/test_node_provider_honored_on_spawn.py` (the join onto the
+  child bundle), `modules/pipeline-runner/tests/test_engine_native_direct_provider.py` (the
+  empty tool set), `.github/capsule-pipeline/test_turn_caps.py` (the shipped floors)
