@@ -48,6 +48,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from amplifier_module_loop_pipeline import provider_instances
+
 from . import default_worker, runner
 from .compat import IncompatibleEngineError, check_engine_compatibility
 from .params import parse_params
@@ -86,7 +88,12 @@ def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
     run.add_argument(
         "--provider",
         default="anthropic",
-        help="provider whose API key to preflight-check (default: anthropic)",
+        help=(
+            "provider to preflight-check and mount for this run -- either a "
+            "provider MODULE name (its API key env var must be set) or a "
+            "configured provider INSTANCE id from your Amplifier settings, "
+            "e.g. one of `amplifier provider list` (default: anthropic)"
+        ),
     )
     run.add_argument(
         "--worker",
@@ -182,7 +189,12 @@ def build_parser(prog: str = "dot-runner") -> argparse.ArgumentParser:
     resume.add_argument(
         "--provider",
         default="anthropic",
-        help="provider whose API key to preflight-check (default: anthropic)",
+        help=(
+            "provider to preflight-check and mount for this run -- either a "
+            "provider MODULE name (its API key env var must be set) or a "
+            "configured provider INSTANCE id from your Amplifier settings, "
+            "e.g. one of `amplifier provider list` (default: anthropic)"
+        ),
     )
     resume.add_argument(
         "--worker",
@@ -308,22 +320,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"{prog}: {e}", file=sys.stderr)
         return 1
 
-    # --- Fail loud: unknown --provider is a CLI-argument error ---
-    if args.provider not in runner.PROVIDER_KEY_ENV:
-        print(
-            f"{prog}: unknown provider {args.provider!r}. Known providers: "
-            f"{', '.join(sorted(runner.PROVIDER_KEY_ENV))}",
-            file=sys.stderr,
-        )
-        return 1
-
-    # --- Fail loud: provider API key must be present BEFORE we run anything ---
-    key_env = runner.PROVIDER_KEY_ENV[args.provider]
-    if not os.environ.get(key_env):
-        print(
-            f"{prog}: missing API key -- set {key_env} for provider {args.provider!r}",
-            file=sys.stderr,
-        )
+    # --- Fail loud: an unserviceable --provider is a CLI-argument error ---
+    # Two address spaces, one check (provider_instances.validate_run_provider):
+    # a provider MODULE name (its credential env var must be present) or a
+    # configured provider INSTANCE id (which carries its own credential in
+    # the user's settings). EXTENSIONS.md Sec 36 addendum 2026-09-07.
+    provider_problem = provider_instances.validate_run_provider(
+        args.provider, key_env=runner.PROVIDER_KEY_ENV
+    )
+    if provider_problem is not None:
+        print(f"{prog}: {provider_problem}", file=sys.stderr)
         return 1
 
     # --- Resolve logs root ---
@@ -384,7 +390,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     # an explicit --worker choice. Bundle machinery (if any) is synthesized
     # internally by default_worker.resolve -- never surfaced here.
     worker, bundle = default_worker.resolve(
-        worker=args.worker, prog=prog, dot_source=dot_source
+        worker=args.worker,
+        prog=prog,
+        dot_source=dot_source,
+        run_provider=args.provider,
     )
 
     print(f"{prog}: running pipeline cwd={cwd} logs={logs_root}")
@@ -474,21 +483,12 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print(f"{prog} resume: {e}", file=sys.stderr)
         return 1
 
-    if args.provider not in runner.PROVIDER_KEY_ENV:
-        print(
-            f"{prog} resume: unknown provider {args.provider!r}. Known providers: "
-            f"{', '.join(sorted(runner.PROVIDER_KEY_ENV))}",
-            file=sys.stderr,
-        )
-        return 1
-
-    key_env = runner.PROVIDER_KEY_ENV[args.provider]
-    if not os.environ.get(key_env):
-        print(
-            f"{prog} resume: missing API key -- set {key_env} for provider "
-            f"{args.provider!r}",
-            file=sys.stderr,
-        )
+    # Same two-address-space check as `run` -- see its call site.
+    provider_problem = provider_instances.validate_run_provider(
+        args.provider, key_env=runner.PROVIDER_KEY_ENV
+    )
+    if provider_problem is not None:
+        print(f"{prog} resume: {provider_problem}", file=sys.stderr)
         return 1
 
     cwd = Path(args.cwd).expanduser().resolve() if args.cwd else Path.cwd()
@@ -518,7 +518,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
     # github-copilot intent-rule scan simply sees no explicit-ask signal in
     # that case (the safe direction -- see provider_detection.py).
     worker, bundle = default_worker.resolve(
-        worker=args.worker, prog=prog, dot_source=dot_source
+        worker=args.worker,
+        prog=prog,
+        dot_source=dot_source,
+        run_provider=args.provider,
     )
 
     print(f"{prog}: resuming run cwd={cwd} logs={run_dir}")
