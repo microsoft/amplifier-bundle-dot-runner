@@ -128,9 +128,20 @@ class TestRunRefusesToStart:
 
         assert not (tmp_path / "captured.txt").exists()
 
-    def test_control_graph_runs_and_the_value_reaches_the_command(self, tmp_path):
+    def test_control_graph_runs_and_the_value_reaches_the_command(
+        self, tmp_path, monkeypatch
+    ):
         """The discriminating control: a VALID name still round-trips, so the
-        refusal is about the name and not about ``tool_env``."""
+        refusal is about the name and not about ``tool_env``.
+
+        The graph has no LLM node, but ``drive_engine`` resolves the default
+        worker's client before the walk begins, and that resolution refuses
+        outright when NO provider key is present at all (a hermetic CI runner).
+        Presence is checked, never validity -- so a placeholder is enough, and
+        nothing in this graph ever calls it.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-called")
+
         outcome = asyncio.run(
             drive_engine(
                 _VALID_DOT,
