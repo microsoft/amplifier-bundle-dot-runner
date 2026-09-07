@@ -265,14 +265,13 @@ jobs:
         # spent rather than after.
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
         run: |
           set -euo pipefail
           missing=""
           [ -n "${OPENAI_API_KEY:-}" ] || missing="$missing OPENAI_API_KEY"
-          [ -n "${OPENAI_BASE_URL:-}" ] || missing="$missing OPENAI_BASE_URL"
           if [ -n "$missing" ]; then
-            echo "::error::capsule-implement: missing repo secret(s):$missing. task-runner.dot's critique_b node declares llm_provider=\"luna\" -- a configured provider INSTANCE of module provider-openai -- and a second model family is the point: the judge must be independent of the maker's family. This workflow defines that instance and it reads its credential and endpoint from those two secrets; the engine additionally cross-checks every declared provider at startup and refuses to start without a serviceable one. Refusing to start here too, so the failure is visible before the run's 30-90+ minute budget is spent. Provision the named secret(s) as repo secrets, then re-run." >&2
+            echo "::error::capsule-implement: missing repo secret(s):$missing. task-runner.dot's critique_b node declares llm_provider=\"luna\" -- a configured provider INSTANCE of module provider-openai -- and a second model family is the point: the judge must be independent of the maker's family. This workflow defines that instance and it reads its credential from that secret (OPENAI_BASE_URL is OPTIONAL and is NOT a secret: set the Actions VARIABLE of that name to point the instance at a different endpoint, or leave it unset and provider-openai uses its own default); the engine additionally cross-checks every declared provider at startup and refuses to start without a serviceable one. Refusing to start here too, so the failure is visible before the run's 30-90+ minute budget is spent. Provision the named secret(s) as repo secrets, then re-run." >&2
             exit 1
           fi
 
@@ -282,6 +281,12 @@ jobs:
           # plain module-level override and is deliberately NOT addressable
           # -- provider_instances.load_provider_instances drops it).
           mkdir -p "$HOME/.amplifier"
+          # OPENAI_BASE_URL is OPTIONAL (owner ruling 2026-09-07). Absent, the
+          # `base_url` key is simply NOT written and provider-openai uses its
+          # own default endpoint -- which is what this instance wants unless
+          # someone deliberately points it elsewhere. Two appends rather than
+          # one interpolated heredoc because BOTH heredocs stay quoted: the
+          # ${VAR} placeholder is what lands on disk, never the value.
           cat > "$HOME/.amplifier/settings.yaml" <<'SETTINGS'
           config:
             providers:
@@ -290,14 +295,21 @@ jobs:
                 source: git+https://github.com/microsoft/amplifier-module-provider-openai@main
                 config:
                   api_key: ${OPENAI_API_KEY}
-                  base_url: ${OPENAI_BASE_URL}
                   default_model: gpt-5.6-luna
                   enable_long_context: 'false'
                   reasoning_effort: high
           SETTINGS
+          if [ -n "${OPENAI_BASE_URL:-}" ]; then
+            cat >> "$HOME/.amplifier/settings.yaml" <<'BASE_URL'
+                  base_url: ${OPENAI_BASE_URL}
+          BASE_URL
+            echo "OPENAI_BASE_URL is set (Actions variable first, secret as fallback) -- the 'luna' instance pins that endpoint."
+          else
+            echo "OPENAI_BASE_URL is unset -- OPTIONAL by owner ruling 2026-09-07: no base_url key is written, so the 'luna' instance uses provider-openai's own default endpoint."
+          fi
           echo "--- wrote $HOME/.amplifier/settings.yaml (placeholders only; no secret VALUE is on disk) ---"
           cat "$HOME/.amplifier/settings.yaml"
-          echo "OPENAI_API_KEY and OPENAI_BASE_URL are present and the 'luna' provider instance is declared -- the second-family critique judge can be honored. Proceeding."
+          echo "OPENAI_API_KEY is present and the 'luna' provider instance is declared -- the second-family critique judge can be honored. Proceeding."
 
       - name: "Stage the capsule's vendored gate fixtures beside the gate"
         id: fixtures
@@ -365,7 +377,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/capsule-implement/logs"
@@ -485,7 +497,7 @@ jobs:
         if: always() && steps.locate.outputs.skip != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
           SCRUB_WATCH_ENV: OPENAI_BASE_URL
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CAPSULE_PR_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN }}
@@ -692,7 +704,7 @@ jobs:
         if: always() && steps.locate.outputs.skip != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
           SCRUB_WATCH_ENV: OPENAI_BASE_URL
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CAPSULE_PR_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN }}

@@ -3711,6 +3711,47 @@ engine's own #155 provider preflight. **Action required by the owner: add
   tests fail against the pre-change bytes (each naming this pair), and the new
   guard fails in both of its directions when either half is removed.
 
+### Addendum 6 (2026-09-07): `OPENAI_BASE_URL` is OPTIONAL configuration, read from an Actions variable
+
+Addendum 4 registered `OPENAI_BASE_URL` as a **required repo secret**, and
+addendum 5 left the preflight refusing until an owner provisioned it. Both are
+superseded by an owner ruling of the same date, on two counts:
+
+1. **Optional.** An endpoint override is not a credential, and the OpenAI
+   module's own default endpoint is the right one for `luna` unless somebody
+   deliberately points it elsewhere ("the default should have been fine"). The
+   preflight therefore refuses ONLY on a missing `OPENAI_API_KEY`; with no
+   endpoint set it writes the instance with **no `base_url` key at all** and
+   says so in the step log. It never writes `base_url: ${OPENAI_BASE_URL}`
+   with nothing behind it -- the settings file carries placeholders verbatim to
+   provider-mount time, so an unresolvable one would be dialed as a literal
+   endpoint, which is strictly worse than the module default.
+2. **Not a secret.** It is a repository **variable**: every step that passes it
+   reads `${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}` -- variable
+   first, same-named secret only as a fallback for an org that already
+   provisioned it that way. `SCRUB_WATCH_ENV` still names it on every
+   scan/scrub/gate step, which costs nothing when it is empty:
+   `_watched_literals`'s `MIN_LITERAL_LEN` floor drops a zero-length value, and
+   it must -- an empty literal matches at every position and would redact every
+   byte of the evidence it touched.
+
+The #155 guarantee is unchanged: an unaddressable instance still refuses to
+start, as loud as before.
+
+**Implementation locations:**
+
+- `.github/workflows/capsule-specify.yml`, `feature-specify.yml`,
+  `capsule-implement.yml` -- the `preflight` step's two-branch settings write;
+  every `OPENAI_BASE_URL` env reference moved to the vars-then-secrets form
+- `.github/capsule-pipeline/test_model_policy.py` --
+  `PreflightStillFailsLoud` now executes the shipped preflight three ways (no
+  credential / credential only / both) and `BaseUrlIsAVariableNotASecret` pins
+  the vars-first read. RED-proofed: 9 failures against the pre-change workflow
+  bytes
+- `.github/capsule-pipeline/test_optional_base_url.py` (new) -- an empty
+  watched value contributes no scrub literal, a real one still does
+- `.github/capsule-pipeline/README.md` -- the two-secrets-one-variable table
+
 ---
 
 ---

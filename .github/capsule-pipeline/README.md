@@ -111,6 +111,36 @@ re-copying the source file and re-applying only the outer box.
    that is this repo's history. This file instead documents the port itself:
    what moved, what changed mechanically, and why.
 
+## What the workflows read: two secrets, one variable
+
+| Name | Kind | Required? | What it is |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | repo **secret** | yes | The maker's family. |
+| `OPENAI_API_KEY` | repo **secret** | yes | Credential for the `luna` provider instance (module `provider-openai`) that every critique/judge node declares -- a second model family, deliberately. |
+| `OPENAI_BASE_URL` | repo **variable** | **no** | Optional endpoint override for that instance. |
+
+`OPENAI_BASE_URL` is an endpoint URL, which is configuration, not a
+credential -- so each workflow reads it as
+`${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}`: the Actions
+**variable** first, a same-named secret only as a fallback for anyone who
+provisioned it that way already (owner ruling, 2026-09-07).
+
+Unset is a normal, supported run. The preflight step refuses only on a
+missing `OPENAI_API_KEY`; with no endpoint set it writes the `luna`
+instance with **no `base_url` key at all**, so `provider-openai` uses its
+own default endpoint, and says which branch it took in the step log. It
+never writes `base_url: ${OPENAI_BASE_URL}` with nothing behind it --
+that file carries placeholders verbatim to provider-mount time, so an
+unresolvable one would be dialed as a literal endpoint.
+
+Both directions are executed as tests, not merely described:
+`test_model_policy.py::PreflightStillFailsLoud` runs the SHIPPED preflight
+script three ways (no credential -> refuses naming exactly the credential;
+credential only -> no `base_url` key; both -> a placeholder at the right
+depth), and `test_optional_base_url.py` pins that an EMPTY watched value
+contributes no scrub literal -- an empty literal matches everywhere and
+would shred every artifact it touched.
+
 ## Re-sync procedure
 
 1. Shallow-clone `microsoft/amplifier-bundle-attractor` at the commit you

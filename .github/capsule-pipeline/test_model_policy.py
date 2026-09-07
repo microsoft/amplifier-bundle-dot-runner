@@ -195,7 +195,28 @@ class GraphAndWorkflowAgreeOnTheInstance(unittest.TestCase):
 
 
 class PreflightStillFailsLoud(unittest.TestCase):
-    """Test 3 -- the shipped preflight is executed, both ways."""
+    """Test 3 -- the shipped preflight is EXECUTED, three ways.
+
+    ``OPENAI_BASE_URL`` became OPTIONAL on 2026-09-07 (owner ruling): an
+    endpoint URL is configuration, not a credential, and provider-openai's
+    own default endpoint is the right one unless somebody deliberately
+    points the instance elsewhere.  Two obligations fall out, and neither
+    is checkable by reading the workflow:
+
+    * the preflight still refuses without the CREDENTIAL, and the list it
+      names is exactly the credential -- a preflight that keeps demanding
+      the endpoint refuses a run that would have worked;
+    * absent the endpoint, the settings it writes carry NO ``base_url`` key
+      at all.  Writing ``base_url: ${OPENAI_BASE_URL}`` with nothing behind
+      it is the worse failure: the placeholder survives verbatim to
+      provider-mount time and the instance dials a literal ``${...}``.
+    """
+
+    #: The literal a fake credential must never leave on disk.
+    SECRET = "sk-test-value-that-must-never-reach-disk"
+
+    #: ``missing repo secret(s):<list>.`` -- the list, and only the list.
+    MISSING_LIST = re.compile(r"missing repo secret\(s\):([^.]*)\.")
 
     def _run(self, workflow: str, env: dict[str, str], home: str):
         script = workflow_preflight_script(workflow)
@@ -206,52 +227,147 @@ class PreflightStillFailsLoud(unittest.TestCase):
             env={"PATH": os.environ.get("PATH", ""), "HOME": home, **env},
         )
 
-    def test_missing_secrets_fail_loud_and_name_both(self) -> None:
+    @staticmethod
+    def _settings(home: str) -> Path:
+        return Path(home) / ".amplifier" / "settings.yaml"
+
+    def test_missing_credential_fails_loud_and_names_only_the_credential(self) -> None:
         for workflow in SHIPPED_PAIRS.values():
             with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as home:
                 proc = self._run(workflow, {}, home)
                 self.assertEqual(
                     proc.returncode,
                     1,
-                    f"{workflow}: preflight passed with NO credentials set. "
+                    f"{workflow}: preflight passed with NO credential set. "
                     f"It must refuse before the run's budget is spent.\n"
                     f"stdout={proc.stdout}\nstderr={proc.stderr}",
                 )
                 self.assertIn("::error::", proc.stderr)
-                self.assertIn("OPENAI_API_KEY", proc.stderr)
-                self.assertIn("OPENAI_BASE_URL", proc.stderr)
+                found = self.MISSING_LIST.search(proc.stderr)
+                self.assertIsNotNone(
+                    found,
+                    f"{workflow}: refusal does not name what is missing: {proc.stderr}",
+                )
+                assert found is not None  # for type checkers
+                self.assertEqual(
+                    found.group(1).split(),
+                    ["OPENAI_API_KEY"],
+                    f"{workflow}: the refusal's missing-list is "
+                    f"{found.group(1).split()}. Exactly one thing is required "
+                    f"here -- the CREDENTIAL. OPENAI_BASE_URL is optional "
+                    f"(owner ruling 2026-09-07); demanding it refuses a run "
+                    f"that would have worked on the module's default endpoint.",
+                )
                 self.assertFalse(
-                    (Path(home) / ".amplifier" / "settings.yaml").exists(),
+                    self._settings(home).exists(),
                     f"{workflow}: preflight wrote a settings file on the "
                     f"failure path -- a half-configured run is worse than none.",
                 )
 
+    def test_absent_base_url_writes_no_base_url_key_at_all(self) -> None:
+        for dot, workflow in SHIPPED_PAIRS.items():
+            with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as home:
+                proc = self._run(workflow, {"OPENAI_API_KEY": self.SECRET}, home)
+                self.assertEqual(
+                    proc.returncode,
+                    0,
+                    f"{workflow}: preflight refused with the credential present "
+                    f"and only the OPTIONAL endpoint absent.\n"
+                    f"stdout={proc.stdout}\nstderr={proc.stderr}",
+                )
+                settings = self._settings(home)
+                self.assertTrue(settings.exists(), f"{workflow}: no settings written")
+                written = settings.read_text(encoding="utf-8")
+                self.assertNotIn(
+                    "base_url",
+                    written,
+                    f"{workflow}: wrote a base_url key with nothing behind it. "
+                    f"The file carries placeholders verbatim, so an unset "
+                    f"${{OPENAI_BASE_URL}} reaches provider-mount time as a "
+                    f"literal endpoint. Omit the key; the module's own default "
+                    f"is the intended endpoint (owner ruling 2026-09-07).",
+                )
+                self.assertNotIn(self.SECRET, written)
+                self.assertIn("${OPENAI_API_KEY}", written)
+                live = strip_dot_comments((HERE / dot).read_text(encoding="utf-8"))
+                for inst in set(LLM_PROVIDER_ATTR.findall(live)) - PROVIDER_MODULES:
+                    self.assertIn(f"- id: {inst}", written)
+                self.assertIn(
+                    "OPENAI_BASE_URL is unset",
+                    proc.stdout,
+                    f"{workflow}: took the default-endpoint branch without "
+                    f"saying so in the step log -- the next reader of a run "
+                    f"cannot tell which endpoint it dialed.",
+                )
+
     def test_present_secrets_write_a_placeholder_only_settings_file(self) -> None:
-        secret = "sk-test-value-that-must-never-reach-disk"
+        endpoint = "https://example.invalid/v1"
         for dot, workflow in SHIPPED_PAIRS.items():
             with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as home:
                 proc = self._run(
                     workflow,
-                    {
-                        "OPENAI_API_KEY": secret,
-                        "OPENAI_BASE_URL": "https://example.invalid/v1",
-                    },
+                    {"OPENAI_API_KEY": self.SECRET, "OPENAI_BASE_URL": endpoint},
                     home,
                 )
                 self.assertEqual(
                     proc.returncode, 0, f"{workflow}: {proc.stdout}\n{proc.stderr}"
                 )
-                settings = Path(home) / ".amplifier" / "settings.yaml"
+                settings = self._settings(home)
                 self.assertTrue(settings.exists(), f"{workflow}: no settings written")
                 written = settings.read_text(encoding="utf-8")
-                # THE point: a placeholder, never the value.
-                self.assertNotIn(secret, written)
+                # THE point: a placeholder, never the value -- for either one.
+                self.assertNotIn(self.SECRET, written)
+                self.assertNotIn(endpoint, written)
                 self.assertIn("${OPENAI_API_KEY}", written)
-                self.assertIn("${OPENAI_BASE_URL}", written)
+                # Exact depth, not merely presence: base_url is APPENDED to
+                # the file now, which is precisely where an indentation slip
+                # would land it in the wrong mapping (or the wrong instance).
+                self.assertIn("\n        api_key: ${OPENAI_API_KEY}", written)
+                self.assertIn(
+                    "\n        base_url: ${OPENAI_BASE_URL}",
+                    written,
+                    f"{workflow}: base_url is missing, or not at the same "
+                    f"depth as api_key -- the appended line must land in the "
+                    f"instance's own config mapping.\n{written}",
+                )
                 # And it defines what this graph actually names.
                 live = strip_dot_comments((HERE / dot).read_text(encoding="utf-8"))
                 for inst in set(LLM_PROVIDER_ATTR.findall(live)) - PROVIDER_MODULES:
                     self.assertIn(f"- id: {inst}", written)
+
+
+class BaseUrlIsAVariableNotASecret(unittest.TestCase):
+    """Test 5 -- the endpoint is read from an Actions VARIABLE, then a secret.
+
+    Owner ruling 2026-09-07: ``OPENAI_BASE_URL`` is configuration, not a
+    credential, and is set as a repository VARIABLE.  A step that reads only
+    ``secrets.OPENAI_BASE_URL`` therefore resolves to the empty string on
+    every run and silently takes the default-endpoint branch -- a working
+    run, pointed somewhere nobody chose.  The secret is kept as a fallback
+    so an org that did provision it as a secret is not broken.
+    """
+
+    WANTED = "${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}"
+    ENV_LINE = re.compile(r"^\s*OPENAI_BASE_URL:\s*(.+?)\s*$", re.MULTILINE)
+
+    def test_every_workflow_reads_the_variable_first(self) -> None:
+        for workflow in sorted(set(SHIPPED_PAIRS.values())):
+            source = (WORKFLOWS / workflow).read_text(encoding="utf-8")
+            values = self.ENV_LINE.findall(source)
+            with self.subTest(workflow=workflow):
+                self.assertTrue(
+                    values,
+                    f"{workflow} sets OPENAI_BASE_URL nowhere -- the endpoint "
+                    f"cannot reach the run at all.",
+                )
+                self.assertEqual(
+                    [v for v in values if v != self.WANTED],
+                    [],
+                    f"{workflow} reads OPENAI_BASE_URL from something other "
+                    f"than {self.WANTED}. It is a repository VARIABLE (owner "
+                    f"ruling 2026-09-07); a secrets-only read resolves empty "
+                    f"and the run quietly uses the default endpoint.",
+                )
 
 
 class JudgeFamilyCollapseIsNeverSilent(unittest.TestCase):
