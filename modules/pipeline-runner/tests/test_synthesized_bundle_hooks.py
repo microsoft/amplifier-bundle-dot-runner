@@ -42,6 +42,7 @@ from amplifier_module_pipeline_runner import default_worker
 amplifier_foundation = pytest.importorskip("amplifier_foundation")
 
 OBSERVABILITY_MODULE = "hooks-pipeline-observability"
+TRUNCATION_MODULE = "hooks-tool-truncation"
 
 
 def _with_one_provider_key(monkeypatch) -> None:
@@ -99,9 +100,57 @@ def test_every_mounted_hook_entry_carries_a_resolvable_source(monkeypatch, worke
         assert entry.get("source"), f"hook entry missing 'source': {entry!r}"
 
 
+@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
+def test_synthesized_bundle_mounts_tool_output_truncation(monkeypatch, worker_name):
+    """Second hook of the same class, quieter still than the first.
+
+    ``hooks-tool-truncation`` implements coding-agent-loop spec Section
+    5.1's MUST ("tool output ... MUST be truncated before being sent to the
+    LLM"). It has shipped in this repo, fully tested, since the spec was
+    vendored -- and was never mounted here either, so a spawned box-node
+    worker sent every oversized `cat`/test-run output to the model whole.
+
+    RED before the fix: ``hook_modules == {"hooks-pipeline-observability"}``.
+    """
+    _with_one_provider_key(monkeypatch)
+
+    loaded = asyncio.run(_load_synthesized_bundle(worker_name))
+    hook_modules = {h.get("module") for h in loaded.to_mount_plan().get("hooks", [])}
+
+    assert TRUNCATION_MODULE in hook_modules, (
+        f"synthesized --worker {worker_name!r} bundle does not mount "
+        f"{TRUNCATION_MODULE!r} (mounted: {hook_modules!r}) -- spec Section "
+        "5.1's truncation MUST is unenforced on the entire named-worker path"
+    )
+
+
 def test_hook_sources_table_is_not_empty():
     """The table itself is the contract -- an empty ``_HOOK_MODULE_SOURCES``
     would make every assertion above vacuously reachable only through the
     parametrized loads, and would silently reintroduce the bug."""
     assert default_worker._HOOK_MODULE_SOURCES
     assert OBSERVABILITY_MODULE in default_worker._HOOK_MODULE_SOURCES
+    assert TRUNCATION_MODULE in default_worker._HOOK_MODULE_SOURCES
+
+
+def test_truncation_hook_is_mounted_without_config_overrides(monkeypatch):
+    """No ``config:`` block, deliberately.
+
+    The hook's own defaults ARE spec Section 5.2's per-tool table
+    (read_file 50,000 / bash 30,000 / grep 20,000 / ...). Emitting tighter
+    limits here would be an engine author silently overruling a normative
+    table on behalf of every consumer; the spec points at the operator for
+    that. Accumulation -- the leak the measured evidence actually shows --
+    is bounded by loop-agent's retention window instead (specs/EXTENSIONS.md
+    Sec 45), not by shrinking this table.
+    """
+    _with_one_provider_key(monkeypatch)
+
+    rendered = default_worker._synthesize_agent_bundle_yaml("coding-agent")
+    hooks_block = rendered.split("\nhooks:\n", 1)[1].split("\nsession:", 1)[0]
+
+    assert TRUNCATION_MODULE in hooks_block
+    assert "config:" not in hooks_block, (
+        "the synthesized hooks block carries a config override -- see this "
+        f"test's docstring for why it must not:\n{hooks_block}"
+    )
