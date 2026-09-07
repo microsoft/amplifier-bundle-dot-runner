@@ -327,10 +327,33 @@ _TOOL_MODULE_SOURCES: dict[str, str] = {
 #: above -- the same proven mechanism, no new machinery. Unconditional for
 #: the same reason the tools are: there is no environment in which a
 #: multi-hour pipeline worker is better off unobservable.
+#: SECOND ENTRY, same class of hole, different consequence.
+#: ``hooks-tool-truncation`` implements coding-agent-loop spec Section 5.1's
+#: MUST ("When tool output exceeds the configured limit, it MUST be truncated
+#: before being sent to the LLM"), with Section 5.2's per-tool default table
+#: and Section 5.3's two-pass order. It has shipped in this repo, fully
+#: tested, since the spec was vendored -- and, exactly like the observability
+#: persister above, it was never mounted on the named-worker path. A spawned
+#: box-node worker therefore ran with NO truncation at all: a single
+#: `cat` of a large file or a verbose test run went to the model whole.
+#:
+#: Mounted with NO config overrides, deliberately. The hook's own defaults
+#: ARE the spec's Section 5.2 table (read_file 50,000 / bash 30,000 / grep
+#: 20,000 / ...); overriding them here to something tighter would be a silent
+#: divergence from a normative table, decided by an engine author rather than
+#: by the operator the spec points at (`SessionConfig.tool_output_limits`).
+#: The ACCUMULATION problem -- which the measured evidence says dominates,
+#: because no single result in the 164-call node visit exceeded its limit --
+#: is bounded by loop-agent's own retention window instead (specs/
+#: EXTENSIONS.md Sec 45), not by shrinking this table.
 _HOOK_MODULE_SOURCES: dict[str, str] = {
     "hooks-pipeline-observability": (
         "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
         "#subdirectory=modules/hooks-pipeline-observability"
+    ),
+    "hooks-tool-truncation": (
+        "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
+        "#subdirectory=modules/hooks-tool-truncation"
     ),
 }
 

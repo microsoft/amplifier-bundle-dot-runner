@@ -45,6 +45,25 @@ class SessionConfig:
     max_tool_rounds_per_provider: dict[str, int] = field(default_factory=dict)
     supports_parallel_tool_calls: bool = True  # False = sequential tool execution
 
+    #: How many of the MOST RECENT tool-result turns keep their content
+    #: verbatim in the per-call request. Older tool results are replaced by
+    #: a short stub naming the tool and the elided size (see
+    #: ``messages._elision_stub``); the tool message itself, its position
+    #: and its ``tool_call_id`` are always preserved, so provider-side
+    #: tool_use/tool_result pairing is never broken. ``0`` disables
+    #: elision entirely (pre-0.2.1 behavior: every tool result is re-sent
+    #: verbatim on every call, forever).
+    #:
+    #: Default 20, i.e. ON. Per-tool truncation (spec Section 5.1, the
+    #: hooks-tool-truncation module) bounds ONE result; nothing bounded
+    #: their ACCUMULATION. Measured on a real node visit (capsule-64-run2,
+    #: session c2e6940c): 164 provider calls in a single node visit, input
+    #: tokens 24,334 -> 227,605 (median 161,866), 166 tool results totalling
+    #: 382,222 chars -- and NOT ONE of them exceeded its per-tool char limit
+    #: (largest: 17,112 chars against bash's 30,000). Truncation alone would
+    #: not have moved that run at all. See specs/EXTENSIONS.md Sec 45.
+    tool_result_retention_turns: int = 20
+
     @classmethod
     def from_dict(cls, config: dict) -> SessionConfig:
         """Construct from a config dictionary, ignoring unknown keys."""

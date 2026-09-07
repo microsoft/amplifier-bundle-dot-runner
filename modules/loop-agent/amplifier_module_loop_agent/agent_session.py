@@ -847,8 +847,21 @@ class AgentSession:
         Delegates to the messages module which handles system-first
         ordering, content blocks, and ThinkingBlock preservation.
         Then prepends the system prompt as the first message.
+
+        Applies the tool-result retention window
+        (``config.tool_result_retention_turns``, default 20) on the way
+        through: tool results older than the window are replaced by a stub
+        so a long node visit's per-call payload PLATEAUS instead of growing
+        with every tool call. This is the one place it can be applied
+        correctly -- it is the single seam every provider request is built
+        through (the loop's own request, and ``_check_context_usage``'s
+        estimate, which therefore measures what is actually SENT rather
+        than what history happens to hold). See specs/EXTENSIONS.md Sec 45.
         """
-        messages = convert_history_to_messages(self._history)
+        messages = convert_history_to_messages(
+            self._history,
+            tool_result_retention_turns=self._config.tool_result_retention_turns,
+        )
 
         # Rebuild system prompt every iteration (spec PROV-002)
         system_text = self._build_system_prompt_text()
