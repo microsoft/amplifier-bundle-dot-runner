@@ -3413,8 +3413,22 @@ the run's own persisted worker stream:
 ```
 
 Read end to end off one line, with nothing inferred: an OpenAI-family provider module, mounted as
-the configured instance `terra`, calling `gpt-5.6-terra` at `high` effort, for six cents. The
-harness reads exactly this: `served_by = openai/terra/gpt-5.6-terra`, `served_by_source = event`.
+the configured instance `terra`, calling `gpt-5.6-terra` at `high` effort, for six cents.
+
+Run: `20260907T165503Z-verify-provider-identity-telemetry`, engine `ca42910`, the SAME one-row
+matrix as addendum 2. **39 of 39** `provider:response` events carried identity, and the harness's
+RESULTS row now reads the answer instead of the ask:
+
+```
+| variant  | worker       | provider/model      | effort | served by                  | src   | ... |
+| ca-terra | coding-agent | terra/gpt-5.6-terra | high   | openai/terra/gpt-5.6-terra | event | ... |
+```
+
+`provider/model` is the DECLARATION, `served by` is the run's own evidence, and the two are
+computed independently on purpose -- on `20260907T081003Z` the same declaration column read
+`terra/gpt-5.6-terra` while Anthropic served every call. A `served by` derived from the
+declaration could never have shown that; this one is derived only from the events, and `src`
+names which evidence produced it on every row.
 
 **Implementation locations:**
 
