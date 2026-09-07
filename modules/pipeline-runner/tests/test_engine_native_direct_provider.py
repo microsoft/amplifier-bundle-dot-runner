@@ -349,3 +349,69 @@ def test_cli_run_with_no_provider_key_is_clean_no_traceback(monkeypatch, tmp_pat
     # exercises the provider-key error path deliberately, independent of
     # amplifier-agent's own availability in the test environment.
     del sys
+
+
+# ---------------------------------------------------------------------------
+# 4. Q2 (docs/designs/REVIEW-pipelines-2026-09.md Sec5): what tool set does
+#    `llm-direct` actually get on the CLI / GitHub-Actions path?
+# ---------------------------------------------------------------------------
+
+
+def test_direct_worker_is_given_no_tools_on_the_cli_path(monkeypatch, tmp_path):
+    """The `llm-direct` worker reaches the provider with NO tools here.
+
+    This is the load-bearing fact behind the capsule v2 review's Q2, and it
+    is a *refusal gate* on a proposed change, not a defect report: the review
+    proposed moving `capsule.dot`'s read-only reasoning nodes (`postmortem`,
+    `diagnose`) onto `worker="llm-direct"`, and `postmortem`'s measured shape
+    is 18 `read_file` + 2 `write_file` calls (Actions 34064448082, session
+    115cbbfd). A worker with an empty tool set cannot serve that node at all,
+    and both nodes declare `must_write=`, so the move would convert a working
+    salvage path into a guaranteed artifact-contract failure.
+
+    The mechanism, in one chain -- every hop is real in this test:
+
+      * ``drive_engine`` constructs ``AmplifierBackend(...)`` with **no**
+        ``tools=`` argument (``runner.py``, the "Resolve backend" step),
+      * ``AmplifierBackend.__init__`` stores ``self._tools = tools or {}``,
+      * ``DirectWorker.run`` builds ``_build_unified_tools(self._tools)``
+        (``[]``) and sends ``"tools": tools or None`` -- i.e. ``None``.
+
+    The repo already documents the CONSEQUENCE in prose (``runner.py``'s
+    library-seam default-worker docstrings: "the TEXT-ONLY unified-llm worker
+    (no tool loop -- the model emitted tool calls as prose, nothing
+    executed)"). Nothing pinned it. This does, at the provider boundary, so a
+    future change that starts mounting tools here shows up as a failing test
+    instead of silently re-opening the question.
+
+    Corroborated live on this branch, outside the test suite: a one-node
+    graph declaring ``worker="llm-direct" llm_provider="anthropic"``, run
+    through the real CLI exactly as `capsule-specify.yml` runs it, and told
+    to read a file with `read_file` or else answer `NO TOOLS AVAILABLE`,
+    answered ``NO TOOLS AVAILABLE.`` and wrote nothing.
+    """
+    _patch_bundle_prep(monkeypatch)
+    client = _FakeDirectClient(_report_outcome_response("success"))
+    _patch_from_env(monkeypatch, client)
+
+    result = asyncio.run(
+        runner_mod.run_pipeline(
+            _make_box_dot(),
+            worker="llm-direct",
+            cwd=tmp_path / "work",
+            logs_root=tmp_path / "logs",
+        )
+    )
+
+    assert result.status == "success"
+    assert len(client.requests) == 1, "the direct worker never reached the provider"
+
+    tools = client.requests[0].tools
+    assert not tools, (
+        "the `llm-direct` worker reached the provider carrying "
+        f"{[getattr(t, 'name', t) for t in (tools or [])]} -- this path used to "
+        "expose NO tools at all, which is why capsule.dot's `postmortem` / "
+        "`diagnose` nodes (18 read_file + 2 write_file measured, and both "
+        "declaring must_write=) were kept OFF this worker. If tools are now "
+        "mounted here, re-open REVIEW-pipelines-2026-09.md Sec4 change 3."
+    )

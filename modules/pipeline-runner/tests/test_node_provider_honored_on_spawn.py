@@ -178,6 +178,48 @@ def test_spawn_capability_delivers_node_provider_to_the_child_bundle():
     assert cfg["reasoning_effort"] == "medium"
 
 
+def test_max_agent_turns_reaches_the_child_bundle_as_max_turns():
+    """A node's `max_agent_turns=` must survive the WHOLE hop, as `max_turns`.
+
+    The two halves were each pinned already and the join was not:
+    `test_attribute_passthrough.py::test_spawn_passes_max_agent_turns` proves
+    the engine puts `max_turns` into the spawn's `orchestrator_config`
+    (backend.py:402 -> :700), and the overlay tests above prove
+    `apply_orchestrator_config` lands `llm_provider`/`reasoning_effort` on the
+    key the child orchestrator reads. Nothing proved `max_turns` specifically
+    makes it all the way onto the child bundle -- and `max_turns` is the only
+    one of the three that is a BOUND: a value silently dropped in flight
+    leaves the node running unbounded while the graph says it is capped.
+
+    That is not hypothetical here. `capsule.dot`'s `author` and `critique`
+    nodes now declare `max_agent_turns=` precisely to bound the largest fuse
+    consumers (REVIEW-pipelines-2026-09.md Sec4 changes 1-2). If this hop
+    breaks, those graphs advertise a ceiling they do not have.
+    """
+    prepared = _RecordingPrepared({"dot-runner-default-agent": _AGENT_CONFIG})
+    spawn_fn = make_spawn_fn(prepared)
+
+    asyncio.run(
+        spawn_fn(
+            agent_name="dot-runner-default-agent",
+            instruction="write the capsule",
+            parent_session=None,
+            agent_configs={},
+            # Exactly what AmplifierBackend._run_with_spawn builds for a node
+            # carrying max_agent_turns="205" (int-converted at backend.py:403).
+            orchestrator_config={"llm_provider": "anthropic", "max_turns": 205},
+        )
+    )
+
+    (call,) = prepared.spawn_calls
+    cfg = call["child_bundle"].session["orchestrator"]["config"]
+    assert cfg.get("max_turns") == 205, (
+        "the node's declared turn cap did not reach the child bundle's own "
+        f"session.orchestrator.config -- got {cfg.get('max_turns')!r}. A graph "
+        "declaring max_agent_turns= would run UNBOUNDED while claiming a ceiling."
+    )
+
+
 def test_two_nodes_with_different_providers_do_not_contaminate_each_other():
     """Sequential spawns off ONE cached agent bundle stay independent."""
     prepared = _RecordingPrepared({"dot-runner-default-agent": _AGENT_CONFIG})
