@@ -37,6 +37,29 @@ from ._fakes import (
 #: its OWN bundle with its OWN provider mounting -- the PARENT session's
 #: mounted tools are deliberately never used to drive the child turn. The
 #: only TARGET capability this adapter openly does not honor.
+#:
+#: TELEMETRY ROW (2026-09-07, node-matrix run 20260907T043835Z). Read
+#: `telemetry_session_id` as "this adapter does not MISHANDLE the capability",
+#: never as "the telemetry session id works" -- exactly as loop-agent's own
+#: harness says of its identical row, and for a reason this worker has now
+#: proven the hard way. The kit's probe config for that row is `{}` (see
+#: `worker_parity_kit.suite._PROBE_CONFIG`), so the TARGET bar is a no-crash /
+#: not-silently-dropped smoke check with nothing distinguishing to exercise.
+#: It stayed green through a total, silent, end-to-end break: the hosted
+#: amplifier-agent session -- a SECOND coordinator this adapter builds, where
+#: every provider and tool event actually lives -- persisted NOTHING into the
+#: run's evidence, and `status.json` named the adapter session instead, whose
+#: stream held three lifecycle brackets. Two `amplifier-agent` rows PASSed
+#: their gate while reporting no calls, no tokens and no cost.
+#:
+#: The row is NOT declared absent (nothing about this adapter's surface fails
+#: the kit's bar, then or now) and the kit is not the place to fix that: the
+#: break is a property of the ADAPTER-to-pipeline seam, invisible to a
+#: worker-agnostic harness that never spawns a real hosted session. The real
+#: coverage lives where the break was --
+#: `tests/test_child_session_telemetry.py` (this module) and
+#: `modules/loop-pipeline/tests/test_worker_session_observability.py`
+#: section 6.
 DECLARED_ABSENCES = frozenset({"tools_passthrough"})
 
 

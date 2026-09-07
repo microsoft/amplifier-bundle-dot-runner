@@ -87,6 +87,26 @@ the honest name -- not "contract".
     passthrough. A worker's harness declares `declared_absences` for
     anything it openly does not honor; the matching test SKIPS, visibly,
     naming the capability. An undeclared capability that fails, FAILS.
+
+    **What a green TARGET row does NOT mean** (twice measured, twice the
+    same shape). `telemetry_session_id`'s probe config is `{}` and
+    `provider_preferences_precedence`'s duplicates the `llm_provider`
+    probe, so for a worker with nothing distinguishing to exercise these
+    rows clear a no-crash / not-silently-dropped smoke bar and prove
+    nothing further. `telemetry_session_id` stayed green through TWO total,
+    silent, end-to-end breaks of the pipeline-visible session id: the
+    2026-09-06 one (`loop-agent` -- the override dropped the key and the
+    observability hooks were never mounted on the named-worker path;
+    EXTENSIONS.md Sec 26 addendum 1) and the 2026-09-07 one
+    (`loop-amplifier-agent` -- the persister reached the adapter session
+    instead of the hosted one, and `status.json` named the empty stream;
+    addendum 2). Neither is a gap in a worker's own surface, so neither is
+    a `declared_absences` entry; both are properties of the worker-to-
+    pipeline seam that a worker-agnostic harness cannot see. Read the row
+    as "this worker does not mishandle it", never as "the telemetry
+    session id works" -- and put the end-to-end coverage where the break
+    is: `modules/loop-pipeline/tests/test_worker_session_observability.py`
+    and each adapter's own tests.
 - **`worker_parity_kit.broken_worker.BrokenWorker`** -- a deliberately
   non-conformant fixture harness (drops seeded context, fabricates an
   explicit-success verdict unconditionally) plus this kit's own
