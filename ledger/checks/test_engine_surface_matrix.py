@@ -19,10 +19,17 @@ blur exactly the boundary `engine-surface.v1` exists to draw. The structural
 guards reach across both files by design (`probe_definitions()`), so a probe
 here is cross-checked against a row there just as if it sat in one file.
 
-HONEST LIMIT, stated once and not softened: `contracts/engine-surface.v1.md` is
-**DRAFT**, not FROZEN. These rows bind nothing on their own; they make drift
-visible, which is what the freeze packet's condition 2 asked for. Only the owner
-stamps FROZEN.
+STATUS, stated once: `contracts/engine-surface.v1.md` was **FROZEN on 2026-09-07**
+on the owner's word, on the evidence in
+`contracts/FREEZE-PACKET-engine-surface.v1.md`. Until that day these rows bound
+nothing on their own -- they made drift visible, which is what the freeze
+packet's condition 2 asked for; now they answer to a locked contract.
+
+HONEST LIMIT, not softened by the stamp: 16 of the 17 clause rows are
+`assertion.kind: indexed`, which proves a cited test EXISTS, not that it still
+asserts what it was cited for, and 7-8 of 17 clauses (the packet's two counts)
+have a worked end-to-end example. The stamp claims neither; see the contract
+header's "What it does not claim".
 """
 
 from __future__ import annotations
@@ -121,9 +128,14 @@ def test_row_esf_000():
         "       a requirement nothing pins is a GAP row with a filed item, not a\n"
         "       CONFORMS row that happens to still parse.\n"
         "    3. THEN update `sha256:` in the SYNC row, in the same change.\n"
-        "  One case is expected and is NOT a defect: the day the owner stamps this\n"
-        "  contract FROZEN, both this probe and ESF-000's quote go red. That is the\n"
-        "  re-review firing exactly when it should. Do the re-review, then re-pin.\n"
+        "  That expected case has already happened once and was NOT a defect: on\n"
+        "  2026-09-07 the owner stamped this contract FROZEN, both this probe and\n"
+        "  ESF-000's quote went red, the re-review was done and both were re-pinned\n"
+        "  in the same commit. It cannot happen that way again -- the contract is\n"
+        "  now LOCKED, so bytes moving means either a proposal the owner ratified\n"
+        "  (`engine-surface.v2-candidate.md`) landed, in which case do the re-review\n"
+        "  above and re-pin, or someone edited a locked contract in place, which is\n"
+        "  a protocol breach: revert it and write the proposal instead.\n"
         "  Doing neither means main carries a ledger that lies. That is drift."
     )
 
