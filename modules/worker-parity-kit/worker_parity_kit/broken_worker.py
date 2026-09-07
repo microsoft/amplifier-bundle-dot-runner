@@ -2,8 +2,8 @@
 
 Non-vacuity (design decision 4): a parity kit whose M2/M3 tests pass against
 EVERY conceivable worker -- including a broken one -- proves nothing. This
-module ships two fixture harnesses, each modeled on a REAL incident from the
-kit's own motivating story (see ``modules/worker-parity-kit/README.md``,
+module ships three fixture harnesses, each modeled on a REAL incident from
+the kit's own motivating story (see ``modules/worker-parity-kit/README.md``,
 "Why this exists"):
 
   * ``BrokenWorker`` -- drops seeded ``context`` silently (mirrors the
@@ -23,6 +23,11 @@ kit's own motivating story (see ``modules/worker-parity-kit/README.md``,
     catch -- a SUCCESS-only M3 assertion would have let it through. This
     fixture is otherwise conformant (M1 and M2 both green) so it isolates
     ONLY the PARTIAL_SUCCESS gap, rather than being broken everywhere.
+  * ``AnonymousTelemetryBrokenWorker`` -- emits provider events that name
+    nobody (the measured pre-fix payload from node-matrix run
+    ``20260907T081003Z``: a usage block and no identity). Non-vacuity proof
+    for the ``telemetry_provider_identity`` TARGET row; conformant on M1/M2/M3
+    so it isolates that row alone.
 
   WAVE 5 repair (2026-08-30) note: ``metadata.report_outcome`` is removed
   repo-wide, no compat window (EXTENSIONS.md §35). Both fixtures below
@@ -140,4 +145,63 @@ class PartialSuccessBrokenWorker:
             messages_sent_to_provider=messages_sent,
             completion_envelope=envelope,
             warnings=[],
+        )
+
+
+class AnonymousTelemetryBrokenWorker:
+    """A third deliberately non-conformant ``WorkerHarness``: its provider
+    events name NOBODY. Kit-internal only.
+
+    Modeled byte-for-byte on a REAL measured run rather than an imagined
+    failure -- node-matrix ``20260907T081003Z``, row ``ca-terra``. That node
+    declared one provider, ran 142 provider calls over 34 minutes, was served
+    by a different vendor entirely, and every one of its 142
+    ``provider:response`` events carried a usage block and nothing else.
+    Establishing who had actually served it took reading vendor-shaped usage
+    KEYS off the stream and fitting $11.19 against a price table.
+
+    Conformant in every other dimension (M1, M2, M3 all green) so it isolates
+    ONE gap: the ``telemetry_provider_identity`` TARGET row. That row is the
+    only TARGET row besides ``user_instructions`` that this kit verifies
+    behaviorally, and this fixture is its non-vacuity proof -- without it the
+    row would be indistinguishable from the shallow smoke bar that let three
+    end-to-end telemetry breaks pass green.
+    """
+
+    declared_absences: frozenset[str] = frozenset()
+
+    async def run_turn(
+        self,
+        prompt: str,
+        seeded_context_messages: list[dict[str, Any]] | None = None,
+        orchestrator_config: dict[str, Any] | None = None,
+    ) -> TurnResult:
+        del orchestrator_config
+        messages_sent = list(seeded_context_messages or [])
+        messages_sent.append({"role": "user", "content": prompt})
+
+        envelope = {
+            "orchestrator": "broken-worker-anonymous-telemetry",
+            "status": "success",
+            "turn_count": 1,
+            "metadata": {},
+        }
+        return TurnResult(
+            reply="done",
+            messages_sent_to_provider=messages_sent,
+            completion_envelope=envelope,
+            warnings=[],
+            # THE bug: the measured pre-fix payload, verbatim -- usage, and
+            # no answer at all to "who served this".
+            provider_events=[
+                {"event": "provider:request"},
+                {
+                    "event": "provider:response",
+                    "usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 348,
+                        "cost_usd": "0.0299",
+                    },
+                },
+            ],
         )

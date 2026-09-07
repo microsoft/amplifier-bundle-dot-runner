@@ -34,11 +34,18 @@ what's actually being called.
 from __future__ import annotations
 
 import pytest
-from worker_parity_kit.broken_worker import BrokenWorker, PartialSuccessBrokenWorker
+from worker_parity_kit.broken_worker import (
+    AnonymousTelemetryBrokenWorker,
+    BrokenWorker,
+    PartialSuccessBrokenWorker,
+)
 from worker_parity_kit.suite import test_m1_mount_shape_execute_returns_str as _m1
 from worker_parity_kit.suite import test_m2_seeded_context_reaches_model_boundary as _m2
 from worker_parity_kit.suite import (
     test_m3_no_signal_never_fabricates_explicit_success as _m3,
+)
+from worker_parity_kit.suite import (
+    test_target_capability_honored_or_declared_absent as _target,
 )
 
 
@@ -105,3 +112,40 @@ async def test_partial_success_worker_still_passes_m1_and_m2() -> None:
     harness = PartialSuccessBrokenWorker()
     await _m1(harness)
     await _m2(harness)
+
+
+@pytest.mark.asyncio
+async def test_anonymous_telemetry_worker_fails_the_identity_row() -> None:
+    """RED-proof: a worker whose provider events name nobody must be caught.
+
+    Without this, ``telemetry_provider_identity`` would be another row that
+    observes nothing -- exactly the failure mode its sibling
+    ``telemetry_session_id`` demonstrated three times (see the kit README).
+    The fixture's payload is the measured pre-fix shape from node-matrix run
+    ``20260907T081003Z``: a usage block and no identity.
+    """
+    harness = AnonymousTelemetryBrokenWorker()
+    with pytest.raises(AssertionError, match="missing identity key"):
+        await _target(harness, "telemetry_provider_identity")
+
+
+@pytest.mark.asyncio
+async def test_unobservable_telemetry_is_not_a_silent_pass() -> None:
+    """A harness that cannot see its own provider events must FAIL the row,
+    naming ``declared_absences`` as the honest channel -- never pass by
+    default. ``BrokenWorker`` leaves ``provider_events`` at its ``None``
+    default, which is exactly that case."""
+    harness = BrokenWorker()
+    with pytest.raises(AssertionError, match="declared_absences"):
+        await _target(harness, "telemetry_provider_identity")
+
+
+@pytest.mark.asyncio
+async def test_anonymous_telemetry_worker_still_passes_m1_m2_m3() -> None:
+    """Control: broken in exactly ONE dimension (identity-less telemetry),
+    so the RED-proof above isolates the identity row rather than this
+    fixture being globally broken."""
+    harness = AnonymousTelemetryBrokenWorker()
+    await _m1(harness)
+    await _m2(harness)
+    await _m3(harness)

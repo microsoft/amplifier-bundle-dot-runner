@@ -107,6 +107,36 @@ the honest name -- not "contract".
     session id works" -- and put the end-to-end coverage where the break
     is: `modules/loop-pipeline/tests/test_worker_session_observability.py`
     and each adapter's own tests.
+
+    **`telemetry_provider_identity` is the answer to that, not another row
+    like it** (2026-09-07, EXTENSIONS.md Sec 36 addendum 3). A THIRD break
+    in the same family was measured -- node-matrix `20260907T081003Z`, row
+    `ca-terra`: a node declared `llm_provider="terra"`, 142 provider calls
+    ran over 34 minutes, another vendor served every one of them, and the
+    events named nobody. Proving who had been paid took reading
+    vendor-shaped usage keys off the stream and fitting $11.19 against a
+    price table. So this row does NOT take the shallow bar: it reads the
+    turn's own `provider:response` payloads back off
+    `TurnResult.provider_events` and asserts all five identity keys are
+    present (`provider`, `provider_module`, `provider_instance`, `model`,
+    `reasoning_effort`), that they agree across the turn, and that the
+    declared `reasoning_effort` is echoed. A harness that cannot see its
+    provider events FAILS the row naming `declared_absences` -- it never
+    passes by default, which is the precise property the other telemetry
+    row lacked.
+
+    Scope, deliberately: `provider:response` only. It is where usage and
+    cost ride, and it is the only provider event both workers own --
+    `loop-agent` emits its own `provider:request` and carries the same
+    identity there as a bonus, while `loop-amplifier-agent` does not emit
+    that event at all (the hosted runtime does) and enriching it would mean
+    re-emitting, doubling every row's call count. A request that DOES carry
+    identity is still checked for agreement with the response.
+
+    Non-vacuity: `broken_worker.AnonymousTelemetryBrokenWorker` replays the
+    measured pre-fix payload (a usage block, no identity) and is conformant
+    in every other dimension; `tests/test_broken_worker_meta.py` proves the
+    row goes RED against it, and RED against an unobservable stream.
 - **`worker_parity_kit.broken_worker.BrokenWorker`** -- a deliberately
   non-conformant fixture harness (drops seeded context, fabricates an
   explicit-success verdict unconditionally) plus this kit's own

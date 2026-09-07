@@ -7,8 +7,8 @@ against -- support#497 (this module's own incident) is the second one.
 This file adds ONE thing: a ``WorkerHarness`` (``worker_parity_kit.protocol``)
 that drives THIS module's REAL ``AgentOrchestrator.execute()`` hermetically,
 reusing the same style of hand-rolled fakes ``test_context_history_hydration.py``
-and ``test_parity_matrix.py`` already depend on (an ``AsyncMock`` provider, a
-``MagicMock`` hooks double, a minimal context double with ``get_messages()``)
+and ``test_parity_matrix.py`` already depend on (a faithful provider double,
+a capturing hooks double, a minimal context double with ``get_messages()``)
 -- no network, no credentials.
 
 ``from worker_parity_kit.suite import *`` below is what actually collects the
@@ -28,11 +28,10 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
-from amplifier_core.message_models import ChatResponse, Usage
-from worker_parity_kit.doubles import CapturingHooks, FakeContextManager
+from worker_parity_kit.doubles import CapturingHooks, FakeContextManager, FakeProvider
 from worker_parity_kit.protocol import TurnResult
 from worker_parity_kit.suite import *
 
@@ -94,15 +93,6 @@ from amplifier_module_loop_agent import AgentOrchestrator
 DECLARED_ABSENCES: frozenset[str] = frozenset()
 
 
-def _text_response(text: str = "ok") -> ChatResponse:
-    """ChatResponse with text only (natural completion, no tool calls)."""
-    return ChatResponse(
-        content=[{"type": "text", "text": text}],
-        tool_calls=None,
-        usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
-    )
-
-
 class _ListWarningHandler(logging.Handler):
     """Captures this module's own WARNING-level log records for a turn."""
 
@@ -149,8 +139,12 @@ class LoopAgentWorkerHarness:
         seeded_context_messages: list[dict[str, Any]] | None = None,
         orchestrator_config: dict[str, Any] | None = None,
     ) -> TurnResult:
-        provider = AsyncMock()
-        provider.complete = AsyncMock(return_value=_text_response("ok"))
+        # A FAITHFUL provider double, not an AsyncMock: `AsyncMock().name`
+        # is Mock's own name attribute (a child mock, not a string), so a
+        # worker correctly reading the mounted provider's declared family
+        # would report "unknown" and the telemetry_provider_identity row
+        # would fail for a reason that has nothing to do with loop-agent.
+        provider = FakeProvider(name="anthropic", default_model="claude-sonnet-5")
         providers = {"anthropic": provider}
         tools: dict[str, Any] = {}
         hooks = CapturingHooks()
@@ -171,22 +165,29 @@ class LoopAgentWorkerHarness:
             logger.removeHandler(handler)
 
         sent: list[dict[str, Any]] | None = None
-        if provider.complete.call_args_list:
+        if provider.requests:
             # `[-1]` (last call) assumes exactly one provider call per turn --
-            # true today only because `_text_response` always returns
+            # true today only because FakeProvider always returns
             # `tool_calls=None`, and agent_session only loops back to the
-            # provider on a truthy `tool_calls`. If this harness's mock ever
+            # provider on a truthy `tool_calls`. If this harness's double ever
             # grows a multi-call (tool-loop) turn, sampling `[-1]` would
             # silently pick the wrong call instead of the one the assertions
             # actually mean to inspect.
-            request = provider.complete.call_args_list[-1].args[0]
-            sent = _normalize_messages(request.messages)
+            sent = _normalize_messages(provider.requests[-1].messages)
 
         return TurnResult(
             reply=reply,
             messages_sent_to_provider=sent,
             completion_envelope=hooks.completion,
             warnings=warnings,
+            # The turn's own provider events, flattened into the
+            # `{"event": ..., **payload}` shape TurnResult.provider_events
+            # declares. loop-agent emits both members of the pair itself.
+            provider_events=[
+                {"event": name, **data}
+                for name, data in hooks.events
+                if name in ("provider:request", "provider:response")
+            ],
         )
 
 

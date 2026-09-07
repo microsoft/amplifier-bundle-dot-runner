@@ -53,12 +53,37 @@ class TurnResult:
       warnings -- any warning-level messages the harness observed during
         the turn (harness-defined; may be empty). Used by the TARGET tier's
         not-silently-dropped check.
+      provider_events -- the ``provider:request`` / ``provider:response``
+        payloads this turn actually emitted, as
+        ``list[dict[str, Any]]`` each carrying at least an ``event`` key
+        naming which one it is, or ``None`` when the harness cannot observe
+        the event stream at all. Used by the TARGET tier's
+        ``telemetry_provider_identity`` row.
+
+        WHY THIS ONE FIELD BUYS ITS PLACE in a protocol whose whole design
+        note above is "kept intentionally small". The README's own record of
+        this kit's limits says ``telemetry_session_id`` "stayed green through
+        TWO total, silent, end-to-end breaks" -- a row that observes nothing
+        cannot fail. The 2026-09-07 provider-identity work added a third such
+        break to that family (a node declared one provider, another served
+        it, and the events named nobody), and closing it worker-side is
+        worth nothing if the parity row that claims to cover telemetry still
+        observes nothing. Emitted events are ALREADY a public seam every
+        worker crosses -- both existing harnesses hold a capturing hook
+        registry today -- so this exposes no worker internals, which is the
+        line ``messages_sent_to_provider`` already sits on.
+
+        ``None`` and ``[]`` mean different things and are never conflated:
+        ``None`` is "this harness cannot see the stream" (the row falls back
+        to the shallow smoke check, visibly), ``[]`` is "observed, and there
+        were none" (a real, assertable answer).
     """
 
     reply: str
     messages_sent_to_provider: list[dict[str, Any]] | None
     completion_envelope: dict[str, Any]
     warnings: list[str] = field(default_factory=list)
+    provider_events: list[dict[str, Any]] | None = None
 
 
 @runtime_checkable
