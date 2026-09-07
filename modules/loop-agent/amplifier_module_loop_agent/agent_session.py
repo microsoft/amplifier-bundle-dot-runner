@@ -131,6 +131,53 @@ def canonical_provider(raw: str | None) -> str | None:
     return None
 
 
+def mounted_provider_module_name(provider: Any) -> str | None:
+    """The MODULE name a mounted provider object declares for itself.
+
+    Every provider module in this ecosystem carries a class-level ``name``
+    naming its own module family -- ``OpenAIProvider.name == "openai"``,
+    ``AnthropicProvider.name == "anthropic"`` -- and puts that same string on
+    the errors and events it emits.  It is therefore the provider's own answer
+    to "what am I", independent of the KEY it happens to be mounted under.
+
+    That distinction is the whole point (EXTENSIONS.md Sec 36 addendum,
+    2026-09-07).  A configured provider INSTANCE (``terra``, ``luna``) is
+    mounted under its instance id via amplifier-core's ``instance_id`` remap,
+    so the mount key is an alias the family cannot be read out of --
+    ``canonical_provider("terra")`` is ``None``.  Reading the family off the
+    live object instead keeps the two facts an instance run needs honest: the
+    Layer-1 base prompt matches the model actually called, and a persisted
+    ``provider:response`` can name who served it.
+
+    Returns ``None`` for any object that declares no string ``name`` (a bare
+    test double, a mock), so every caller must still tolerate not knowing --
+    guessing a family here would be exactly the silent substitution this
+    addendum exists to remove.
+    """
+    declared = getattr(provider, "name", None)
+    return declared if isinstance(declared, str) and declared else None
+
+
+def mounted_provider_default_model(provider: Any) -> str | None:
+    """The model a mounted provider object will call when asked for none.
+
+    Every provider module here resolves its own ``default_model`` from its
+    mount config (``OpenAIProvider.__init__``:
+    ``self.default_model = self.config.get("default_model", DEFAULT_MODEL)``),
+    which for a configured INSTANCE is the ``default_model`` that instance's
+    settings entry carries -- ``gpt-5.6-terra`` for ``terra``.  loop-agent
+    never sends a model on the request, so this IS the model the call will
+    use, and therefore the only honest thing to report as "what served it".
+
+    Same ``None``-for-unknowable contract as
+    :func:`mounted_provider_module_name`: a test double answering every
+    attribute with another mock declares no string default_model, and
+    reporting its repr as a model name would be worse than reporting nothing.
+    """
+    declared = getattr(provider, "default_model", None)
+    return declared if isinstance(declared, str) and declared else None
+
+
 class AgentSession:
     """Manages a single coding agent session with the core agentic loop.
 
@@ -150,6 +197,7 @@ class AgentSession:
         provider_name: str = "",
         model: str = "",
         context: Any = None,
+        provider_module_name: str | None = None,
     ) -> None:
         self._config = config
         self._provider = provider
@@ -168,6 +216,15 @@ class AgentSession:
         self._current_depth = config.current_depth
         self._provider_name = provider_name
         self._model = model
+        #: The mounted provider's OWN module name (see
+        #: :func:`mounted_provider_module_name`).  For a module-named mount
+        #: this simply repeats ``provider_name``; for an instance mount
+        #: (``terra``) it is the family that mount is an instance OF
+        #: (``openai``).  Resolved from the live provider object when the
+        #: caller did not supply it, so no call site can forget it.
+        self._provider_module_name = provider_module_name or (
+            mounted_provider_module_name(provider)
+        )
         self._use_streaming = self._detect_streaming_support()
         self._follow_up_depth = 0  # Tracks recursion depth for SESSION_END timing
         self._tracked_processes: set[Any] = set()  # M-7: running tool subprocesses
@@ -211,6 +268,22 @@ class AgentSession:
     # ------------------------------------------------------------------
     # Provider call dispatch (streaming vs non-streaming)
     # ------------------------------------------------------------------
+
+    def _provider_identity(self) -> dict[str, Any]:
+        """Who is about to serve / just served this call.
+
+        The SAME three keys on both ``provider:request`` and
+        ``provider:response`` so a persisted stream can be read either way
+        round, and every value normalized to ``None`` rather than a bare
+        empty string (an empty string reads as "known to be blank"; ``None``
+        reads as "this session could not determine it", which is the honest
+        state for a bare test double).
+        """
+        return {
+            "provider": self._provider_name or None,
+            "provider_module": self._provider_module_name or None,
+            "model": self._model or None,
+        }
 
     async def _call_provider(self, request: ChatRequest) -> dict[str, Any]:
         """Call the provider, choosing streaming or non-streaming path.
@@ -454,7 +527,7 @@ class AgentSession:
             # to a model at all. `self._model` is this session's resolved
             # model name ("" when the provider default was taken, normalized
             # to None here rather than persisting a bare empty string).
-            await self._hooks.emit(PROVIDER_REQUEST, {"model": self._model or None})
+            await self._hooks.emit(PROVIDER_REQUEST, self._provider_identity())
 
             # Call LLM — streaming or non-streaming based on provider capability
             try:
@@ -511,8 +584,23 @@ class AgentSession:
             usage_data = call_result["usage_data"]
             response_id = call_result.get("response_id")
 
-            # Emit provider:response after LLM call with usage data
-            await self._hooks.emit(PROVIDER_RESPONSE, {"usage": usage_data})
+            # Emit provider:response after LLM call with usage data AND the
+            # identity of who served it (EXTENSIONS.md Sec 36 addendum,
+            # 2026-09-07 -- the telemetry gap that made a misroute silent).
+            #
+            # Measured: node-matrix run 20260907T081003Z, row `ca-terra`.  The
+            # node declared llm_provider="terra" llm_model="gpt-5.6-terra",
+            # every one of its 142 provider:response events carried usage and
+            # nothing else, and the run was in fact served by Anthropic
+            # Sonnet.  Proving that took reading Anthropic-shaped usage KEYS
+            # (`cache_creation_input_tokens`) and fitting $11.19 against a
+            # price table -- forensics, on a question the event should simply
+            # answer.  It now does: `provider` is the mount key the node
+            # addressed, `provider_module` the family that mount is an
+            # instance OF, `model` what it was configured to call.
+            await self._hooks.emit(
+                PROVIDER_RESPONSE, {"usage": usage_data, **self._provider_identity()}
+            )
 
             # Emit content_block events for thinking blocks (core events
             # consumed by hooks-streaming-ui for real-time display)
@@ -636,8 +724,16 @@ class AgentSession:
         context use the correct provider-specific behaviour.
 
         Returns None when the provider cannot be identified.
+
+        Falls back to the mounted provider's own module name when the mount
+        KEY yields nothing -- an instance mount (``terra``) is keyed by an
+        alias no canonical family can be read out of, and returning None
+        there would silently drop provider-specific doc discovery for every
+        instance-routed node.
         """
-        return canonical_provider(self._provider_name)
+        return canonical_provider(self._provider_name) or canonical_provider(
+            self._provider_module_name
+        )
 
     # ------------------------------------------------------------------
     # System prompt assembly (spec PROV-002: rebuilt every LLM call)
