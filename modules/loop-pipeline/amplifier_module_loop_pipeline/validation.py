@@ -49,7 +49,13 @@ from .context import PipelineContext
 # way spec §3.3 Step 2 asks it at run time, and the two cannot drift.
 from .edge_selection import _normalize_label
 from .fidelity import VALID_FIDELITY_MODES
-from .graph import Edge, Graph, Node, resolve_bool_attr
+from .graph import (
+    Edge,
+    Graph,
+    Node,
+    non_identifier_tool_env_names,
+    resolve_bool_attr,
+)
 from .outcome import Outcome, StageStatus
 from .stylesheet import parse_stylesheet
 
@@ -128,6 +134,7 @@ def validate(
     _check_fidelity_valid(graph, diags)
     _check_retry_target_exists(graph, diags)
     _check_tool_command_handler(graph, diags)
+    _check_tool_env_identifiers(graph, diags)
     _check_retry_budgets(graph, diags)
 
     # L-19: Run user-supplied extra rules
@@ -467,6 +474,76 @@ def _check_tool_command_handler(graph: Graph, diags: list[Diagnostic]) -> None:
                     fix="Use shape=parallelogram or type=tool, or remove tool_command",
                 )
             )
+
+
+def _check_tool_env_identifiers(graph: Graph, diags: list[Diagnostic]) -> None:
+    """LINT: tool_env_posix_identifier -- every tool_env name must be exportable.
+
+    Issue #64 (support#506/#507).  The tool handler uppercases each declared
+    ``tool_env`` name and exports it to the subprocess, so a dotted context key
+    (``human.gate.text``) becomes ``HUMAN.GATE.TEXT`` -- not a POSIX
+    environment-variable name.  ``/bin/sh`` (dash) drops such an entry before
+    exec'ing the child, so the command runs with the value absent, exits 0, and
+    the node reports SUCCESS: silent data loss on a green run.  Bash preserves
+    the entry, so the same graph "works" on one host and loses the value on
+    another.
+
+    Owner ruling (2026-09-07, EXTENSIONS.md section 20 addendum): refuse the
+    name.  The rejected alternative -- exporting a sanitized twin
+    (``HUMAN_GATE_TEXT``), as PR #41 did before its revert in #68 -- invents a
+    name the graph never wrote and leaves the declared and exported
+    vocabularies disagreeing.  There is no legitimate outcome behind a name
+    that cannot become an environment variable, so the only honest answers are
+    "refuse" or "lose the value silently".
+
+    ERROR severity, and deliberately in ``validate()`` rather than among the
+    lint-only rules: ``dot-runner lint`` must catch it AND a validating run
+    must refuse to start.  (The startup preflight,
+    ``preflight.check_tool_env_names``, closes the ``validate=False`` paths.)
+
+    Scope: EVERY node declaring ``tool_env``, not only nodes whose handler
+    resolves to ``tool``.  Unlike ``tool_command`` -- where the question is a
+    handler MISMATCH -- the question here is a value that is invalid wherever
+    it is read, so no handler-type subtlety applies and none is asserted.
+    """
+    for node in graph.nodes.values():
+        offenders = non_identifier_tool_env_names(node.attrs.get("tool_env"))
+        for name in offenders:
+            diags.append(
+                Diagnostic(
+                    rule="tool_env_posix_identifier",
+                    severity="ERROR",
+                    message=(
+                        f"Node '{node.id}' declares tool_env name '{name}', which "
+                        f"is not a POSIX environment-variable identifier "
+                        f"([A-Za-z_][A-Za-z0-9_]*). It would be exported as "
+                        f"'{name.upper()}', which /bin/sh (dash) drops before "
+                        f"exec: the command would run with the value absent and "
+                        f"the node would still report SUCCESS"
+                    ),
+                    node_id=node.id,
+                    fix=(
+                        f"Rename the context key to a valid identifier (e.g. "
+                        f"'{_identifier_suggestion(name)}' for '{name}'), or drop "
+                        f"the name from tool_env. See specs/EXTENSIONS.md "
+                        f"section 20"
+                    ),
+                )
+            )
+
+
+def _identifier_suggestion(name: str) -> str:
+    """A readable 'did you mean' for a refused ``tool_env`` name.
+
+    Advisory text only -- deliberately NOT applied to anything.  The engine
+    never substitutes a name it invented (that is the sanitization the owner
+    ruling rejected); it only shows the author what a valid spelling looks
+    like so the fix is one obvious edit rather than a puzzle.
+    """
+    suggested = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    if not suggested or suggested[0].isdigit():
+        suggested = f"_{suggested}"
+    return suggested
 
 
 def _check_retry_budgets(graph: Graph, diags: list[Diagnostic]) -> None:

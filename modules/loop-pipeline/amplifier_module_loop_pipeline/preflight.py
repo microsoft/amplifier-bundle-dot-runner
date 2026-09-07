@@ -1,4 +1,4 @@
-"""Startup provider preflight (issue #155, EXTENSIONS.md section 36).
+"""Startup preflight (issue #155, EXTENSIONS.md section 36).
 
 Before the walk begins, cross-check every node's *declared* ``llm_provider``
 against what the run can actually serve, and refuse to start -- naming each
@@ -37,6 +37,14 @@ Scope decisions (deliberate, documented):
 - **LLM-consuming node types only.**  Only handler types that reach the LLM
   backend (``codergen``, ``stack.manager_loop``) are checked; an
   ``llm_provider`` attribute on e.g. a tool node is inert and ignored.
+
+The module's remit widened once, deliberately: ``check_tool_env_names`` (issue
+#64) is not about providers at all, but it is the same *class* of defect and
+belongs on the same surface -- a statically-knowable configuration that can
+only ever produce a silent wrong answer, refused before the walk begins rather
+than discovered from a green run's empty output file.  Everything the provider
+checks promise holds for it too: root graph only, static, no live call, zero
+nodes executed.
 """
 
 from __future__ import annotations
@@ -44,7 +52,7 @@ from __future__ import annotations
 import os
 from collections.abc import Collection, Mapping
 
-from .graph import Graph, Node
+from .graph import Graph, Node, non_identifier_tool_env_names
 from .provider_instances import provider_instance_ids
 
 # Env var name per provider.  Mirrors (deliberately, with a cross-reference)
@@ -104,6 +112,79 @@ class ProviderPreflightError(Exception):
     each failing node, its provider, and the missing credential) so a
     misconfiguration costs one clear error, not a per-node discovery loop.
     """
+
+
+class ToolEnvPreflightError(Exception):
+    """Raised before the walk begins when a ``tool_env`` name cannot be exported.
+
+    One instance carries EVERY offending (node, name) pair so a
+    misconfiguration costs one clear error, not a per-node discovery loop --
+    the same posture as :class:`ProviderPreflightError`.
+    """
+
+
+def check_tool_env_names(graph: Graph) -> None:
+    """Refuse to start when a ``tool_env`` name is not a POSIX identifier.
+
+    Issue #64 (support#506/#507).  The tool handler uppercases each declared
+    ``tool_env`` name and exports it, so ``human.gate.text`` becomes
+    ``HUMAN.GATE.TEXT`` -- not a POSIX environment-variable name.  ``/bin/sh``
+    (dash) DROPS such an entry before exec, so the command ran with the value
+    absent, wrote an empty file, exited 0, and the node reported SUCCESS.  The
+    run was green and the data was gone.  Bash preserves the entry, so the
+    same graph behaves differently depending on what ``/bin/sh`` points at --
+    which is why this survived undetected.
+
+    Owner ruling (2026-09-07, EXTENSIONS.md section 20 addendum): fail loud.
+    Exporting a sanitized twin name (PR #41, reverted in #68) was declined --
+    it invents a name the graph never wrote, and leaves the declared and the
+    exported vocabularies permanently disagreeing.  Renaming the context key
+    is the consumer-side fix (resolver-dot-graph#142).
+
+    This is the SECOND refusal surface.  ``validate()``'s
+    ``tool_env_posix_identifier`` rule is the first, and covers
+    ``dot-runner lint`` plus every validating run; this one is unconditional,
+    so a caller passing ``validate=False`` does not reopen the hole.  Both
+    judge the same list, via ``graph.non_identifier_tool_env_names``.
+
+    Scope matches the provider checks: root graph, static, no live call, zero
+    nodes executed.  Tolerates a graph stand-in without a ``nodes`` mapping
+    (some callers drive the engine seams with bare stubs): no visible nodes
+    means nothing to check.
+
+    Raises:
+        ToolEnvPreflightError: naming every offending node, the attribute, the
+        offending name, and the fix.
+    """
+    failures: list[str] = []
+    nodes = getattr(graph, "nodes", None) or {}
+    for node in nodes.values():
+        attrs = getattr(node, "attrs", None) or {}
+        for name in non_identifier_tool_env_names(attrs.get("tool_env")):
+            failures.append(
+                f"  - node '{node.id}' declares tool_env name '{name}', which "
+                f"would be exported as '{name.upper()}' -- not a POSIX "
+                f"environment-variable identifier ([A-Za-z_][A-Za-z0-9_]*)"
+            )
+
+    if not failures:
+        return
+
+    raise ToolEnvPreflightError(
+        "TOOL_ENV PREFLIGHT FAILED -- refusing to start the pipeline "
+        "(issue #64, EXTENSIONS.md section 20). The following nodes declare a "
+        "tool_env name that can never reach the command:\n"
+        + "\n".join(failures)
+        + "\n/bin/sh (dash) drops an environment entry whose name is not an "
+        "identifier before exec'ing the child, so the command would run with "
+        "the value absent, exit 0, and the node would report SUCCESS -- the "
+        "value silently lost on a green run. (bash keeps such an entry, which "
+        "is why this depends on what /bin/sh points at.) "
+        "Fix: rename the context key to a valid identifier and declare that "
+        "name here, or drop the name from tool_env. The engine deliberately "
+        "does NOT sanitize the name for you: exporting a name the graph never "
+        "wrote would make the declared and the exported vocabularies disagree."
+    )
 
 
 def _effective_handler_type(node: Node) -> str:

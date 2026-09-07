@@ -10,6 +10,7 @@ Spec coverage: DOT-001..017, NATTR-001..017, EDGE-001..006
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,6 +66,63 @@ def resolve_bool_attr(value: Any, attr_name: str) -> bool:
         value,
     )
     return False
+
+
+# A POSIX environment-variable name: an identifier, nothing else.
+# IEEE Std 1003.1 "Environment Variables": names consist solely of underscores,
+# digits and alphabetics from the portable character set, and do not begin with
+# a digit.  Deliberately ASCII-only -- a name that survives `.upper()` as a
+# non-ASCII string (``café`` -> ``CAFÉ``) is no more exportable than a dotted one.
+_POSIX_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def parse_tool_env_names(value: Any) -> list[str]:
+    """Split a ``tool_env`` attribute into the names it declares.
+
+    The single, shared place that answers "which names does this ``tool_env``
+    declare?".  The tool handler builds the subprocess environment from this
+    list; the lint rule and the startup preflight judge the SAME list, so the
+    three cannot drift into disagreeing about what a given attribute says.
+
+    Comma-separated, surrounding whitespace trimmed, empty segments skipped --
+    which is exactly what the handler did inline before this function existed,
+    preserved byte-for-byte (``"a,,b"`` is two names; ``" a , b "`` is two
+    names).
+
+    Args:
+        value: The raw ``tool_env`` attribute value (typically ``str | None``).
+
+    Returns:
+        The declared names, in declaration order.  Empty for ``None``/``""``.
+    """
+    if not value:
+        return []
+    return [name.strip() for name in str(value).split(",") if name.strip()]
+
+
+def non_identifier_tool_env_names(value: Any) -> list[str]:
+    """The declared ``tool_env`` names that can never become env variables.
+
+    Issue #64 (support#506/#507): the handler uppercases each name, so a
+    dotted context key like ``human.gate.text`` becomes ``HUMAN.GATE.TEXT`` --
+    not a POSIX environment-variable name.  ``/bin/sh`` (dash) DROPS such an
+    entry before exec'ing the child, so the value never reaches the command and
+    the node still reports SUCCESS.  Bash preserves it, which is why the loss
+    is invisible on some hosts and total on others.
+
+    Uppercasing an ASCII identifier yields an ASCII identifier, so judging the
+    DECLARED name is equivalent to judging the exported one -- and lets the
+    refusal quote the name the author actually wrote.
+
+    Returns:
+        The offending names, in declaration order.  Empty when every declared
+        name is a valid identifier (the overwhelmingly common case).
+    """
+    return [
+        name
+        for name in parse_tool_env_names(value)
+        if not _POSIX_ENV_NAME_RE.match(name)
+    ]
 
 
 # Node attributes that are promoted to first-class fields (M-10).
