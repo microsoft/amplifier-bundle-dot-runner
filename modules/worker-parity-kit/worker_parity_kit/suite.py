@@ -243,9 +243,28 @@ TARGET_CAPABILITIES: tuple[str, ...] = (
     "provider_preferences_precedence",
     "approvals_posture",
     "telemetry_session_id",
+    "telemetry_provider_identity",
     "child_spawn_delegate",
     "tools_passthrough",
 )
+
+#: The five keys BOTH workers' provider events must carry, in one vocabulary
+#: (EXTENSIONS.md Sec 36 addendum 3, 2026-09-07). Every key must be PRESENT;
+#: `provider_instance` and `reasoning_effort` are legitimately `None` (this
+#: mount is not an instance / the node declared no effort), and the honest
+#: report of "not applicable" is exactly what makes them readable at all.
+PROVIDER_IDENTITY_KEYS: tuple[str, ...] = (
+    "provider",
+    "provider_module",
+    "provider_instance",
+    "model",
+    "reasoning_effort",
+)
+
+#: The identity the `telemetry_provider_identity` probe declares and then
+#: expects to read back off the turn's own provider events.
+_IDENTITY_PROBE_PROVIDER = "anthropic"
+_IDENTITY_PROBE_EFFORT = "high"
 
 _USER_INSTRUCTIONS_MARKER = "WPK-TARGET-USER-INSTRUCTIONS-9d2e"
 
@@ -269,9 +288,127 @@ _PROBE_CONFIG: dict[str, dict[str, Any]] = {
     "provider_preferences_precedence": {"llm_provider": "anthropic"},
     "approvals_posture": {"approval_policy": "accept"},
     "telemetry_session_id": {},
+    "telemetry_provider_identity": {
+        "llm_provider": _IDENTITY_PROBE_PROVIDER,
+        "reasoning_effort": _IDENTITY_PROBE_EFFORT,
+    },
     "child_spawn_delegate": {},
     "tools_passthrough": {},
 }
+
+
+def _assert_provider_identity(result: TurnResult) -> None:
+    """Every provider event this turn emitted NAMES who served the call.
+
+    The one TARGET row besides ``user_instructions`` that this generic suite
+    can verify BEHAVIORALLY, and deliberately so: the shallow
+    not-silently-dropped bar is what let the sibling ``telemetry_session_id``
+    row stay green through three separate end-to-end telemetry breaks (see
+    this kit's README). A row that observes nothing cannot fail.
+
+    ``provider_events is None`` -- the harness cannot see the stream at all
+    -- is NOT a silent pass: it fails, naming ``declared_absences`` as the
+    honest channel. A harness that CAN see the stream but saw no provider
+    events likewise fails: a turn that reached a model and emitted no
+    provider event is precisely the unmeasurable-run defect this row exists
+    to catch.
+
+    What is asserted is PRESENCE and CONSISTENCY, never a specific vendor:
+    all five keys on every ``provider:response``, one identity across them,
+    and the declared ``reasoning_effort`` echoed back -- the one identity
+    fact that reaches the model while appearing on no event a worker emits
+    by default.
+
+    SCOPE: ``provider:response`` ONLY, deliberately. That is the event a
+    run's evidence is actually read off (it is where usage and cost ride),
+    and it is the only one both workers own. ``loop-agent`` emits its own
+    ``provider:request`` and carries the same identity there as a bonus;
+    ``loop-amplifier-agent`` does not emit that event at all -- the hosted
+    runtime does -- and enriching it would mean re-emitting, which would
+    double every row's call count. Demanding identity on an event a worker
+    cannot write without corrupting the call count would make the honest
+    implementation fail the parity row. A request that DOES carry identity
+    is still checked for agreement with the response below.
+    """
+    events = result.provider_events
+    assert events is not None, (
+        "telemetry_provider_identity: this harness reports no provider "
+        "event stream at all (provider_events is None), so the row cannot "
+        "verify that provider events name who served the call. Expose the "
+        "turn's provider:request/provider:response payloads, or declare "
+        "'telemetry_provider_identity' in declared_absences -- an "
+        "unobservable telemetry row is how three end-to-end telemetry "
+        "breaks stayed green (see this kit's README)."
+    )
+    provider_events = [
+        e
+        for e in events
+        if isinstance(e, dict) and str(e.get("event", "")) == "provider:response"
+    ]
+    assert provider_events, (
+        "telemetry_provider_identity: the turn emitted no provider:response "
+        f"at all (saw: {[e.get('event') for e in events]}). A run whose "
+        "provider:response events are absent is exactly the unmeasurable run "
+        "this row exists to catch -- two node-matrix rows PASSed their gate "
+        "while reporting no calls, no tokens and no cost."
+    )
+
+    for event in provider_events:
+        missing = [k for k in PROVIDER_IDENTITY_KEYS if k not in event]
+        assert not missing, (
+            f"telemetry_provider_identity: {event.get('event')!r} is missing "
+            f"identity key(s) {missing} (carried: {sorted(event)}). All five "
+            f"of {list(PROVIDER_IDENTITY_KEYS)} must be PRESENT -- a None "
+            "value is an honest 'not applicable', an absent key is a reader "
+            "left to infer."
+        )
+        assert event.get("reasoning_effort") == _IDENTITY_PROBE_EFFORT, (
+            "telemetry_provider_identity: the probe declared "
+            f"reasoning_effort={_IDENTITY_PROBE_EFFORT!r} and the event "
+            f"reports {event.get('reasoning_effort')!r}. Effort reaches the "
+            "model but rides on no event by default, so a run's own evidence "
+            "could not tell one price/latency regime from another."
+        )
+        assert event.get("provider_module"), (
+            "telemetry_provider_identity: "
+            f"{event.get('event')!r} names no provider_module "
+            f"({event.get('provider_module')!r}). The family that served is "
+            "the fact a misroute is read off; the mount key alone is the "
+            "address that was ASKED for."
+        )
+
+    identities = {
+        tuple(str(e.get(k)) for k in PROVIDER_IDENTITY_KEYS) for e in provider_events
+    }
+    assert len(identities) == 1, (
+        "telemetry_provider_identity: provider:response events disagree "
+        f"about who served this turn: {sorted(identities)}. One turn on one "
+        "mounted provider must report ONE identity, or a reader cannot join "
+        "a cost back to who was paid for it."
+    )
+
+    # A worker that ALSO carries identity on its own provider:request (only
+    # loop-agent does today) must agree with the response. An absent key
+    # there is the documented worker-shape difference, not a failure -- see
+    # this function's SCOPE note.
+    served = next(iter(identities))
+    for event in events:
+        if not isinstance(event, dict) or event.get("event") != "provider:request":
+            continue
+        carried = [k for k in PROVIDER_IDENTITY_KEYS if k in event]
+        if not carried:
+            continue
+        mismatched = {
+            k: (event.get(k), served[PROVIDER_IDENTITY_KEYS.index(k)])
+            for k in carried
+            if str(event.get(k)) != served[PROVIDER_IDENTITY_KEYS.index(k)]
+        }
+        assert not mismatched, (
+            "telemetry_provider_identity: provider:request and "
+            f"provider:response disagree on {mismatched} (request value, "
+            "response value). A worker that names an identity on both ends "
+            "of one call must name the SAME one."
+        )
 
 
 def _not_silently_dropped(capability: str, warnings: list[str]) -> None:
@@ -314,10 +451,11 @@ async def test_target_capability_honored_or_declared_absent(
     workers by design -- that depth is each worker's OWN responsibility
     (e.g. ``loop-amplifier-agent/tests/test_v2_capabilities.py`` already
     asserts exact forwarding for these same keys against its OWN fakes).
-    ``user_instructions`` is the one capability this generic suite CAN
-    verify behaviorally (it is observable at the same
-    ``messages_sent_to_provider`` seam M2 already uses); the rest get the
-    shallower not-silently-dropped smoke check.
+    ``user_instructions`` and ``telemetry_provider_identity`` are the two
+    capabilities this generic suite CAN verify behaviorally (each is
+    observable at a seam the protocol already exposes --
+    ``messages_sent_to_provider`` for the first, ``provider_events`` for the
+    second); the rest get the shallower not-silently-dropped smoke check.
     """
     if capability in worker_harness.declared_absences:
         pytest.skip(
@@ -337,5 +475,8 @@ async def test_target_capability_honored_or_declared_absent(
             "user_instructions marker never reached the model boundary: "
             f"{result.messages_sent_to_provider!r}"
         )
+
+    if capability == "telemetry_provider_identity":
+        _assert_provider_identity(result)
 
     _not_silently_dropped(capability, result.warnings)

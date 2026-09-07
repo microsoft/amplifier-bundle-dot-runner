@@ -62,6 +62,35 @@ from ._fakes import (
 #: section 6.
 DECLARED_ABSENCES = frozenset({"tools_passthrough"})
 
+#: One LLM call as the hosted runtime really emits it (same shape as
+#: `tests/test_child_session_telemetry.py`'s `_HOSTED_TURN_EVENTS`):
+#: `provider:request` from loop-streaming -- which imports PROVIDER_REQUEST
+#: and PROVIDER_ERROR and *not* PROVIDER_RESPONSE -- and `llm:response` from
+#: the provider module itself, carrying the usage block the bridge forwards.
+#:
+#: The kit's `telemetry_provider_identity` probe declares
+#: `llm_provider="anthropic"`, so the module reporting itself as `anthropic`
+#: here is the AGREEING case: mount address and served family are the same,
+#: hence `provider_instance` is None. The DISAGREEING case -- the misroute
+#: signal -- is pinned in `test_child_session_telemetry.py`, which can drive
+#: a served-by-someone-else turn without fighting the shared probe config.
+_HOSTED_TURN_EVENTS: list[tuple[str, dict[str, Any]]] = [
+    ("provider:request", {"provider": "anthropic", "iteration": 0}),
+    (
+        "llm:response",
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "status": "ok",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cost_usd": "0.001",
+            },
+        },
+    ),
+]
+
 
 class _ListWarningHandler(logging.Handler):
     """Captures this module's own WARNING-level log records for a turn."""
@@ -87,7 +116,19 @@ class LoopAmplifierAgentHarness:
         orchestrator_config: dict[str, Any] | None = None,
     ) -> TurnResult:
         hosted_context = FakeFactoryContextManager()
-        deps, captured = make_fake_deps(reply_text="ok", context_module=hosted_context)
+        deps, captured = make_fake_deps(
+            reply_text="ok",
+            context_module=hosted_context,
+            # One LLM call, in the shape the hosted runtime really emits it:
+            # loop-streaming's own `provider:request`, and the provider
+            # MODULE's `llm:response` carrying the usage block. The bridge
+            # under test translates the latter into the canonical
+            # `provider:response`, so this is what makes the turn's provider
+            # events observable at all -- without it the
+            # `telemetry_provider_identity` row would have nothing to read
+            # and would (correctly) fail.
+            emit_events=_HOSTED_TURN_EVENTS,
+        )
 
         original_load_deps = laa._load_dependencies
         laa._load_dependencies = lambda: (
@@ -118,11 +159,22 @@ class LoopAmplifierAgentHarness:
         if session.prompt_seen is not None:
             sent.append({"role": "user", "content": session.prompt_seen})
 
+        # The HOSTED session's own registry is where this worker's provider
+        # events live -- not the parent `hooks` the adapter was handed. That
+        # split is the exact defect `_attach_child_session_telemetry` closes,
+        # so reading them from the hosted coordinator is reading the real
+        # seam, not a shortcut.
+        hosted_events = captured["session"].coordinator.hooks.emitted
         return TurnResult(
             reply=reply,
             messages_sent_to_provider=sent or None,
             completion_envelope=hooks.completion,
             warnings=warnings,
+            provider_events=[
+                {"event": name, **data}
+                for name, data in hosted_events
+                if name in ("provider:request", "provider:response")
+            ],
         )
 
 

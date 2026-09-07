@@ -51,6 +51,52 @@ class FakeContextManager:
         self.messages = []
 
 
+class FakeProvider:
+    """Kernel-faithful double for a mounted PROVIDER MODULE.
+
+    Authority: every provider module in this ecosystem carries a class-level
+    ``name`` naming its own module family (``OpenAIProvider.name ==
+    "openai"``) and resolves a ``default_model`` from its mount config in
+    ``__init__``.  Those two attributes are not incidental -- they are what a
+    worker reads to answer "who is about to serve this call", and therefore
+    what the ``telemetry_provider_identity`` TARGET row needs present.
+
+    An ``AsyncMock`` is NOT a substitute here, which is the whole reason this
+    double exists: ``AsyncMock().name`` is Mock's own name attribute (a child
+    mock, not a string), so a worker reading it correctly reports "unknown"
+    and an identity assertion fails for a reason that has nothing to do with
+    the worker.  Mount this instead when a harness's turn must produce
+    identity-bearing provider events.
+
+    ``instance_of`` is the shape a configured provider INSTANCE actually has
+    in a spawned child: mounted under an alias (``terra``) while still
+    declaring its own family (``openai``).  Pass ``name="openai"`` and mount
+    it under ``"terra"``; nothing else changes.
+    """
+
+    def __init__(
+        self,
+        name: str = "anthropic",
+        default_model: str = "claude-sonnet-5",
+        reply_text: str = "ok",
+    ) -> None:
+        self.name = name
+        self.default_model = default_model
+        self.reply_text = reply_text
+        #: Every ``ChatRequest`` this provider was asked to complete, in order.
+        self.requests: list[Any] = []
+
+    async def complete(self, request: Any) -> Any:
+        from amplifier_core.message_models import ChatResponse, Usage
+
+        self.requests.append(request)
+        return ChatResponse(
+            content=[{"type": "text", "text": self.reply_text}],
+            tool_calls=None,
+            usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
+        )
+
+
 class CapturingHooks:
     """Records every emitted event; exposes the last ``ORCHESTRATOR_COMPLETE``
     payload, mirroring ``pipeline-runner``'s own ``_CapturingHooks`` test
