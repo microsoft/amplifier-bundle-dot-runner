@@ -120,7 +120,9 @@ async def _drive(
     tool = _make_tool("bash", tool_output or ("L" * TOOL_OUTPUT_CHARS))
 
     responses: list[ChatResponse] = [
-        _tool_response(f"tc{i}", "bash", {"command": f"cat log-{i}.txt"}, _assistant_note(i))
+        _tool_response(
+            f"tc{i}", "bash", {"command": f"cat log-{i}.txt"}, _assistant_note(i)
+        )
         for i in range(rounds)
     ]
     responses.append(_text_response("done."))
@@ -213,8 +215,9 @@ async def test_assistant_text_is_never_elided():
     _, last = await _drive(retention=SessionConfig().tool_result_retention_turns)
 
     assistant_text = "\n".join(
-        m.content if isinstance(m.content, str) else
-        "".join(getattr(b, "text", "") or "" for b in (m.content or []))
+        m.content
+        if isinstance(m.content, str)
+        else "".join(getattr(b, "text", "") or "" for b in (m.content or []))
         for m in last.messages
         if m.role == "assistant"
     )
@@ -276,9 +279,9 @@ async def test_disabled_retention_reproduces_the_measured_leak():
         f"early {growth_early} vs late {growth_late}"
     )
     assert max(payloads) > (ROUNDS - 2) * TOOL_OUTPUT_CHARS
-    assert all(
-        TOOL_RESULT_ELIDED_MARKER not in c for c in _tool_contents(last)
-    ), "retention=0 must not elide anything at all"
+    assert all(TOOL_RESULT_ELIDED_MARKER not in c for c in _tool_contents(last)), (
+        "retention=0 must not elide anything at all"
+    )
 
 
 # ── Composition with the spec's own per-result truncation ───────────────

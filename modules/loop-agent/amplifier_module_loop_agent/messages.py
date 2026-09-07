@@ -87,9 +87,7 @@ def convert_history_to_messages(
     # everything (retention disabled, or history shorter than the window).
     keep_from = -1
     if tool_result_retention_turns > 0:
-        total_tool_turns = sum(
-            1 for t in turn_list if isinstance(t, ToolResultsTurn)
-        )
+        total_tool_turns = sum(1 for t in turn_list if isinstance(t, ToolResultsTurn))
         keep_from = total_tool_turns - tool_result_retention_turns
 
     system_messages: list[Message] = []
