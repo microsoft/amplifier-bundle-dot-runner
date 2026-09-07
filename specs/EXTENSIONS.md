@@ -4095,6 +4095,35 @@ Measured on the hermetic driver (40 rounds, 50,000-char tool result): with reten
 late-window growth is 450,738 chars per 9 calls -- identical to early growth (450,711), the
 24K→228K curve. With the window on, the same late growth is under 2% of it.
 
+### Live measurement (same driver, same task, one knob)
+
+`claude-haiku-4-5`, real `bash`/`read_file` tools, a real repository-audit task on this
+repo, `hooks-tool-truncation` mounted with its shipped defaults in BOTH runs. The ONLY
+difference is `tool_result_retention_turns`. Per-call input tokens:
+
+| | retention=0 (main) | retention=20 (this branch) |
+|---|---|---|
+| provider calls | 39 | 34 |
+| first call | 1,618 | 1,618 |
+| median call | 53,215 | **38,578** |
+| last call | 81,897 | **24,513** |
+| peak call | 81,897 | **52,760** |
+| slope, calls 5→33 | 1,646 tok/call | **331 tok/call** |
+| Σ over the 34 common calls | 1,421,825 | **1,130,250 (−20.5%)** |
+
+The two curves are byte-comparable for the first ~12 calls (1,618 / 2,056 / 7,005 / 10,995
+… vs 1,618 / 2,062 / 7,017 / 11,005 …) -- the window is not full yet, so nothing is elided
+and the runs are doing the same work. They separate at call ~13 and diverge from call ~22,
+where the retention curve turns DOWNWARD (52,760 → 24,513) while the unbounded one keeps
+climbing (54,807 → 81,897).
+
+Honest limits on this measurement: two live LLM runs are not deterministic (39 vs 34 calls;
+the model chose slightly different tool sequences), and this task's tool outputs are small
+next to the capsule evidence above, which is why the saving here is 20.5% rather than the
+order-of-magnitude the hermetic driver shows at 50,000-char results. The reduction scales
+with how much tool output the visit accumulates, which is exactly the variable the measured
+incident maxed out.
+
 ### Why this is §8's extension point and not §8's deferred feature
 
 §5.5 says the agent "does NOT perform automatic compaction or summarization (that is out of
