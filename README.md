@@ -331,8 +331,8 @@ or change `llm_provider`.
 one mounted adapter, so `llm_model` family tokens/globs (e.g. `sonnet`)
 cannot be live-resolved for them the way they can for anthropic/openai/gemini
 -- set an explicit concrete `llm_model` (e.g. `llm_model="claude-sonnet-4.6"`
-for github-copilot, `llm_model="gpt-5.5"` for openai-chatgpt), or omit it
-entirely and let the mounted provider module apply its own configured
+for github-copilot, `llm_model="gpt-5.6-luna"` for openai-chatgpt), or
+omit it entirely and let the mounted provider module apply its own configured
 default (`github-copilot` defaults to `claude-opus-4.5`; `openai-chatgpt`
 resolves `"latest"` dynamically).
 

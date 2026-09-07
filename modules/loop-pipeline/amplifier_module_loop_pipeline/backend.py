@@ -1063,8 +1063,9 @@ _SUBSCRIPTION_MODEL_HINTS: dict[str, str] = {
     ),
     "openai-chatgpt": (
         "openai-chatgpt serves multiple model families -- set llm_model to "
-        'an explicit id, e.g. llm_model="gpt-5.5" (a family token/glob '
-        'like "sonnet" cannot be live-resolved for this provider). '
+        'an explicit id, e.g. llm_model="gpt-5.6-luna" (a family '
+        'token/glob like "sonnet" cannot be live-resolved for this '
+        'provider). '
         "Omitting llm_model entirely also works: the mounted module "
         'resolves its own default_model="latest" dynamically.'
     ),

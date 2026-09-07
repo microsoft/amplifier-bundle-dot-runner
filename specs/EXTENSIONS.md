@@ -3448,6 +3448,110 @@ names which evidence produced it on every row.
   `tests/test_worker_parity.py`
 
 
+### Addendum 4 (2026-09-07): the shipped pipelines run on a configured INSTANCE, not on `gpt-5`
+
+**Standing owner policy, recorded here because a policy nobody can cite is a
+policy that drifts:** *"I don't ever want to use gpt-5 again -- we should be
+using `gpt-?.?-terra` or `gpt-?.?-luna` only, update that wherever it
+exists."* `terra` and `luna` are configured provider INSTANCES in the sense
+addendum 1 above defines -- `config.providers[]` entries carrying an `id`, both
+of module `provider-openai`, differing in `base_url` / `default_model` /
+`reasoning_effort`.
+
+**What changed.** The two shipped graphs this repo owns each had exactly one
+node pinning the OpenAI family, both written the same way:
+
+| graph | node | was | now |
+|---|---|---|---|
+| `.github/capsule-pipeline/feature-capsule.dot` | `critique` | `llm_provider="openai", llm_model="gpt-[5-9]*"` | `llm_provider="luna"` |
+| `.github/capsule-pipeline/task-runner.dot` | `critique_b` | `llm_provider="openai", llm_model="gpt-[5-9]*"` | `llm_provider="luna"` |
+
+**The dual-FAMILY property these pins exist for is untouched.** `luna` is an
+instance OF `provider-openai` (`ProviderInstance.canonical_module ==
+"openai"`), so the judge is still a different model family from the Anthropic
+maker -- which is the whole point of the pin, and the degradation issue #155
+named. What changed is the endpoint and the model, not the independence.
+
+**No `llm_model`, deliberately.** The instance's own `default_model`
+(`gpt-5.6-luna`) stands -- entry 43's *"letting the module default stand is a
+supported, working configuration"*, and the spawn path tolerates a missing
+model by design (`backend.py:399-400` -> `_resolve_concrete_model` returns
+`None` unchanged). Two consequences, both wanted:
+
+1. **One home for the model id.** It lives in the settings entry that defines
+   the instance, not in a `.dot` that can drift from it.
+2. **`critique` no longer resolves a model catalog at spawn.** The glob it
+   carried was what made it the ONE node forcing live catalog resolution --
+   fire 9's trigger (upstream run 31760312250, `No module named
+   'unified_llm._cost'` raised while spawning, 11.97ms, no session). That
+   trigger is retired; the SPAWN-class vs RAN-BUT-UNRULED routing it motivated
+   is KEPT, because an engine can still raise at spawn for other reasons.
+
+**Cost, measured, not asserted** (fixed stack, node-matrix run
+`20260907T164521Z-axes`): `luna` 4.3 min / $0.08 per node visit, `terra` 8.0
+min / $7.39, both `red_ok`; the retired `gpt-5` high-effort pin 43.6 min.
+`luna` is the default choice for a pin picked without row-specific evidence.
+
+**CI routing -- an instance is only addressable if the settings the run READS
+declare it.** `provider_instances.settings_scope_paths` reads
+`$AMPLIFIER_HOME/settings.yaml`, then `<cwd>/.amplifier/settings.yaml`, then
+`<cwd>/.amplifier/settings.local.yaml`. A GitHub runner has none of the three,
+so each invoking workflow's preflight step now WRITES the first one, into the
+default home (`~/.amplifier/settings.yaml`) -- outside `$GITHUB_WORKSPACE` on
+purpose, so it can never dirty the subject tree `nonvacuity_gate` resets and
+re-proves. The file carries `${OPENAI_API_KEY}` / `${OPENAI_BASE_URL}`
+placeholders verbatim; no secret VALUE is ever on disk. Repo secrets required:
+`OPENAI_API_KEY` (pre-existing) and `OPENAI_BASE_URL` (new), the latter also
+registered with `scrub_secrets.py` through its own `SCRUB_WATCH_ENV`
+extension point so a new secret in the run's environment does not open an
+unscrubbed evidence channel.
+
+**Preflight is NOT weakened to make CI pass.** The issue-#155 provider
+preflight still refuses to start when `luna` cannot be resolved and mounted,
+and still names the instances that ARE configured (addendum 1's message).
+Verified both ways against both real graphs. The workflow-level secret check
+runs FIRST only so a missing secret is visible before the run's budget is
+spent, never instead of the engine's own check.
+
+**What was deliberately NOT changed, and the one open call for the owner.**
+`backend.py`'s `_PROVIDER_DEFAULT_MODEL_PATTERN` still maps the `openai`
+provider MODULE to the family glob `gpt-5.*[0-9]` (entry 42, spec section 8.5
+rung 4; `contracts/engine-surface.v1.md:89` states the same table). That is the
+ENGINE's spec-conformant default for *any* user's graph that declares
+`llm_provider="openai"` with no model -- unified-llm spec section 2.9's "GPT-5+
+series" -- not a model choice this repo makes for itself. Re-pointing it would
+be a divergence from the vendored nlspec under `AGENTS.md`'s hard bar, would
+change behaviour for every downstream graph, and is out of this change's
+scope. The policy is instead enforced where this repo does choose: no SHIPPED
+graph may declare the bare `openai` module, guarded by
+`.github/capsule-pipeline/test_model_policy.py`. **If the owner wants the
+engine default re-pointed too, that is a separate, ledgered decision.**
+
+**Implementation locations:**
+
+- `.github/capsule-pipeline/feature-capsule.dot` -- `critique`
+- `.github/capsule-pipeline/task-runner.dot` -- `critique_b` (this node's body
+  is therefore no longer byte-identical to its upstream source commit; the
+  divergence is dated in the file's own header timeline)
+- `.github/workflows/feature-specify.yml`, `.github/workflows/capsule-implement.yml`
+  -- the `preflight` step writes the instance definition; every step handling
+  run evidence gains `OPENAI_BASE_URL` + `SCRUB_WATCH_ENV`
+- Docs/hints re-pointed off `gpt-5` examples: `README.md`,
+  `modules/loop-pipeline/amplifier_module_loop_pipeline/{backend,preflight}.py`,
+  `modules/pipeline-runner/amplifier_module_pipeline_runner/provider_detection.py`,
+  `modules/loop-agent/amplifier_module_loop_agent/environment.py`
+- Test (RED-proofed against the pre-change files: 5 tests, 10 subtest failures
+  before, 0 after): `.github/capsule-pipeline/test_model_policy.py`, run by
+  CI's existing `capsule-pipeline-scripts` job
+
+**Deliberately left verbatim** (this is a record, not a sweep):
+`contracts/external/*` is upstream canonical text; dated measurement records
+(`runner.py`'s `5562a78` probe transcript, this section's own addendum 2/3
+rows, `docs/designs/REVIEW-pipelines-2026-09.md`, `task-runner.dot`'s history
+timeline) record what WAS and are not rewritten; hermetic test fixtures that
+pin the engine's documented `openai` family default must keep naming it or
+they stop testing it.
+
 ---
 
 ## 37. Bundle Composition: Always-On Guidance, Agent Registration, and Ref-Free Same-Repo Sources
