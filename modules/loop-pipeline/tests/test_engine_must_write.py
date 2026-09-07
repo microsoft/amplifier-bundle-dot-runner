@@ -172,7 +172,7 @@ def test_case2_empty_final_message_fails(tmp_path):
     )
 
 
-def test_case3_planted_file_fails(tmp_path):
+def test_case3_planted_file_fails(tmp_path, requires_subsecond_mtime):
     """Case 3: pre-existing artifact (planted before node start) -> FAIL (freshness floor)."""
     a = tmp_path / "case3.md"
     outcome = _run(
@@ -192,7 +192,7 @@ def test_case3_planted_file_fails(tmp_path):
     ), "failure_reason should mention freshness/mtime for planted-file case"
 
 
-def test_case3b_equality_boundary_fails(tmp_path):
+def test_case3b_equality_boundary_fails(tmp_path, requires_subsecond_mtime):
     """Case 3b: artifact mtime set to exactly node_start_wall -> FAIL.
 
     The freshness floor uses strictly-greater-than (mtime > node_start_wall).

@@ -1792,6 +1792,80 @@ is for nodes that explicitly add the attribute.
 - `docs/reports/2026-02-20-nlspec-dod-gap-analysis.md` — dated errata note
   for the §11.5 "retried on RETRY or FAIL outcomes | PASS" row.
 
+### 27.1 Freshness-floor granularity correction (2026-09-06, issue #67)
+
+**The defect.** The freshness floor above was implemented as
+`stat.st_mtime <= node_start_wall` — comparing a filesystem-stamped mtime
+against a `time.time()` snapshot. Those two clocks do not share a
+resolution. `time.time()` is fine-grained; several real filesystems stamp
+**whole seconds** (ext2, vfat, HFS+, NFSv2, and a number of
+container/network mounts). On such a host a file written *milliseconds
+after* the node started is stamped *before* `node_start_wall`, and the
+floor reaches the exact opposite of the truth:
+
+```
+node_start_wall = 1000.4      (time.time(), fine-grained)
+artifact written  1000.6      (genuinely, by this node execution)
+mtime stamped as  1000.0      (1-second-granularity filesystem)
+1000.0 <= 1000.4              -> "planted before node start"  # WRONG
+```
+
+The node did its work and is failed for it. The failure is
+**nondeterministic** — it fires only when `node_start_wall` is sampled
+late enough within the filesystem's tick — which is how it surfaced: not
+as a reproducible bug report but as a flaky test pool on `main`
+(issue #67, ~10 tests, 8–10 failing per run, confined to
+`test_engine_must_write.py` and `test_status_file_contract.py`).
+
+**The correction.** Both floors now evaluate through
+`amplifier_module_loop_pipeline.freshness.wrote_after_node_start`, which
+is the same strictly-greater-than test lowered by the resolution the
+mtime **itself evidences** (a stamp landing on an exact multiple of some
+unit is evidence its source cannot resolve finer than that unit), capped
+at one second and floored at one millisecond.
+
+**What it costs, stated plainly:**
+
+- On a fine-grained filesystem (ext4/xfs/btrfs/tmpfs — the common case and
+  CI's) the derived granularity is `0.0` and the comparison is
+  byte-for-byte the original. Nothing changes.
+- Exact equality is **never** tolerated, whatever granularity is
+  evidenced. A coarse stamp is a floor of the real write time, so it lands
+  strictly below a mid-tick `node_start_wall`, never on it; granting
+  equality would forgive nothing real while reopening the
+  `os.utime`-to-exact-start bypass this section reasons about.
+- On a whole-second filesystem, a file planted up to one second before
+  node start can now pass a floor it would previously have failed. That
+  window is the filesystem's own uncertainty: on such a host the engine
+  genuinely cannot distinguish "written 200ms before the node started"
+  from "written 200ms after", and failing every honest node is the worse
+  of the two errors.
+- A source with non-power-of-ten quantisation (a jiffy-quantised clock at
+  `CONFIG_HZ=250`, stamping multiples of 4ms) is only partially covered —
+  the derivation reads it as 1ms, leaving a ~3ms residual. No such host
+  has been observed for this failure; covering it would be speculative.
+
+**Compatibility:** additive and behavior-preserving wherever the mtime
+source is fine-grained. `must_write=` and the `status.json` read side keep
+their documented semantics; only the resolution mismatch is corrected.
+
+**Files touched:**
+
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/freshness.py` — new;
+  the granularity derivation and the shared comparison.
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/must_write.py` — the
+  §27 floor now calls it.
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/status_file.py` — the
+  §41 floor now calls it (see §41's cross-reference).
+- `modules/loop-pipeline/tests/test_coarse_mtime_freshness.py` — new;
+  deterministic on every host (it stamps via `os.utime` exactly what a
+  1-second-granularity filesystem would stamp), covering both call sites
+  and both directions (tolerance granted / anti-planting preserved).
+- `modules/loop-pipeline/tests/conftest.py` — `requires_subsecond_mtime`
+  fixture: the two tests that assert a *sub-second* planted-vs-written
+  distinction skip, with a named reason, on a host whose filesystem cannot
+  resolve it. On every fine-grained filesystem the fixture is a no-op.
+
 ---
 
 ## 28. Run Provenance Stamping in `manifest.json`
@@ -3601,6 +3675,18 @@ path, so this section's `read_status_override` now has a spawned-agent producer 
 not just a tool/direct-worker one. See Sec 35's dated RETCON note above for the full account and
 `modules/loop-pipeline/tests/test_status_file_contract.py`'s `test_sf009_spawn_node_status_json_override_wins`
 (and the `SF-010`/`SF-011` compat/precedence pins) for the spawn-path proof.
+
+### Freshness-floor cross-reference (2026-09-06, issue #67)
+
+This section's own freshness floor — "a stale (pre-existing) file whose
+mtime does not postdate `node_start_wall`" — carried the same
+resolution-mismatch defect as §27's, and with the same nondeterministic
+signature: on a whole-second-granularity filesystem a `status.json` the
+node really did write during this execution is stamped *before*
+`node_start_wall` and is silently discarded as a stale leftover, so the
+node's explicit verdict never reaches the engine at all. Both floors now
+evaluate through `amplifier_module_loop_pipeline.freshness`. See **§27.1**
+for the mechanism, the exact bound of the tolerance, and what it costs.
 
 ---
 

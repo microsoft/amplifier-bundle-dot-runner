@@ -62,6 +62,7 @@ import json
 import logging
 import os
 
+from .freshness import wrote_after_node_start
 from .graph import Node
 from .outcome import Outcome, StageStatus
 
@@ -119,7 +120,7 @@ def read_status_override(
         return None
 
     try:
-        mtime = os.path.getmtime(status_path)
+        mtime_ns = os.stat(status_path).st_mtime_ns
     except OSError:
         return None
 
@@ -127,7 +128,14 @@ def read_status_override(
     # than the node's execution-start wall clock, so a stale file left over
     # from an earlier iteration/attempt of this same node is never picked
     # up as if it had just been written.
-    if mtime <= node_start_wall:
+    #
+    # The comparison runs through freshness.py, which lowers that floor by
+    # the resolution this file's own mtime evidences. On a fine-grained
+    # filesystem the derived granularity is 0.0 and the test is unchanged.
+    # On a whole-second filesystem it is what keeps a status.json the node
+    # really did write during this execution from being read as a stale
+    # leftover and silently discarded (issue #67).
+    if not wrote_after_node_start(mtime_ns, node_start_wall):
         return None
 
     try:

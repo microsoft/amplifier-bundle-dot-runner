@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 
 from .context import PipelineContext
+from .freshness import wrote_after_node_start
 from .graph import Node
 from .outcome import Outcome, StageStatus
 
@@ -57,6 +58,14 @@ def check_must_write(
     coarse-resolution filesystem) could set an artifact's mtime via
     ``os.utime`` to match the recorded start time, bypassing a ``>=`` check.
     Strictly-greater-than closes that boundary.
+
+    That strictly-greater-than is evaluated by ``freshness.py``, which
+    lowers the floor by the resolution the artifact's own mtime evidences
+    (0.0 on a fine-grained filesystem — the comparison is then unchanged,
+    equality rejection included; up to 1s on a whole-second filesystem,
+    where a legitimately-written artifact would otherwise be stamped
+    *before* ``node_start_wall`` and fail this contract having done nothing
+    wrong).  See ``freshness.py`` for the exact bound and its cost.
 
     **Non-trivial:** the artifact must contain at least one non-whitespace
     byte.  An empty file or a whitespace-only file does not satisfy the
@@ -146,11 +155,20 @@ def check_must_write(
             ),
         )
 
-    if stat.st_mtime <= node_start_wall:
+    if not wrote_after_node_start(stat.st_mtime_ns, node_start_wall):
         # File exists but was not written strictly after this node started —
         # either planted before node start OR written at the exact same
         # clock tick (equality bypass).  Both are rejected: the contract
         # requires mtime STRICTLY GREATER THAN node_start_wall.
+        #
+        # `wrote_after_node_start` is that same strictly-greater-than test,
+        # lowered by the resolution the artifact's own mtime evidences (see
+        # freshness.py).  On a fine-grained filesystem the derived
+        # granularity is 0.0 and this is byte-for-byte the original
+        # comparison — including the equality rejection reasoned about in
+        # this function's docstring.  On a whole-second filesystem it stops
+        # the engine from failing a node that genuinely did write its
+        # artifact, which is issue #67's flaky pool.
         logger.warning(
             "Node '%s' must_write= freshness floor violated: artifact mtime "
             "%.3f predates node start %.3f (%s)",

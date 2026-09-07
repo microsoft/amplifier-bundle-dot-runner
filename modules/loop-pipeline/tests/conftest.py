@@ -14,6 +14,8 @@ import sys
 import types
 from dataclasses import dataclass, field
 
+import pytest
+
 # Prevent Python from writing .pyc bytecode files during the test session.
 # Without this, grep-based test discovery in the DoD verify script finds
 # compiled .pyc files in __pycache__ and passes them to pytest, which cannot
@@ -81,3 +83,59 @@ if "amplifier_core" not in sys.modules:
     _stub_msg = types.ModuleType("amplifier_core.message_models")
     _stub_msg.ToolCallBlock = _StubToolCallBlock  # type: ignore[attr-defined]
     sys.modules["amplifier_core.message_models"] = _stub_msg
+
+
+# ---------------------------------------------------------------------------
+# Host mtime granularity — issue #67
+# ---------------------------------------------------------------------------
+#
+# A handful of tests assert a SUB-SECOND distinction between "planted just
+# before the node started" and "written just after": the freshness floors in
+# must_write.py and status_file.py (EXTENSIONS.md Sec 27 / Sec 41).  That
+# distinction is only observable if the host's filesystem stamps mtimes more
+# finely than the gap being asserted.  On a whole-second-granularity mount
+# (ext2, vfat, HFS+, NFSv2, some container/network mounts) both sides of the
+# comparison land on the same stamp and the assertion is not merely hard to
+# meet — it is unmeasurable, by physics rather than by bug.
+#
+# Rather than let those tests fail on such a host (which is how issue #67
+# presented: an intermittently red pool nobody could attribute), they are
+# skipped there with this named reason.  On every fine-grained filesystem —
+# ext4, xfs, btrfs, tmpfs, and CI's ubuntu-latest — the fixture is a no-op and
+# the assertions run exactly as before.
+
+
+def _host_mtime_granularity_seconds() -> float:
+    """Coarsest resolution this host's temp filesystem evidences, in seconds.
+
+    Samples several real files and takes the MINIMUM derived granularity: a
+    fine-grained stamp lands on a round value by chance about once in a
+    thousand for the finest unit, and a single unlucky sample must not be
+    allowed to skip a test on an otherwise fine-grained host.
+    """
+    import tempfile
+
+    from amplifier_module_loop_pipeline.freshness import mtime_granularity_seconds
+
+    samples: list[float] = []
+    with tempfile.TemporaryDirectory() as d:
+        for i in range(5):
+            p = pathlib.Path(d) / f"probe{i}"
+            p.write_text("x")
+            samples.append(mtime_granularity_seconds(p.stat().st_mtime_ns))
+    return min(samples)
+
+
+@pytest.fixture
+def requires_subsecond_mtime():
+    """Skip when the host cannot resolve the sub-second gap under test."""
+    granularity = _host_mtime_granularity_seconds()
+    if granularity >= 0.001:
+        pytest.skip(
+            "host filesystem stamps mtimes at "
+            f"{granularity}s granularity, so the sub-second 'planted before "
+            "node start' vs 'written after node start' distinction this test "
+            "asserts is unmeasurable here (issue #67); the freshness floor "
+            "itself is covered on every host by "
+            "tests/test_coarse_mtime_freshness.py"
+        )
