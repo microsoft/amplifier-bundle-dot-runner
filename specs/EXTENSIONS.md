@@ -1561,6 +1561,71 @@ Pinned by `modules/loop-pipeline/tests/test_worker_session_observability.py` sec
 production shape sections 1–4 never covered, a worker that writes its OWN `status.json` — and
 `modules/pipeline-runner/tests/test_synthesized_bundle_hooks.py`.*
 
+
+*Addendum 2 (2026-09-07, worker-axis measurement): **THE SAME CONTRACT WAS DEAD FOR THE
+`amplifier-agent` WORKER, FOR A DIFFERENT REASON, AND STAYED DEAD AFTER THE 2026-09-06 FIX
+ABOVE.** Measured on node-matrix run `20260907T043835Z`, one fixed `author` node across eight
+worker/model variants: rows `aa-anthropic-default` (6.9 min) and `aa-gpt5-medium` (9.9 min) both
+PASSed their gate, and both reported no calls, no tokens, no cache ratio and no cost, while
+`ca-anthropic-default` — the same node, same prompt bytes, on `coding-agent` — reported 139 calls
+/ 6.68M input tokens / 68% cache-read / $11.13 from its own `events.jsonl`. The aa row's session
+directory was not missing; it held exactly three records: `session:start`, `orchestrator:complete`,
+`session:end`. A worker axis cannot be compared on cost when one side of it has no cost. Two
+causes, both structural:*
+
+***1. The persister reached the wrong session.** Addendum 1's fix mounts the persister into the
+SPAWNED session. For every worker that IS the spawned session (`loop-agent`, `direct`), that is
+the session doing the work. `loop-amplifier-agent` is not: it builds a SECOND
+`ModuleCoordinator` from amplifier-agent's own baked-in bundle
+(`prepared.create_session`), and every provider and tool event belongs to THAT one. Bundle
+composition ends at the adapter session, whose only emissions are the three brackets above.
+Fixed in `loop-amplifier-agent._attach_child_session_telemetry`, which registers the SHIPPED
+`SessionEventPersister` — same class, same `PERSISTED_SESSION_EVENTS`, same write-time redaction
+— onto the hosted session's own registry, so its stream lands at the identical
+`<logs>/<node>/sessions/<id>/events.jsonl` path this section already specifies. The dependency
+is lazy in both directions, as the seam already is: an absent observability module logs once and
+leaves the turn untouched.*
+
+***2. The usage block is on an event this contract does not name — for that worker.** Addendum
+1 point 3 added `provider:request`/`provider:response` to the persisted set on the evidence of
+`loop-agent`, which emits both itself. `loop-streaming` — the orchestrator inside
+amplifier-agent's baked-in bundle — emits `provider:request` and `provider:error` and does not
+import `PROVIDER_RESPONSE` at all; its usage rides `content_block:end`, which this section
+excludes as UI cadence and which carries the block's full content besides. The usage is not
+missing: the PROVIDER MODULE emits it, on its own `llm:response`, in exactly the schema this
+section's consumers read (`input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`
+plus a `cost_usd` the module computed from its own `_cost.py` price table). So the adapter
+registers a TRANSLATION on the hosted session — `llm:response` -> `provider:response`, `usage`
+forwarded verbatim, nothing derived — and deliberately NOT in `hooks-pipeline-observability`:
+in a `loop-agent` worker BOTH events fire for one call, so a bridge in the shared persister would
+DOUBLE every coding-agent row's tokens and cost. `llm:request` is not bridged for the mirror
+reason (it would double the call count). The precondition for translating is "this orchestrator
+provably does not emit `provider:response`", a fact about the hosted runtime, so the translation
+lives where that fact is known.*
+
+***The join key had to move with it.** `status.json`'s `session_id` came from the spawn result —
+which, for this worker, names the adapter session: a real id whose stream holds no telemetry, and
+which the collector would open in preference to the one that does. The adapter now reports the
+hosted session's id in its `orchestrator:complete` `metadata`
+(`WORKER_SESSION_ID_METADATA_KEY`), and `backend._session_id_from_spawn_result` prefers it,
+falling back to the spawn id for every other worker — unchanged for them. This is observability
+ONLY and does not reopen the verdict channel WAVE 5 removed (§35): `_outcome_from_spawn_result`
+still reads `status` and nothing else, a recovered Outcome is still `is_explicit=False`, and a
+malformed reported id falls back rather than corrupting the key. Known limit, stated rather than
+discovered later: a grandchild session (the hosted agent's own `delegate` spawns) has its own
+coordinator and is not persisted under the node — the same boundary every other worker has.*
+
+***Files touched:** `modules/loop-amplifier-agent/amplifier_module_loop_amplifier_agent/__init__.py`
+(`_attach_child_session_telemetry`, `_resolve_engine_session_id`, `WORKER_SESSION_ID_METADATA_KEY`,
+the completion envelope's one metadata key);
+`modules/loop-pipeline/amplifier_module_loop_pipeline/backend.py`
+(`_session_id_from_spawn_result`). Pinned by
+`modules/loop-amplifier-agent/tests/test_child_session_telemetry.py` (real orchestrator, real
+shipped persister, the codergen ContextVar set: a stream with ≥1 provider and ≥1 tool event,
+usage equal to the provider's own block, exactly one request per call, nothing bridged for a
+FAILED call, and the reported id equal to the directory name — on the exception path too) and
+`modules/loop-pipeline/tests/test_worker_session_observability.py` section 6.*
+
 ---
 
 ## 27. `must_write=` Node Attribute — Fail-Closed Artifact Contract
