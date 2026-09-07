@@ -3179,6 +3179,79 @@ the only available proxy for the `resolvable_profiles` KEYWORD, which a symbol p
 this path -- the refusal, and the no-false-refusal control (same graph, same credentials, same
 profiles map, agent PRESENT -> still runs to success).*
 
+*Addendum (2026-09-07, provider INSTANCE ids): a node declaring
+`llm_provider="terra"` -- a real, configured provider INSTANCE on the operator's host
+(`amplifier provider list`; `config.providers[].id` in the user's Amplifier settings) -- was
+refused at startup by change 1 with "no provider module or profile is mounted for it". The
+refusal was mechanically correct and substantively wrong: the engine only ever knew the closed
+table of provider MODULE names (`provider_detection.PROVIDER_SPECS`: anthropic / openai / gemini
+/ github-copilot / openai-chatgpt) and had never read the user's configured instances at all, so
+an address a human types every day resolved to nothing. Measured: node-matrix run
+`20260907T043835Z`, rows `ca-terra` and `ca-luna`, both UNROUTABLE in ~5 seconds, zero nodes run.
+Spec-silent surface -- the canonical spec says nothing about provider mounting at all (see this
+entry's "upstream action" above), and nothing about instance ids in particular; this is therefore
+an EXTENSION, stated as one, not a conformance fix.
+
+**What.** A new library, `amplifier_module_loop_pipeline.provider_instances`, reads the SAME
+settings files, in the SAME scope order (global `<amplifier-home>/settings.yaml` -> project
+`.amplifier/settings.yaml` -> local `.amplifier/settings.local.yaml`), with the SAME
+merge-by-identity rule (`id` first, else `module`; nested `config` deep-merged) that the Amplifier
+app CLI's `AppSettings.get_provider_overrides()` uses, and expands `${VAR}` placeholders from the
+environment first and `<amplifier-home>/keys.env` second -- the same precedence the CLI's
+`KeyManager._load_keys` uses. It deliberately does NOT import `amplifier_app_cli`: that package is
+not a dependency of this engine, so the import would be an environment-dependent code path that
+silently vanishes -- exactly the failure class this entry exists to prevent. The behaviour is
+pinned to the CLI's instead, by tests written against the CLI's own on-disk shape
+(`modules/loop-pipeline/tests/test_provider_instances.py`).
+
+An instance is mounted ONLY when the run NAMES it -- a node's `llm_provider` (the conservative DOT
+scan already used for the github-copilot intent rule) or the run-level `--provider` flag. Mounting
+every configured instance on every run would load a dozen provider modules, and probe a dozen
+credentials, for a pipeline that asked for none of them. A name that collides with a MODULE name is
+left to the module table: that address already resolves, and silently re-pointing it would change
+what an existing graph means.
+
+A selected instance is emitted into the synthesized worker bundle in BOTH halves it needs, from ONE
+resolved map so they cannot drift: a `providers:` entry carrying amplifier-core's own
+`instance_id` remap seam (`amplifier_core._session_init`: the module self-mounts at its canonical
+name and core remaps the mount to the instance id) AND a `profiles:` route. Either half alone just
+moves the failure deeper -- no profile and `backend.py`'s exact-or-nothing lookup refuses the node
+mid-walk; no mounted provider and `loop-agent`'s `providers[llm_provider]` lookup refuses it inside
+the spawned child. Instance entries are emitted AFTER the module entries, because a child that
+declares no provider falls back to `next(iter(providers))`; prepending one would silently change
+the default provider of every node in an unrelated graph.
+
+`--provider` now accepts either address space through one check
+(`provider_instances.validate_run_provider`): a module name still requires its credential env var;
+an instance id is accepted without it, because the instance carries its own `api_key` in settings
+(demanding `OPENAI_API_KEY` for `--provider terra` would refuse a run the host serves fine). An
+unresolvable `${VAR}` is left VERBATIM rather than blanked, so a mis-set key surfaces as the
+provider module's own loud auth failure naming the literal placeholder, never as a silent empty
+credential.
+
+**#155's guarantee is kept, and the message is repaired.** An unserviceable name still refuses at
+startup, naming each node -- and the refusal now also names the instance ids that WOULD have
+worked, or says plainly that none are configured. The old text listed neither address space, so
+the only move it left a reader was to hunt for a typo they had not made.
+
+**Live proof (2026-09-07, `dot-runner run` on a 3-node graph declaring `llm_provider="terra"`,
+engine = this branch).** amplifier-core's own log, in the parent session AND in the spawned child:
+`Loading provider: provider-openai (instance: terra)` then `Remapped provider 'openai' ->
+'terra'`; the synthesized `profiles` map carries `terra: dot-runner-default-agent`; the run
+reaches `status=success` where the same graph previously died in ~5s at the preflight.
+
+**Honest residual, and it is not small.** Mounting and routing an instance is not the same as the
+node's completion being SERVED by it. In that same live run the child's completion still came back
+with Anthropic's usage shape, because the synthesized agent stanza pins its orchestrator
+`llm_provider: anthropic` (`modules/pipeline-runner/.../default_worker.py`) and the spawn-time
+`orchestrator_config` override lands on the child mount plan's TOP-level orchestrator rather than
+that agent's session orchestrator. That is the SAME defect that silently served the module-name
+rows `ca-gpt5-{low,medium,high}` on Anthropic in run `20260907T043835Z` -- it is not
+instance-specific, it is not fixed here, and it is tracked separately as the declared-provider-
+honored defect. This addendum's claim is therefore exactly: an instance id RESOLVES, MOUNTS, and
+PASSES PREFLIGHT. It does not yet claim the model behind it served the call.*
+
+
 ---
 
 ## 37. Bundle Composition: Always-On Guidance, Agent Registration, and Ref-Free Same-Repo Sources
