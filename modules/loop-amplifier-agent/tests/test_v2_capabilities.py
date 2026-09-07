@@ -28,6 +28,7 @@ from ._fakes import (
     CapturingHooks,
     FakeContextManager,
     FakeSessionCoordinator,
+    assert_no_fabricated_verdict,
     make_fake_deps,
 )
 
@@ -590,7 +591,7 @@ async def test_context_get_messages_failure_still_emits_incomplete(
 
     assert hooks.completion.get("status") == "incomplete"
     # fail-closed: no fabricated verdict on the incomplete path.
-    assert hooks.completion.get("metadata", {}) == {}
+    assert_no_fabricated_verdict(hooks.completion.get("metadata"))
 
 
 @pytest.mark.asyncio

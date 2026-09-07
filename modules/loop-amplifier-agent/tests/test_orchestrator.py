@@ -18,7 +18,12 @@ import amplifier_module_loop_amplifier_agent as laa
 import pytest
 from amplifier_core.events import ORCHESTRATOR_COMPLETE
 
-from ._fakes import CapturingHooks, FakeFactoryContextManager, make_fake_deps
+from ._fakes import (
+    CapturingHooks,
+    FakeFactoryContextManager,
+    assert_no_fabricated_verdict,
+    make_fake_deps,
+)
 
 
 def _install_fake_deps(monkeypatch: pytest.MonkeyPatch, **kwargs: Any):
@@ -63,7 +68,7 @@ async def test_envelope_shape_never_fabricates_a_verdict(
     assert payload["orchestrator"] == "loop-amplifier-agent"
     assert payload["status"] == "success"
     assert payload["turn_count"] == 1
-    assert payload["metadata"] == {}
+    assert_no_fabricated_verdict(payload["metadata"])
 
     # Feed the exact spawn-result shape foundation's PreparedBundle.spawn
     # assembles into the REAL backend reader: no explicit verdict, but a
@@ -185,7 +190,7 @@ async def test_never_fabricates_a_verdict_when_child_asserts_none(
     )
 
     assert reply == "All done, looks great!"
-    assert hooks.completion["metadata"] == {}
+    assert_no_fabricated_verdict(hooks.completion["metadata"])
 
 
 @pytest.mark.asyncio
@@ -199,7 +204,7 @@ async def test_exception_emits_incomplete_and_reraises(monkeypatch: pytest.Monke
         await orchestrator.execute("do the work", None, {}, {}, hooks, coordinator=None)
 
     assert hooks.completion["status"] == "incomplete"
-    assert hooks.completion["metadata"] == {}
+    assert_no_fabricated_verdict(hooks.completion["metadata"])
 
 
 @pytest.mark.asyncio
@@ -256,7 +261,7 @@ async def test_shutdown_failure_does_not_mask_original_exception(
 
     assert captured["engine"].shutdown_called is True
     assert hooks.completion["status"] == "incomplete"
-    assert hooks.completion["metadata"] == {}
+    assert_no_fabricated_verdict(hooks.completion["metadata"])
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +290,7 @@ async def test_empty_reply_with_clean_lifecycle_still_succeeds(
     )
 
     assert reply == ""
-    assert hooks.completion["metadata"] == {}
+    assert_no_fabricated_verdict(hooks.completion["metadata"])
     assert hooks.completion["status"] == "success"
 
 

@@ -48,6 +48,13 @@ amplifier-module-loop-pipeline = { path = "../loop-pipeline", editable = true }
 # suite (see that module's README, "Why this exists"). Editable so the test
 # always runs the working tree's kit.
 amplifier-worker-parity-kit = { path = "../worker-parity-kit", editable = true }
+# Test-only, same-repo path source: tests/test_child_session_telemetry.py
+# drives the REAL, SHIPPED SessionEventPersister (EXTENSIONS.md Sec 26)
+# through this adapter's `_attach_child_session_telemetry`. Deliberately NOT
+# a runtime dependency -- the adapter lazy-imports the persister and no-ops
+# when it is absent (that module arrives with the pipeline that mounts it),
+# so pinning it here as a hard dep would make an optional seam mandatory.
+amplifier-module-hooks-pipeline-observability = { path = "../hooks-pipeline-observability", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_module_loop_amplifier_agent"]
@@ -62,6 +69,7 @@ dev = [
     "pytest-asyncio>=1.0.0",
     "amplifier-module-loop-pipeline",
     "amplifier-worker-parity-kit",
+    "amplifier-module-hooks-pipeline-observability",
 ]
 
 [tool.pytest.ini_options]

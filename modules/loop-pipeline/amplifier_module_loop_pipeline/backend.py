@@ -818,9 +818,7 @@ class AmplifierBackend:
             # _prepared.py spawn()).
             spawn_outcome = _outcome_from_spawn_result(result)
             if spawn_outcome is not None:
-                session_id = (
-                    result.get("session_id") if isinstance(result, dict) else None
-                )
+                session_id = _session_id_from_spawn_result(result)
                 if session_id:
                     spawn_outcome.session_id = session_id
                 # support#498: a recovered (non-explicit) outcome (e.g.
@@ -860,7 +858,9 @@ class AmplifierBackend:
         # Capture session_id from spawn result for status.json observability.
         # session_id is kept on the Outcome for telemetry/debugging — it no longer
         # drives continuity (that role belongs to _thread_transcripts).
-        session_id = result.get("session_id") if isinstance(result, dict) else None
+        # See _session_id_from_spawn_result for why the spawn result's own id is
+        # not always the id the node's events.jsonl is filed under.
+        session_id = _session_id_from_spawn_result(result)
         if session_id:
             outcome.session_id = session_id
 
@@ -1390,6 +1390,51 @@ _SPAWN_SUCCESS_STATUSES = frozenset(
         StageStatus.PARTIAL_SUCCESS.value,
     }
 )
+
+
+#: ORCHESTRATOR_COMPLETE metadata key by which a worker whose REAL work runs
+#: in a session other than the spawned one names that session (EXTENSIONS.md
+#: Sec 26).  Kept as a literal, not imported: `loop-amplifier-agent` -- the
+#: only worker that sets it today -- is an OPTIONAL peer of this module (its
+#: own README's Python-version note; the dot-runner bundle does not include
+#: it), so importing its constant here would invert the dependency.  The
+#: canonical definition is
+#: ``amplifier_module_loop_amplifier_agent.WORKER_SESSION_ID_METADATA_KEY``.
+_WORKER_SESSION_ID_METADATA_KEY = "worker_session_id"
+
+
+def _session_id_from_spawn_result(result: Any) -> str | None:
+    """The session id whose ``events.jsonl`` this node's telemetry is in.
+
+    For every worker that does its work IN the spawned session (loop-agent,
+    the direct worker), that is the spawn result's own ``session_id`` -- the
+    kernel id foundation returns, unchanged from before.
+
+    ``loop-amplifier-agent`` is the exception, and it is why this function
+    exists: it hosts a SECOND, self-built amplifier-agent session, and every
+    provider and tool event belongs to THAT one.  The spawn result's
+    ``session_id`` is still a real id, but it names the adapter session --
+    which emits lifecycle brackets only.  A worker that knows it is in this
+    position reports the real one in its completion metadata; when it does,
+    that wins, so ``status.json`` names the stream that actually holds the
+    evidence instead of an empty sibling.
+
+    Observability ONLY.  Nothing in ``metadata`` is read as a verdict here or
+    anywhere downstream: WAVE 5 (2026-08-30) removed the one verdict key this
+    envelope ever had, ``_outcome_from_spawn_result`` still reads ``status``
+    and nothing else, and a recovered Outcome is still ``is_explicit=False``.
+    """
+    if not isinstance(result, dict):
+        return None
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict):
+        reported = metadata.get(_WORKER_SESSION_ID_METADATA_KEY)
+        if isinstance(reported, str) and reported:
+            return reported
+    session_id = result.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        return session_id
+    return None
 
 
 def _outcome_from_spawn_result(result: Any) -> Outcome | None:

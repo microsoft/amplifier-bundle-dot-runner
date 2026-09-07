@@ -33,6 +33,24 @@ fresh Engine, hand it the (already-contract-carrying) prompt, run one turn,
 and return the reply -- files and ``status.json`` are the channel, not a
 tool call this module has to police.
 
+TELEMETRY (2026-09-07): the hosted amplifier-agent session is a SECOND,
+independent ``ModuleCoordinator`` with its OWN hook registry -- it is not the
+spawned adapter session, and nothing composed into the adapter's bundle
+reaches it.  EXTENSIONS.md Sec 26's session-event persister therefore never
+saw a single event from the worker that actually does the work: the node's
+``sessions/<id>/events.jsonl`` carried the adapter's own lifecycle brackets
+and nothing else, so a finished run could not answer "how many LLM calls,
+how many tokens, how much money?" for an ``amplifier-agent`` node at all
+(measured: node-matrix run ``20260907T043835Z``, rows ``aa-anthropic-default``
+and ``aa-gpt5-medium`` -- both PASS, both unmeasured).  ``_attach_child_
+session_telemetry`` closes that: it mounts the SHIPPED persister onto the
+hosted session's registry, so the child's own events land under the same
+``<logs>/<node>/sessions/<id>/events.jsonl`` layout every other worker uses,
+and it carries the hosted session's id up through the completion envelope so
+``status.json``'s ``session_id`` names the stream that actually exists.  See
+that method for the ``llm:response`` -> ``provider:response`` translation the
+hosted orchestrator's own event vocabulary makes necessary.
+
 RECURSION GUARD: an agent entry that uses this orchestrator must declare
 ``session.orchestrator.module: loop-amplifier-agent`` (non-None, and not
 ``loop-pipeline``) in the pipeline's agent config, exactly like loop-agent
@@ -58,7 +76,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from amplifier_core.events import ORCHESTRATOR_COMPLETE
+from amplifier_core.events import LLM_RESPONSE, ORCHESTRATOR_COMPLETE, PROVIDER_RESPONSE
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +127,21 @@ DEFAULT_PROVIDER = "anthropic"
 #: pairs with.
 DEFAULT_APPROVAL_POLICY = "accept"
 VALID_APPROVAL_POLICIES = frozenset({"accept", "deny"})
+
+#: ORCHESTRATOR_COMPLETE metadata key carrying the HOSTED amplifier-agent
+#: session's id up to the parent (``backend.py``'s
+#: ``_session_id_from_spawn_result``), so ``status.json``'s ``session_id``
+#: names the session whose ``events.jsonl`` was actually written.
+#:
+#: NOT a verdict channel.  WAVE 5 (2026-08-30) removed the only
+#: verdict-carrying key this envelope ever had and the 2026-09-06 owner ruling
+#: deleted the residual parameter that could still have populated it; nothing
+#: here reopens that.  ``_outcome_from_spawn_result`` reads ``status`` and
+#: nothing else, an Outcome recovered from a spawn result is still
+#: ``is_explicit=False``, and a ``goal_gate`` node still cannot be satisfied by
+#: anything in this dict.  This key is read on exactly ONE line, to set
+#: ``Outcome.session_id`` -- an observability join key, never an outcome.
+WORKER_SESSION_ID_METADATA_KEY = "worker_session_id"
 
 
 async def mount(coordinator: Any, config: dict[str, Any] | None = None) -> None:
@@ -246,6 +279,14 @@ class AmplifierAgentOrchestrator:
         if coordinator is not None:
             self._coordinator = coordinator
 
+        # Resolved HERE, not inside _run_turn, for one reason: every exit path
+        # -- including the exception path below, which can fire before a single
+        # amplifier-agent object exists -- owes the parent the SAME id that
+        # keys the hosted session's persisted event stream. Computing it once,
+        # up front, is what makes "status.json names the stream that exists"
+        # true on the failure paths too, not just the happy one.
+        engine_session_id = self._resolve_engine_session_id()
+
         try:
             # Session continuity (support#497): the parent dot-pipeline backend
             # delivers prior-turn history as ``parent_messages``; the foundation
@@ -260,13 +301,17 @@ class AmplifierAgentOrchestrator:
             # get_messages() raises still emits the ORCHESTRATOR_COMPLETE
             # envelope the spawn boundary is owed -- like every other exit path.
             history = await self._history_from_context(context)
-            reply = await self._run_turn(prompt, history=history)
+            reply = await self._run_turn(
+                prompt, history=history, engine_session_id=engine_session_id
+            )
         except Exception:
             # A raised exception means the invocation never completed --
             # still owes the spawn boundary an envelope (mirrors loop-agent's
             # own cancelled/incomplete handling), but must NOT promote a
             # partial/absent report as a verdict.
-            await self._emit_completion(hooks, status="incomplete")
+            await self._emit_completion(
+                hooks, status="incomplete", worker_session_id=engine_session_id
+            )
             raise
 
         # WAVE 4 (maintainer ruling 2026-08-29) retired this adapter's
@@ -283,7 +328,9 @@ class AmplifierAgentOrchestrator:
         # tools, `handlers/codergen.py`'s `read_status_override` (running in
         # the PARENT process, after this method returns) picks it up --
         # entirely outside this adapter's control or knowledge.
-        await self._emit_completion(hooks, status="success")
+        await self._emit_completion(
+            hooks, status="success", worker_session_id=engine_session_id
+        )
         return reply
 
     @staticmethod
@@ -315,6 +362,7 @@ class AmplifierAgentOrchestrator:
         hooks: Any,
         *,
         status: str,
+        worker_session_id: str | None = None,
     ) -> None:
         """Emit the single ORCHESTRATOR_COMPLETE envelope for an invocation.
 
@@ -324,12 +372,19 @@ class AmplifierAgentOrchestrator:
         (``backend.py::_outcome_from_spawn_result``) needs no adapter-specific
         branch.
 
-        ``metadata`` is always ``{}``: WAVE 5 (2026-08-30) removed the only
-        verdict-carrying key this envelope ever had, and the 2026-09-06 owner
-        ruling deleted the residual parameter that could still have populated
-        it. This adapter never fabricates a verdict.
+        ``metadata`` carries exactly ONE key, and it is not a verdict:
+        ``worker_session_id`` (see ``WORKER_SESSION_ID_METADATA_KEY``), the
+        HOSTED amplifier-agent session's id. The parent's spawn result reports
+        the ADAPTER session's id -- a real id, but the wrong one: the adapter
+        session emits lifecycle brackets only, while every provider and tool
+        event lives in the hosted session. Without this key, ``status.json``
+        named a stream with no telemetry in it while the stream that had the
+        telemetry went unnamed. WAVE 5's removal of the verdict key stands:
+        nothing here is read as an outcome (see the constant's docstring).
         """
         metadata: dict[str, Any] = {}
+        if worker_session_id:
+            metadata[WORKER_SESSION_ID_METADATA_KEY] = worker_session_id
         await hooks.emit(
             ORCHESTRATOR_COMPLETE,
             {
@@ -346,7 +401,10 @@ class AmplifierAgentOrchestrator:
         )
 
     async def _run_turn(
-        self, prompt: str, history: list[dict[str, Any]] | None = None
+        self,
+        prompt: str,
+        history: list[dict[str, Any]] | None = None,
+        engine_session_id: str | None = None,
     ) -> str:
         """Boot a fresh Engine, run exactly one turn, return the reply text.
 
@@ -436,14 +494,6 @@ class AmplifierAgentOrchestrator:
         max_turns = cfg.get("max_turns")
         reasoning_effort = cfg.get("reasoning_effort")
         user_instructions = cfg.get("user_instructions")
-        # Continuity optimization (feat/agent-always-installed, WAVE 6):
-        # amplifier_module_loop_pipeline.backend threads the ALREADY-RESOLVED
-        # fidelity="full" thread key through the SAME public orchestrator_
-        # config seam llm_provider/max_turns/user_instructions already use
-        # (see that module's "_run_with_spawn" -- it sets this key right
-        # alongside spawn_kwargs["parent_messages"]). A public, documented
-        # seam: no reach into loop-pipeline internals, no new protocol.
-        thread_key = cfg.get("thread_key")
 
         working_dir = self._resolve_working_dir()
 
@@ -549,18 +599,22 @@ class AmplifierAgentOrchestrator:
         )
 
         async def handler(ctx: Any) -> str:
-            session_id = ctx.session_id or None
-            # v2 (gap 5): mint a fresh id for a one-shot run (this adapter
-            # always submits with no incoming session id -- see the
-            # engine.submit_turn call below) so hooks.set_default_fields has
-            # a non-empty session_id to stamp. Mirrors make_turn_handler's
-            # identical ephemeral-id fallback and its rationale: the
-            # context-intelligence LoggingHandler drops any event whose
-            # session_id default field is empty.
-            engine_session_id = session_id or f"ephemeral-{uuid.uuid4().hex}"
+            # v2 (gap 5): hooks.set_default_fields needs a non-empty
+            # session_id to stamp (the context-intelligence LoggingHandler
+            # drops any event whose session_id default field is empty).
+            #
+            # 2026-09-07: the fallback is now the id THIS invocation already
+            # resolved and already reported upward, not a fresh
+            # `ephemeral-<uuid4>`. A random fallback could only ever produce
+            # an id the parent has never heard of -- i.e. a persisted stream
+            # at a path status.json does not name, which is the exact defect
+            # this change exists to close. In practice submit_turn always
+            # passes a real sessionId (below), so both sides agree; when it
+            # somehow does not, they still agree.
+            hosted_session_id = ctx.session_id or engine_session_id
 
             session = await prepared.create_session(
-                session_id=engine_session_id,
+                session_id=hosted_session_id,
                 session_cwd=working_dir,
                 # amplifier-agent docs/INTEGRATION.md:155,158,322-324,366-367
                 # (fresh clone, commit 66d5896): continuity is keyed on
@@ -585,9 +639,16 @@ class AmplifierAgentOrchestrator:
             # gap 5: stamp session_id/turn_id as default event fields so
             # every tool/llm/execution event this turn emits is attributed.
             session.coordinator.hooks.set_default_fields(
-                session_id=engine_session_id,
+                session_id=hosted_session_id,
                 turn_id=ctx.turn_id,
             )
+
+            # Telemetry (2026-09-07): mount the pipeline's session-event
+            # persister onto THIS session's registry. Must come after
+            # set_default_fields above -- the persister keys its output
+            # directory off each event's own `session_id` field, and an
+            # unstamped event is one it drops.
+            self._attach_child_session_telemetry(session.coordinator)
 
             session.coordinator.register_capability("display.emit", ctx.display.emit)
 
@@ -669,11 +730,15 @@ class AmplifierAgentOrchestrator:
         # this is an ADDITIVE optimization layer: if `thread_key` is absent
         # (fidelity != "full", or a caller that predates this key), behavior
         # is UNCHANGED (a fresh ephemeral id every turn).
-        engine_session_id = (
-            f"dot-runner-thread-{_slugify_thread_key(thread_key)}"
-            if thread_key
-            else f"engine-{uuid.uuid4().hex}"
-        )
+        #
+        # 2026-09-07: the derivation itself moved to
+        # ``_resolve_engine_session_id`` and is now normally computed by
+        # ``execute()`` BEFORE this method is called, so the id that reaches
+        # the completion envelope (and hence status.json) is the same one on
+        # every exit path -- including the one where this method raises. The
+        # fallback below keeps ``_run_turn`` callable on its own.
+        if engine_session_id is None:
+            engine_session_id = self._resolve_engine_session_id()
         is_resumed = bool(history)
         init_params = {
             "protocolVersion": deps.PROTOCOL_VERSION,
@@ -722,6 +787,163 @@ class AmplifierAgentOrchestrator:
         if isinstance(cap_val, str) and cap_val:
             return Path(cap_val)
         return Path(os.getcwd())
+
+    def _resolve_engine_session_id(self) -> str:
+        """Derive the id of the HOSTED amplifier-agent session for this turn.
+
+        Continuity optimization (feat/agent-always-installed, WAVE 6):
+        ``amplifier_module_loop_pipeline.backend`` threads the ALREADY-RESOLVED
+        fidelity="full" thread key through the SAME public
+        ``orchestrator_config`` seam ``llm_provider`` / ``max_turns`` /
+        ``user_instructions`` already use (see that module's
+        ``_run_with_spawn`` -- it sets this key right alongside
+        ``spawn_kwargs["parent_messages"]``). A public, documented seam: no
+        reach into loop-pipeline internals, no new protocol.
+
+        A present ``thread_key`` makes this turn derive the SAME sessionId a
+        later revisit of the same thread will derive, satisfying
+        amplifier-agent's own (workspace, sessionId) continuity contract;
+        absent it, a fresh per-invocation id. Unchanged behavior -- extracted
+        from ``_run_turn`` only so ``execute()`` can resolve it once, up
+        front, and report the same id on every exit path.
+        """
+        thread_key = self._config.get("thread_key")
+        if thread_key:
+            return f"dot-runner-thread-{_slugify_thread_key(thread_key)}"
+        return f"engine-{uuid.uuid4().hex}"
+
+    def _attach_child_session_telemetry(self, coordinator: Any) -> None:
+        """Persist the HOSTED session's own events under the pipeline run.
+
+        THE DEFECT THIS CLOSES. EXTENSIONS.md Sec 26's persister reaches a
+        worker session by riding the PARENT bundle through
+        ``PreparedBundle.spawn``'s composition. That composition ends at the
+        ADAPTER session -- the one this orchestrator is mounted into. The
+        session that actually calls the model and the tools is a SECOND
+        coordinator this adapter builds itself from amplifier-agent's own
+        bundle (``prepared.create_session``), with its own registry that no
+        composition ever touched. So the node's ``sessions/`` directory held
+        the adapter's lifecycle brackets and nothing else, and an
+        ``amplifier-agent`` node's cost was structurally unmeasurable
+        (node-matrix ``20260907T043835Z``: two PASSing rows, zero token
+        evidence). Registering the SHIPPED persister here -- the same class,
+        the same curated event set, the same write-time redaction -- is what
+        makes the child's stream land at
+        ``<logs>/<node>/sessions/<id>/events.jsonl``, the identical layout the
+        collector already reads for every other worker. One persister, one
+        layout, one source of truth.
+
+        THE TRANSLATION, AND WHY IT IS SCOPED HERE. The two workers speak
+        different event vocabularies for the same fact:
+
+          * ``loop-agent`` (the coding-agent worker) emits BOTH
+            ``provider:request`` and ``provider:response`` itself, and puts
+            the provider's usage block on the latter
+            (``agent_session.py``: ``emit(PROVIDER_RESPONSE, {"usage":
+            usage_data})``).
+          * ``loop-streaming`` (the orchestrator inside amplifier-agent's
+            baked-in bundle) emits ``provider:request`` and
+            ``provider:error`` -- and never imports ``PROVIDER_RESPONSE`` at
+            all. Its usage rides on ``content_block:end``, which Sec 26
+            deliberately excludes as UI cadence.
+
+        The usage itself is not missing: the provider MODULE emits it, on its
+        own ``llm:response`` event, with the exact ``#69`` schema the
+        collector reads (``input_tokens`` / ``output_tokens`` /
+        ``cache_read_tokens`` / ``cache_write_tokens`` / ``cost_usd``, the
+        cost computed by the provider's own ``_cost.py`` price table). So this
+        registers a translation, not a fabrication: on ``llm:response`` with a
+        usage block, re-emit the canonical ``provider:response`` the
+        observability contract names, forwarding ``usage`` VERBATIM.
+
+        It is registered HERE, on the hosted session only, and deliberately
+        NOT inside ``hooks-pipeline-observability`` -- because in a loop-agent
+        worker BOTH events fire for a single call, and a bridge living in the
+        shared persister would double every coding-agent row's tokens and
+        cost. The precondition for translating is "this orchestrator provably
+        does not emit ``provider:response``", which is a fact about the hosted
+        runtime, so the bridge belongs where that fact is known.
+
+        ``provider:request`` is NOT bridged for the mirror-image reason:
+        loop-streaming already emits one per LLM call, and ``llm:request``
+        would double the call count.
+
+        KNOWN LIMIT: a grandchild session (the hosted agent's own ``delegate``
+        spawns) gets its own coordinator, which this does not reach -- its
+        events are not persisted under the node. Same boundary as every other
+        worker; named here rather than discovered later.
+
+        Never fatal: an absent persister module, or a registry without
+        ``register``, logs once and leaves the turn untouched -- the same
+        both-sides-optional posture Sec 26's seam already documents.
+        """
+        hooks = getattr(coordinator, "hooks", None)
+        register = getattr(hooks, "register", None)
+        if not callable(register):
+            logger.warning(
+                "loop-amplifier-agent: hosted session's hook registry exposes "
+                "no register() -- child session events will NOT be persisted "
+                "under this node (EXTENSIONS.md Sec 26). Registry: %r",
+                hooks,
+            )
+            return
+
+        try:
+            from amplifier_module_hooks_pipeline_observability.session_events import (
+                PERSISTED_SESSION_EVENTS,
+                SessionEventPersister,
+            )
+        except ImportError:
+            # The observability module is not a dependency of this adapter --
+            # it arrives with the pipeline that mounts it. Outside a pipeline
+            # (a bare unit test, a foreign host) there is nothing to persist
+            # to, which is not an error.
+            logger.info(
+                "loop-amplifier-agent: hooks-pipeline-observability not "
+                "importable -- child session events not persisted."
+            )
+            return
+
+        persister = SessionEventPersister()
+        for event_name in PERSISTED_SESSION_EVENTS:
+            register(
+                event_name,
+                persister.make_handler(event_name),
+                name=f"loop_amplifier_agent_session_events:{event_name}",
+            )
+
+        async def _bridge_llm_response(
+            event: str | None = None, data: dict[str, Any] | None = None
+        ) -> None:
+            """``llm:response`` -> canonical ``provider:response``.
+
+            Forwards the provider module's own usage block unchanged. Skips a
+            failed call (``status != "ok"``) and a response with no usage:
+            loop-streaming already emits ``provider:error`` for the former,
+            and a synthesized empty-usage record would read to the collector
+            as a real call that cost nothing.
+            """
+            payload = data or {}
+            if payload.get("status") not in (None, "ok"):
+                return
+            usage = payload.get("usage")
+            if not isinstance(usage, dict) or not usage:
+                return
+            bridged: dict[str, Any] = {"usage": usage}
+            for key in ("provider", "model", "duration_ms"):
+                value = payload.get(key)
+                if value is not None:
+                    bridged[key] = value
+            try:
+                await coordinator.hooks.emit(PROVIDER_RESPONSE, bridged)
+            except Exception:  # never break the turn for observability
+                logger.debug("provider:response bridge emit failed", exc_info=True)
+
+        register(
+            LLM_RESPONSE,
+            _bridge_llm_response,
+            name="loop_amplifier_agent_provider_response_bridge",
+        )
 
     def _resolve_parent_provider_preference(self) -> tuple[str, str] | None:
         """Recover the parent's resolved ``provider_preferences`` (gap 4), if any.
