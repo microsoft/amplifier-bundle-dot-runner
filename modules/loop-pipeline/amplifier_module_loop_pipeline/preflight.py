@@ -45,6 +45,7 @@ import os
 from collections.abc import Collection, Mapping
 
 from .graph import Graph, Node
+from .provider_instances import provider_instance_ids
 
 # Env var name per provider.  Mirrors (deliberately, with a cross-reference)
 # ``amplifier_module_pipeline_runner.runner.PROVIDER_KEY_ENV`` -- the runner
@@ -299,6 +300,23 @@ def check_provider_preflight(
     if not failures:
         return
 
+    # Sec 36 addendum (2026-09-07): a refused name is very often a CONFIGURED
+    # PROVIDER INSTANCE id (`terra`, `luna` -- `amplifier provider list`),
+    # not a typo. The old message listed neither address space, so the only
+    # move it left a human was to go hunting for a misspelling they had not
+    # made. Name the instances this host actually configures.
+    instance_ids = provider_instance_ids()
+    instance_hint = (
+        "\nConfigured provider instances on this host (address one by "
+        f"declaring its id as llm_provider): {', '.join(instance_ids)}. "
+        "An instance is only mounted when this run NAMES it -- via a node's "
+        "llm_provider or the run's --provider flag."
+        if instance_ids
+        else "\nNo provider instances are configured in this host's "
+        "Amplifier settings (config.providers[].id), so no instance id is "
+        "addressable on this run."
+    )
+
     raise ProviderPreflightError(
         "PROVIDER PREFLIGHT FAILED -- refusing to start the pipeline "
         "(issue #155, EXTENSIONS.md section 36). The following nodes declare "
@@ -312,5 +330,5 @@ def check_provider_preflight(
         "Fix: mount a provider/profile for each provider named above and set "
         "its credential env var, or change the node's llm_provider. "
         "Degrading to fewer providers must be an explicit graph/bundle "
-        "change, never a silent fallback."
+        "change, never a silent fallback." + instance_hint
     )

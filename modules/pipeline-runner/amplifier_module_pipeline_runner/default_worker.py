@@ -119,11 +119,17 @@ VERBATIM by both seams, never duplicated:
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
+import yaml
+
 from amplifier_module_loop_pipeline.workers.registry import RENAMED_WORKER_NAMES
+
+from amplifier_module_loop_pipeline import provider_instances
 
 from . import provider_detection, runner
 
@@ -422,8 +428,86 @@ def amplifier_agent_available() -> bool:
     return _worker_available(AMPLIFIER_AGENT_NAME)
 
 
+def selected_provider_instances(
+    dot_source: str | None = None,
+    *,
+    run_provider: str | None = None,
+    instances: Mapping[str, provider_instances.ProviderInstance] | None = None,
+) -> dict[str, provider_instances.ProviderInstance]:
+    """Configured provider INSTANCES this run actually addresses.
+
+    An instance id is only mounted when the run NAMES it -- either a node
+    declares ``llm_provider="<id>"`` (the conservative DOT scan in
+    ``provider_detection.explicitly_requested_providers``) or the run-level
+    ``--provider <id>`` flag selects it.  Mounting every configured instance
+    on every run would load a dozen provider modules (and probe a dozen
+    credentials) for a pipeline that asked for none of them.
+
+    A name that collides with a MODULE name in
+    ``provider_detection.PROVIDER_SPECS`` (e.g. someone naming an instance
+    ``openai``) is left to the module table: that address already resolves,
+    and silently re-pointing it at an instance would change what an existing
+    graph means.
+
+    Args:
+        dot_source: Raw DOT text for this run, or ``None``.
+        run_provider: The run-level ``--provider`` value, or ``None``.
+        instances: Pre-loaded instance map (hermetic tests); defaults to
+            :func:`provider_instances.load_provider_instances`.
+
+    Returns:
+        ``{instance_id: ProviderInstance}``, empty when the run names none.
+    """
+    requested = set(provider_detection.explicitly_requested_providers(dot_source))
+    if run_provider:
+        requested.add(run_provider)
+    requested -= set(provider_detection.PROVIDER_SPECS)
+    if not requested:
+        return {}
+    available = (
+        instances if instances is not None else provider_instances.load_provider_instances()
+    )
+    return {name: available[name] for name in sorted(requested) if name in available}
+
+
+def _instance_yaml_block(instance: provider_instances.ProviderInstance) -> str:
+    """One ``providers:`` entry mounting *instance* under its own id.
+
+    ``instance_id`` is amplifier-core's own multi-instance seam
+    (``amplifier_core._session_init``: the provider self-mounts at its
+    module's default name, then core REMAPS the mount to ``instance_id``).
+    Mounting through it is what makes ``providers["terra"]`` exist in the
+    spawned child, which is the exact key ``loop-agent`` looks the node's
+    ``llm_provider`` up in.  Config is emitted via ``yaml.safe_dump`` rather
+    than f-string interpolation: an api_key or base_url is arbitrary text
+    and must not be able to break out of the YAML it is embedded in.
+    """
+    lines = [f"  - module: {instance.module}"]
+    if instance.source:
+        lines.append(f"    source: {instance.source}")
+    # json.dumps, not yaml.safe_dump: dumping a bare SCALAR emits a full
+    # YAML document ("terra\n...\n"), whose "..." end-marker breaks the
+    # surrounding document. JSON is a YAML subset, so a JSON-quoted string
+    # is both valid here and injection-proof.
+    lines.append(f"    instance_id: {json.dumps(instance.id)}")
+    if instance.config:
+        # FLOW style, on ONE line, deliberately: a block-style dump has to be
+        # re-indented into this bundle, and re-indenting a multi-line scalar
+        # silently folds its newlines into spaces (a base_url or key
+        # containing a newline came back mangled). One line cannot be
+        # re-indented wrong.
+        dumped = yaml.safe_dump(
+            dict(instance.config), default_flow_style=True, width=10**9
+        ).strip()
+        lines.append(f"    config: {dumped}")
+    return "\n".join(lines)
+
+
 def _synthesize_agent_bundle_yaml(
-    worker_name: str, *, dot_source: str | None = None
+    worker_name: str,
+    *,
+    dot_source: str | None = None,
+    run_provider: str | None = None,
 ) -> str:
     """Return the minimal bundle YAML text wiring *worker_name*'s adapter as
     the run's spawn orchestrator.
@@ -456,8 +540,19 @@ def _synthesize_agent_bundle_yaml(
     # time (naming the actual gap) rather than an opaque "no profile"
     # failure for a name this synthesis never learned about.
     providers = sorted(provider_detection.PROVIDER_SPECS)
+    # Provider INSTANCE routing (EXTENSIONS.md Sec 36 addendum 2026-09-07):
+    # a configured instance id this run NAMES is a fourth address alongside
+    # the module table, and needs BOTH halves or it fails in a different
+    # place: a profiles entry (or `backend.py`'s exact-or-nothing profile
+    # lookup refuses the node) AND a real mounted provider under that same
+    # id (or `loop-agent`'s `providers[explicit]` lookup refuses it). Both
+    # are emitted here, from the one resolved map, so they cannot drift.
+    selected_instances = selected_provider_instances(
+        dot_source, run_provider=run_provider
+    )
     profile_lines = "\n".join(
-        f"        {provider}: {DEFAULT_AGENT_NAME}" for provider in providers
+        f"        {provider}: {DEFAULT_AGENT_NAME}"
+        for provider in [*providers, *sorted(selected_instances)]
     )
 
     # issue #338 fix: mount a REAL provider module for every provider the
@@ -472,22 +567,42 @@ def _synthesize_agent_bundle_yaml(
     # (native three + github-copilot/openai-chatgpt, per their own probes --
     # see provider_detection.py) rather than just the native three.
     configured = _detect_configured_providers(dot_source=dot_source)
-    if not configured:
+    if not configured and not selected_instances:
         supported = "; ".join(
             f"{name} ({provider_detection.credential_hint(name)})"
             for name in provider_detection.PROVIDER_SPECS
         )
+        configured_instances = provider_instances.provider_instance_ids()
+        instance_hint = (
+            f" This run also names no configured provider instance; the "
+            f"instances your Amplifier settings do configure are: "
+            f"{', '.join(configured_instances)}."
+            if configured_instances
+            else ""
+        )
         raise runner.NoProviderConfiguredError(
             f"--worker {worker_name!r} needs a mounted LLM provider, but no "
             "supported credential is configured in the environment. "
-            f"Configure one of: {supported}. This is the SAME fail-loud "
-            "check the `direct` worker's own provider bootstrap uses "
-            "(runner._bootstrap_direct_provider) for the native three -- "
+            f"Configure one of: {supported}.{instance_hint} This is the SAME "
+            "fail-loud check the `direct` worker's own provider bootstrap "
+            "uses (runner._bootstrap_direct_provider) for the native three -- "
             "never a silent empty provider mount."
         )
+    # Instance entries come AFTER the module entries deliberately: a child
+    # that declares NO llm_provider falls back to `next(iter(providers))`
+    # (loop-agent), so prepending an instance would silently change the
+    # default provider of every node in an unrelated graph.
     provider_lines = "\n".join(
-        f"  - module: provider-{name}\n    source: {_PROVIDER_MODULE_SOURCES[name]}"
-        for name in configured
+        [
+            *(
+                f"  - module: provider-{name}\n    source: {_PROVIDER_MODULE_SOURCES[name]}"
+                for name in configured
+            ),
+            *(
+                _instance_yaml_block(selected_instances[name])
+                for name in sorted(selected_instances)
+            ),
+        ]
     )
 
     # Live-gate fix (see _TOOL_MODULE_SOURCES): mount a REAL tool surface.
@@ -561,7 +676,12 @@ def synthesize_default_agent_bundle_yaml() -> str:
     return _synthesize_agent_bundle_yaml(AMPLIFIER_AGENT_NAME)
 
 
-def write_agent_bundle(worker_name: str, *, dot_source: str | None = None) -> Path:
+def write_agent_bundle(
+    worker_name: str,
+    *,
+    dot_source: str | None = None,
+    run_provider: str | None = None,
+) -> Path:
     """Write *worker_name*'s synthesized bundle YAML to a fresh temp file.
 
     A dedicated temp directory (mirrors ``cli.py``'s own
@@ -576,7 +696,9 @@ def write_agent_bundle(worker_name: str, *, dot_source: str | None = None) -> Pa
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"dot-runner-{worker_name}-"))
     bundle_path = tmp_dir / "bundle.yaml"
     bundle_path.write_text(
-        _synthesize_agent_bundle_yaml(worker_name, dot_source=dot_source),
+        _synthesize_agent_bundle_yaml(
+            worker_name, dot_source=dot_source, run_provider=run_provider
+        ),
         encoding="utf-8",
     )
     return bundle_path
@@ -604,7 +726,10 @@ class WorkerResolutionError(RuntimeError):
 
 
 def _resolve_or_raise(
-    *, worker: str | None, dot_source: str | None = None
+    *,
+    worker: str | None,
+    dot_source: str | None = None,
+    run_provider: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Core resolution ladder -- shared VERBATIM by :func:`resolve` (CLI)
     and :func:`resolve_for_library` (library seam), never duplicated.
@@ -660,7 +785,11 @@ def _resolve_or_raise(
 
     if worker is not None and worker in _ADAPTER_REGISTRY:
         if _worker_available(worker):
-            return None, str(write_agent_bundle(worker, dot_source=dot_source))
+            return None, str(
+                write_agent_bundle(
+                    worker, dot_source=dot_source, run_provider=run_provider
+                )
+            )
         adapter_module, probe_module, _source, _orch_module = _ADAPTER_REGISTRY[worker]
         if worker == AMPLIFIER_AGENT_NAME:
             # WAVE 6: amplifier-agent is an unconditional dependency of the
@@ -690,7 +819,11 @@ def _resolve_or_raise(
     # choice" state.
     if _worker_available(AMPLIFIER_AGENT_NAME):
         return worker, str(
-            write_agent_bundle(AMPLIFIER_AGENT_NAME, dot_source=dot_source)
+            write_agent_bundle(
+                    AMPLIFIER_AGENT_NAME,
+                    dot_source=dot_source,
+                    run_provider=run_provider,
+                )
         )
 
     # WAVE 7 (feat/fail-loud-worker-names): FAIL LOUD, never degrade. A
@@ -706,7 +839,11 @@ def _resolve_or_raise(
 
 
 def resolve(
-    *, worker: str | None, prog: str = "dot-runner", dot_source: str | None = None
+    *,
+    worker: str | None,
+    prog: str = "dot-runner",
+    dot_source: str | None = None,
+    run_provider: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Resolve this run's effective ``(worker, bundle)`` pair -- CLI seam.
 
@@ -724,14 +861,19 @@ def resolve(
     library-seam counterpart that raises instead of exiting.
     """
     try:
-        return _resolve_or_raise(worker=worker, dot_source=dot_source)
+        return _resolve_or_raise(
+            worker=worker, dot_source=dot_source, run_provider=run_provider
+        )
     except WorkerResolutionError as exc:
         print(f"{prog}: {exc}", file=sys.stderr)
         raise SystemExit(1) from None
 
 
 def resolve_for_library(
-    *, worker: str | None = None, dot_source: str | None = None
+    *,
+    worker: str | None = None,
+    dot_source: str | None = None,
+    run_provider: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Resolve this run's effective ``(worker, bundle)`` pair -- LIBRARY seam.
 
@@ -752,4 +894,6 @@ def resolve_for_library(
     silently landing on the text-only ``llm-direct`` worker (the
     2026-08-30 wiki-weaver incident this fix closes).
     """
-    return _resolve_or_raise(worker=worker, dot_source=dot_source)
+    return _resolve_or_raise(
+        worker=worker, dot_source=dot_source, run_provider=run_provider
+    )
