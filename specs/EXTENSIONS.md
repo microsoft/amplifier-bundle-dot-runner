@@ -817,6 +817,73 @@ avoids brittle full-stdout matching (the canonical "prose-vs-JSON" hazard).
 
 **Compatibility:** Additive — `tool.output` and existing tool routing are unchanged.
 
+*Addendum (2026-09-07, issue #64 / support#506 / support#507, owner ruling): **A `tool_env` NAME
+THAT IS NOT A POSIX IDENTIFIER IS NOW REFUSED — AT LINT AND AT STARTUP PREFLIGHT.** The clause
+above says `tool_env` "injects env vars for the command". For a dotted context key it did not:
+the handler uppercases each declared name, so `tool_env="human.gate.text"` was exported as
+`HUMAN.GATE.TEXT`, which is not a POSIX environment-variable name. `tool_command` runs through
+`/bin/sh` via `create_subprocess_shell`, and **dash DROPS an environment entry whose name is not
+an identifier before exec'ing the child**. The command ran with the value absent, exited 0, and
+the node reported SUCCESS. Measured on `/bin/sh -> dash`, the repro graph
+(`printenv 'HUMAN.GATE.TEXT' > captured.txt`) produced `OUTCOME: success` and a **0-byte**
+`captured.txt`. The shell asymmetry is why it survived undetected — bash PRESERVES such an entry,
+so the same graph works on one host and silently loses the value on another:*
+
+```
+$ env "HUMAN.GATE.TEXT=v" /bin/dash -c 'printenv "HUMAN.GATE.TEXT" || echo DROPPED'
+DROPPED
+$ env "HUMAN.GATE.TEXT=v" /bin/bash -c 'printenv "HUMAN.GATE.TEXT" || echo DROPPED'
+v
+```
+
+*A contributor diagnosed this precisely and fixed it in PR #41 by ALSO exporting a **sanitized
+twin** name (dots → underscores, both forms emitted during a rollout window), ledgered as a new
+section 20.1. That PR was reverted in #68 and **the owner declined to widen section 20 that way**.
+Two reasons, both about what the graph MEANS rather than about the diff:*
+
+- ***Sanitization invents a name the graph never wrote.*** `HUMAN_GATE_TEXT` appears in the
+  subprocess environment though no author typed it. The graph's declared vocabulary and the
+  subprocess's actual vocabulary then disagree, permanently — and every future reader has to know
+  a transformation rule that lives only in the engine to reconcile them.
+- ***Dual emission makes the disagreement load-bearing.*** Two names for one value means a
+  consumer can depend on either, so the engine can never stop emitting either. A rollout-window
+  convenience becomes a permanent second address space for the same data.
+
+*There is no legitimate outcome behind a name that cannot become an environment variable: the
+author either meant a valid key (a typo worth one clear error) or meant something this engine
+cannot do (also worth one clear error). Substituting a name and saying nothing is the one answer
+that is never right — the same fail-closed doctrine as section 36's provider preflight, reached
+here by a punctuation character instead of a missing credential.*
+
+***What changed, exactly.*** *Every name declared in `tool_env` must match `[A-Za-z_][A-Za-z0-9_]*`
+(IEEE Std 1003.1 "Environment Variables"; deliberately ASCII-only, since a name that survives
+`.upper()` as non-ASCII is no more exportable than a dotted one). A name that does not is refused
+on **two** surfaces, both naming the node, the attribute, the offending name and the fix:*
+
+- *`validate()`'s `tool_env_posix_identifier` rule, ERROR severity — so `dot-runner lint` exits 1
+  and every validating run refuses. Deliberately in `validate()`, not among the lint-only
+  TOPO/CMD/VOCAB rules, because a lint-only WARNING would leave the silent-loss path open.*
+- *`preflight.check_tool_env_names`, unconditional at both entry points
+  (`PipelineOrchestrator.execute` and `drive_engine`) — so `validate=False` does not reopen it.
+  Zero nodes execute; the incident's empty output file is never created.*
+
+*The two surfaces and the handler share ONE splitter (`graph.parse_tool_env_names` /
+`non_identifier_tool_env_names`), so what is refused is exactly what would have been exported —
+they cannot drift into disagreeing about what a given attribute says. The refusal message SHOWS a
+valid spelling; **the engine never applies one**. That distinction is the whole ruling.*
+
+***Scope.*** *EVERY node declaring `tool_env`, not only nodes whose handler resolves to `tool`.
+Unlike `tool_command` — where the question is a handler MISMATCH — an unexportable name is invalid
+wherever it is read, so no handler-type subtlety applies. Root graph only, matching the section 36
+preflight's documented scope: a nested `dot_file` child's nodes are not visible at startup, and are
+caught by linting that child file directly.*
+
+***Compatibility.*** *Still additive, and no working graph changes behavior: a name this rule
+refuses could never have reached the command under `/bin/sh` in the first place. The one shipped
+`tool_env` call site in this repo (`fixture_tool_reads_param.dot`, `tool_env="content"`) is
+unaffected, as is every dot-free name. The consumer-side fix — renaming the context keys to valid
+identifiers — is resolver-dot-graph#142, which this ruling makes **required** rather than optional.*
+
 ## 21. Variable Expansion Beyond `$goal`: `$param` and `${key}`
 
 **What:** Prompt/attribute substitution supports `$param` and `${key}` forms in addition to the
