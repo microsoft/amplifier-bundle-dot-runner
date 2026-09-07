@@ -21,6 +21,12 @@ Three things can silently break that, and each gets a test here:
 3. **The preflight gets weakened to make CI green.**  The shipped preflight
    script is EXECUTED here, against an empty environment, and must exit
    non-zero naming the missing secret.
+4. **The judge quietly stops being a second family.**  Every judge pin in
+   this repo exists so the critic is INDEPENDENT of the maker.  Pin the maker
+   onto the judge's own provider module and that independence is gone -- with
+   nothing on the surface to show it, because both attributes still read like
+   deliberate pins.  This test does not forbid the collapse (which pin is
+   right is an owner call); it forbids the collapse being SILENT.
 
 No third-party imports (PyYAML included): this file runs under the
 ``capsule-pipeline-scripts`` CI job, which is deliberately stdlib-only.  The
@@ -68,6 +74,17 @@ GPT5_PIN = re.compile(r"gpt-(?:5[.\d]*(?![.\w-]*-(?:terra|luna))|\[5-9\])")
 LLM_MODEL_ATTR = re.compile(r'llm_model\s*=\s*"([^"]*)"')
 LLM_PROVIDER_ATTR = re.compile(r'llm_provider\s*=\s*"([^"]*)"')
 SETTINGS_INSTANCE_ID = re.compile(r"^\s*- id:\s*(\S+)\s*$", re.MULTILINE)
+#: `- id: luna` followed (within the same entry) by `module: provider-openai`.
+#: The workflow is the ONLY place that says which MODULE an instance id mounts,
+#: which is what makes "same family" a checkable fact rather than a belief.
+SETTINGS_ID_MODULE = re.compile(
+    r"^\s*- id:\s*(\S+)\s*$\n(?:^\s+\S.*$\n)*?^\s*module:\s*(\S+)\s*$",
+    re.MULTILINE,
+)
+
+#: The literal a graph must carry, in a comment, when its maker and its judge
+#: end up on ONE provider module.  Chosen to be greppable and un-typo-able.
+JUDGE_FAMILY_ACK = "JUDGE-FAMILY COLLAPSE"
 
 
 def strip_dot_comments(source: str) -> str:
@@ -235,6 +252,64 @@ class PreflightStillFailsLoud(unittest.TestCase):
                 live = strip_dot_comments((HERE / dot).read_text(encoding="utf-8"))
                 for inst in set(LLM_PROVIDER_ATTR.findall(live)) - PROVIDER_MODULES:
                     self.assertIn(f"- id: {inst}", written)
+
+
+class JudgeFamilyCollapseIsNeverSilent(unittest.TestCase):
+    """Test 4 -- maker and judge on one module is stated, or it is a defect.
+
+    Pinned in BOTH directions on purpose.  A collapse with no acknowledgement
+    is the silent failure this guards.  An acknowledgement with no collapse is
+    the other half of the same rot: a stale note that teaches a future reader
+    something false about the graph in front of them, and that makes the
+    marker worthless as a signal the next time it is true.
+    """
+
+    def _instance_modules(self, workflow: str) -> dict[str, str]:
+        script = workflow_preflight_script(workflow)
+        return {i: m for i, m in SETTINGS_ID_MODULE.findall(script)}
+
+    def test_same_module_maker_and_judge_is_acknowledged_in_the_graph(self) -> None:
+        for dot, workflow in SHIPPED_PAIRS.items():
+            with self.subTest(dot=dot, workflow=workflow):
+                raw = (HERE / dot).read_text(encoding="utf-8")
+                live = strip_dot_comments(raw)
+                declared = [
+                    p
+                    for p in LLM_PROVIDER_ATTR.findall(live)
+                    if p not in PROVIDER_MODULES
+                ]
+                modules = self._instance_modules(workflow)
+                unknown = sorted(set(declared) - set(modules))
+                self.assertEqual(
+                    unknown,
+                    [],
+                    f"{dot} declares instance(s) {unknown} whose module "
+                    f"{workflow} never states -- 'same family' cannot be "
+                    f"checked, so it would be assumed. Define them.",
+                )
+                collapsed = len(declared) > 1 and len({modules[p] for p in declared}) == 1
+                acknowledged = JUDGE_FAMILY_ACK in raw
+                if collapsed:
+                    self.assertTrue(
+                        acknowledged,
+                        f"{dot} pins {len(declared)} nodes "
+                        f"({sorted(set(declared))}) that ALL mount module "
+                        f"{modules[declared[0]]!r}: the maker and the judge "
+                        f"are now the SAME model family, so the judge is no "
+                        f"longer independent of the maker -- the entire "
+                        f"reason a judge pin exists. That may be the right "
+                        f"call, but it may not be an UNSTATED one: the graph "
+                        f"must carry a dated {JUDGE_FAMILY_ACK!r} comment "
+                        f"saying so where the next reader will find it.",
+                    )
+                else:
+                    self.assertFalse(
+                        acknowledged,
+                        f"{dot} carries a {JUDGE_FAMILY_ACK!r} note but its "
+                        f"pins do NOT collapse onto one module (declared: "
+                        f"{sorted(set(declared))}). A stale acknowledgement "
+                        f"teaches the next reader something false; remove it.",
+                    )
 
 
 if __name__ == "__main__":  # pragma: no cover
