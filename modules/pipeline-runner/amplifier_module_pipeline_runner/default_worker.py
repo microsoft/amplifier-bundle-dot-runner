@@ -473,14 +473,28 @@ def selected_provider_instances(
 def _instance_yaml_block(instance: provider_instances.ProviderInstance) -> str:
     """One ``providers:`` entry mounting *instance* under its own id.
 
-    ``instance_id`` is amplifier-core's own multi-instance seam
-    (``amplifier_core._session_init``: the provider self-mounts at its
-    module's default name, then core REMAPS the mount to ``instance_id``).
-    Mounting through it is what makes ``providers["terra"]`` exist in the
-    spawned child, which is the exact key ``loop-agent`` looks the node's
-    ``llm_provider`` up in.  Config is emitted via ``yaml.safe_dump`` rather
-    than f-string interpolation: an api_key or base_url is arbitrary text
-    and must not be able to break out of the YAML it is embedded in.
+    TWO id keys, because two different layers each own one and neither
+    reads the other's:
+
+    * ``instance_id`` is amplifier-core's own multi-instance seam
+      (``amplifier_core._session_init``: the provider self-mounts at its
+      module's default name, then core REMAPS the mount to ``instance_id``).
+      Mounting through it is what makes ``providers["terra"]`` exist in the
+      spawned child, which is the exact key ``loop-agent`` looks the node's
+      ``llm_provider`` up in.
+    * ``id`` is what ``amplifier_foundation.spawn_utils`` keys its mount-plan
+      lookups on (``_find_provider_index``/``_build_provider_lookup`` index
+      ``p.get("id")``; ``_spec_for_instance`` reads ``spec.get("id")``).
+      Without it the node's ``llm_model`` never lands: the backend sends the
+      resolved model as a ``ProviderPreference(provider="terra", ...)``, and
+      that preference is silently dropped when no mount-plan entry answers
+      to ``terra`` -- so the instance would run on whatever ``default_model``
+      its settings happen to carry, no matter what the node declared.
+
+    Both name the same instance and are emitted from the same field, so they
+    cannot drift apart.  Config is emitted via ``yaml.safe_dump`` rather than
+    f-string interpolation: an api_key or base_url is arbitrary text and must
+    not be able to break out of the YAML it is embedded in.
     """
     lines = [f"  - module: {instance.module}"]
     if instance.source:
@@ -489,6 +503,7 @@ def _instance_yaml_block(instance: provider_instances.ProviderInstance) -> str:
     # YAML document ("terra\n...\n"), whose "..." end-marker breaks the
     # surrounding document. JSON is a YAML subset, so a JSON-quoted string
     # is both valid here and injection-proof.
+    lines.append(f"    id: {json.dumps(instance.id)}")
     lines.append(f"    instance_id: {json.dumps(instance.id)}")
     if instance.config:
         # FLOW style, on ONE line, deliberately: a block-style dump has to be

@@ -18,7 +18,13 @@ from typing import Any
 
 from amplifier_core.events import ORCHESTRATOR_COMPLETE
 
-from .agent_session import KNOWN_PROVIDERS, AgentSession, canonical_provider
+from .agent_session import (
+    KNOWN_PROVIDERS,
+    AgentSession,
+    canonical_provider,
+    mounted_provider_default_model,
+    mounted_provider_module_name,
+)
 from .config import SessionConfig
 from .steering import FollowUpQueue, SteeringQueue
 from .subagent_tools import SubagentManager
@@ -231,7 +237,10 @@ class AgentOrchestrator:
         self._follow_up_queue.follow_up(message)
 
     def _resolve_base_prompt(
-        self, config_dict: dict[str, Any], provider_name: str
+        self,
+        config_dict: dict[str, Any],
+        provider_name: str,
+        provider_module_name: str | None = None,
     ) -> str:
         """Resolve the Layer-1 base prompt with a 4-step precedence.
 
@@ -285,38 +294,54 @@ class AgentOrchestrator:
         # _resolve_provider_default_prompt), else (5) a known SUBSCRIPTION
         # provider defaults to the generic toolset prompt, else (6) unknown
         # provider fail-loud (unchanged for any other unrecognized name).
-        canonical = canonical_provider(provider_name)
-        if canonical is not None:
-            return _resolve_provider_default_prompt(canonical)
+        #
+        # INSTANCE IDS (EXTENSIONS.md Sec 36 addendum, 2026-09-07). The mount
+        # KEY is not always a module name. A configured provider INSTANCE is
+        # mounted under its own id -- `terra`, `luna` -- via amplifier-core's
+        # `instance_id` remap, and `canonical_provider("terra")` is None, so
+        # this chain used to fail loud on a perfectly valid instance and the
+        # node could never run at all. The Layer-1 base prompt is a property
+        # of the MODEL FAMILY, never of the mount alias, so the same chain is
+        # re-run against the mounted provider's OWN declared module name
+        # (`OpenAIProvider.name == "openai"`), which the caller reads off the
+        # live provider object. A module-named mount is unaffected: rung one
+        # resolves and the second candidate is never consulted.
+        for candidate in (provider_name, provider_module_name):
+            if not candidate:
+                continue
+            canonical = canonical_provider(candidate)
+            if canonical is not None:
+                return _resolve_provider_default_prompt(canonical)
 
-        fallback_profile = _SUBSCRIPTION_PROVIDER_DEFAULT_PROMPT_PROFILE.get(
-            (provider_name or "").lower()
-        )
-        if fallback_profile is not None:
-            # Subscription providers (github-copilot/openai-chatgpt) are not
-            # one of KNOWN_PROVIDERS by design (they proxy multiple model
-            # families / use OAuth, not an API key -- see agent_session.py's
-            # _DISTINCT_COMPOUND_PROVIDERS for "openai-chatgpt"), so they
-            # would otherwise always hit the fail-loud branch below. Default
-            # them to the generic toolset prompt instead -- zero new config
-            # required; an explicit prompt_profile/system_prompt/
-            # system_prompt_file above still wins for anyone who wants a
-            # different toolset.
-            logger.info(
-                "loop-agent: provider %r is not one of the known providers "
-                "%s -- defaulting Layer-1 base prompt to the generic %r "
-                "toolset profile (set prompt_profile explicitly to choose "
-                "a different one).",
-                provider_name,
-                KNOWN_PROVIDERS,
-                fallback_profile,
+            fallback_profile = _SUBSCRIPTION_PROVIDER_DEFAULT_PROMPT_PROFILE.get(
+                candidate.lower()
             )
-            return _resolve_provider_default_prompt(fallback_profile)
+            if fallback_profile is not None:
+                # Subscription providers (github-copilot/openai-chatgpt) are not
+                # one of KNOWN_PROVIDERS by design (they proxy multiple model
+                # families / use OAuth, not an API key -- see agent_session.py's
+                # _DISTINCT_COMPOUND_PROVIDERS for "openai-chatgpt"), so they
+                # would otherwise always hit the fail-loud branch below. Default
+                # them to the generic toolset prompt instead -- zero new config
+                # required; an explicit prompt_profile/system_prompt/
+                # system_prompt_file above still wins for anyone who wants a
+                # different toolset.
+                logger.info(
+                    "loop-agent: provider %r is not one of the known providers "
+                    "%s -- defaulting Layer-1 base prompt to the generic %r "
+                    "toolset profile (set prompt_profile explicitly to choose "
+                    "a different one).",
+                    candidate,
+                    KNOWN_PROVIDERS,
+                    fallback_profile,
+                )
+                return _resolve_provider_default_prompt(fallback_profile)
 
         raise RuntimeError(
             f"loop-agent cannot select a Layer-1 base prompt: no "
             f"system_prompt or system_prompt_file is configured, and the "
-            f"provider {provider_name!r} is not one of the known providers "
+            f"provider {provider_name!r} (mounted from module "
+            f"{provider_module_name!r}) is not one of the known providers "
             f"{KNOWN_PROVIDERS} (so no default context/system-<provider>.md "
             f"applies). Set an explicit system_prompt_file or prompt_profile "
             f"in session.orchestrator.config, or run under a known provider. "
@@ -431,12 +456,30 @@ class AgentOrchestrator:
             else:
                 provider_name = next(iter(providers.keys()))
 
+            provider = providers[provider_name]
+            # The mounted provider's OWN module name -- read off the live
+            # object, not inferred from the mount key. For a module-named
+            # mount it repeats provider_name; for an INSTANCE mount
+            # ("terra") it is the family that instance is OF ("openai").
+            # Both the Layer-1 base prompt and the persisted provider
+            # events need it (EXTENSIONS.md Sec 36 addendum).
+            provider_module_name = mounted_provider_module_name(provider)
+            # The model this session will actually call: an explicit config
+            # `model` wins; otherwise the mounted provider's own configured
+            # default -- which, for an instance, is the `default_model` its
+            # settings entry carries (`gpt-5.6-terra`). Reported only; the
+            # provider still chooses its own model exactly as before.
+            session_model = (
+                self._config.get("model")
+                or mounted_provider_default_model(provider)
+                or ""
+            )
+
             config_dict["system_prompt"] = self._resolve_base_prompt(
-                config_dict, provider_name
+                config_dict, provider_name, provider_module_name
             )
 
             config = SessionConfig.from_dict(config_dict)
-            provider = providers[provider_name]
 
             # Merge subagent lifecycle tools into the tools dict
             all_tools = dict(tools)
@@ -480,6 +523,8 @@ class AgentOrchestrator:
                 follow_up_queue=self._follow_up_queue,
                 coordinator=self._coordinator,
                 provider_name=provider_name,
+                provider_module_name=provider_module_name,
+                model=session_model,
                 # support#497: the mounted context (Orchestrator protocol's
                 # `context` param). For a fidelity="full" spawn, foundation's
                 # spawn path seeds prior-turn messages onto THIS session's own
