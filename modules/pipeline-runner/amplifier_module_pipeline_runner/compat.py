@@ -103,13 +103,22 @@ _REQUIRED_ENGINE_SYMBOLS: list[tuple[str, str]] = [
     # and that keyword landed in the SAME engine commit (ccbd89f, PR #280), so
     # probing the symbol is a faithful proxy for the signature.
     ("amplifier_module_loop_pipeline", "_spawn_resolvable_agents"),
+    # drive_engine() imports check_provider_selection_attrs to refuse a graph
+    # whose LLM nodes declare a NON-CANONICAL provider-selection attribute
+    # (provider= instead of llm_provider=, etc.) -- inert names that select
+    # nothing and let the run silently take the default provider.  Without this
+    # entry a stale engine turns that import into a bare ImportError mid-
+    # startup; with it, the runner names the required engine and the reinstall
+    # command instead.
+    ("amplifier_module_loop_pipeline.preflight", "check_provider_selection_attrs"),
 ]
 
 # Human-readable minimum description for the actionable error message.
 _ENGINE_MIN_DESCRIPTION = (
     "engine with remote_dot support (commit bc6cbec or later, PR #96) and the "
     "shared spawn-resolver / resolvable_profiles preflight argument "
-    "(commit ccbd89f or later, PR #280)"
+    "(commit ccbd89f or later, PR #280) and the non-canonical "
+    "provider-selection-attribute preflight (check_provider_selection_attrs)"
 )
 
 

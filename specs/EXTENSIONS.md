@@ -4265,3 +4265,155 @@ deliberately NOT built now, on this repo's minimum-viable-change rule.
   `_HOOK_MODULE_SOURCES` gains `hooks-tool-truncation`
 - Tests: `modules/loop-agent/tests/test_context_bounding.py` (new),
   `modules/pipeline-runner/tests/test_synthesized_bundle_hooks.py` (extended)
+
+---
+
+## 46. Node-Declared Provider/Model/Effort Reach the Spawned Child (Silent-Substitution Repair)
+
+> **depends-on:** Section 36 (provider preflight -- this closes the third mode of the same
+> silent-substitution class Section 36 named two modes of), Section 40 (`worker=` selection --
+> `llm_provider` picks the model family, `worker=` picks the mechanism; this entry makes the
+> first half of that sentence true on the spawn path).
+>
+> **upstream action:** not applicable -- the canonical spec DEFINES the three attributes
+> (Section 2.6 `:160-162`, Appendix A `:2018-2020`, Section 8.6's stylesheet grammar `:1460`
+> all name exactly `llm_model` / `llm_provider` / `reasoning_effort`) and Section 4.5
+> delegates backend internals to the implementer. Honoring a defined attribute is a
+> conform-fix, not an extension; the refusal in change 2 is implementer-level configuration
+> validation on a surface the spec is silent about. No spec change is needed and no
+> conformant graph changes meaning.
+
+**Classification: change 1 is a CONFORM-FIX (a spec-defined node attribute was not honored);
+change 2 is an implementer-level fail-closed refusal on a spec-silent surface.**
+
+### The measured problem
+
+A node's declared provider/model/effort never reached the spawned child. Read-only evidence,
+`node-matrix` run `20260907T043835Z` (`RESULTS.md`, `ca-gpt5-{low,medium,high}/`): three
+variants declared `llm_provider="openai" llm_model="gpt-5" reasoning_effort=low|medium|high`
+and **all three ran on Anthropic claude-sonnet-5**. Proof in the runs' own events: 139/139,
+148/148, 159/159 responses carry `cache_creation_input_tokens`/`cache_read_input_tokens`
+(keys only `provider-anthropic` emits), a least-squares fit of each row's `usage.cost_usd`
+against its token counts returns $3.00/M in, $15.00/M out, $0.30/M cache-read -- sonnet
+pricing -- and `reasoning_tokens` is 0 on every response in all four rows. The engine emitted
+no warning of any kind; every row reported `status=success`.
+
+The same defect is why `.github/capsule-pipeline/capsule.dot`'s `critique` node -- the ONE
+judgment node, pinned `llm_provider="openai" llm_model="gpt-[5-9]*"` deliberately so the
+judge does not share the maker's model family -- has been running on the maker's family
+(anthropic) in every capsule run since the 0.2.0 worker-surface flip. The attribute names on
+that node are the canonical ones and always were; nothing was misspelled. The claim in
+`.github/workflows/capsule-specify.yml`'s preflight comment ("that attribute flows straight
+through the named-worker path ... honored by coding-agent's adapter directly") and in
+`.github/capsule-pipeline/README.md` delta 1 was true of the code's *intent* and false of its
+behavior. `capsule.dot` is NOT edited by this entry: the pin was always correct; it simply
+had no effect.
+
+### Root cause -- a two-key seam, values delivered to the key nobody mounts
+
+The engine's backend was never wrong. `AmplifierBackend._run_with_spawn` computes the node's
+provider/model/effort and passes them as `orchestrator_config=` (plus
+`provider_preferences=`) to the `session.spawn` capability, which forwards them to
+`PreparedBundle.spawn`. That method merges `orchestrator_config` into a **top-level**
+`mount_plan["orchestrator"]["config"]`. The orchestrator a spawned pipeline node actually
+mounts is declared at `mount_plan["session"]["orchestrator"]` -- a different key, which that
+merge never touches.
+
+Measured at `5562a78`, one `--worker coding-agent` run of a node declaring
+`llm_provider="openai" llm_model="gpt-5" reasoning_effort="medium"`, printed from inside
+`PreparedBundle.spawn` and from inside `loop-agent`'s own provider selection:
+
+```
+PROBE-BACKEND   oc={'reasoning_effort': 'medium', 'llm_provider': 'openai'}
+PROBE-PLAN2     top_orch     = {'config': {'reasoning_effort': 'medium',
+                                           'llm_provider': 'openai'}}
+                session_orch = {'module': 'loop-agent', 'config':
+                                {worker, profiles, dot_source, logs_root,
+                                 'llm_provider': 'anthropic'}}
+PROBE-LOOPAGENT cfg_keys=['dot_source','llm_provider','logs_root','profiles','worker']
+                llm_provider='anthropic'
+```
+
+Every per-node value the engine sends over that channel -- `llm_provider`,
+`reasoning_effort`, `max_turns`, `user_instructions`, `thread_key` -- was therefore inert,
+and the child ran on whatever the synthesized agent bundle declared: `default_worker.
+_synthesize_agent_bundle_yaml`'s `llm_provider: anthropic`, a literal present since that
+file's first commit (`58875e8`) and never revisited. Both spawn-capable workers read the
+config from the same place, so BOTH `coding-agent` and `amplifier-agent` were affected
+(`loop-agent/__init__.py:409`, `loop-amplifier-agent/__init__.py`'s `cfg.get("llm_provider")`).
+
+Note what the failure was NOT: `loop-agent` has carried a fail-loud refusal for a
+non-mounted declared provider since Bug B, and it never fired -- because the value it
+examined was always the bundle's own `anthropic`, which IS mounted. A fail-loud guard on the
+wrong value is silent by construction.
+
+### What (two changes, one doctrine)
+
+1. **Deliver the per-node config on the channel the child reads**
+   (`pipeline-runner/runner.py`, `apply_orchestrator_config`, applied in `make_spawn_fn`'s
+   `spawn_capability`). The overlay writes `orchestrator_config` onto the child bundle's own
+   `session.orchestrator.config` before `prepared.spawn` composes it. Non-mutating: ONE
+   resolved agent `Bundle` is cached per agent name and reused by every node, so an in-place
+   write would leak one node's provider onto the next -- the same silent-substitution class,
+   one layer down. Applied AFTER `child_constraint` so a caller-supplied constraint cannot
+   drop it. Fail-loud when the agent bundle carries no inline `session.orchestrator` mapping,
+   rather than spawning a child that would silently ignore its node.
+
+   The upstream `orchestrator_config=` argument is still passed. It is inert today, costs
+   nothing, and means both channels agree automatically if that seam is ever repaired
+   upstream. This repair deliberately lives on this repo's own side of the seam: it needs no
+   upstream release, and it is the runner that owns `session.spawn` here.
+
+2. **Refuse a non-canonical provider-selection attribute at startup**
+   (`loop-pipeline/preflight.py`, `check_provider_selection_attrs`, wired into BOTH engine
+   entry points exactly as `check_provider_preflight` is). A node writing `provider="openai"`
+   or `model="gpt-5"` reads to every human as a deliberate model choice and is read by
+   nothing: the run takes the default provider and reports success. That is Section 36's Mode
+   B silent substitution reached by a typo instead of by a missing profile, and it gets the
+   same answer -- refuse before any node executes, naming the node, the attribute, and the
+   canonical attribute to write instead.
+
+   Deliberately a CURATED alias table (`PROVIDER_SELECTION_ALIASES`), not "any unknown
+   attribute": the nlspec's node-attribute surface is open by design (Section 2.6 passes
+   unrecognized attributes through, and Section 40's own `worker=` is an additive attribute),
+   so refusing every unknown name would break conformant graphs. Only names that *look like*
+   provider selection -- and could therefore be believed to work -- are policed. Scope
+   mirrors `check_provider_preflight`: root graph, LLM node types only, static, no live call.
+   Unlike the serviceability check it is NOT gated on `backend is None`: it makes no claim
+   about what the run can serve, so it is equally true for an injected/mock backend.
+
+### Behavior change (intended)
+
+A graph that previously "worked" by silently running its declared provider on a different
+provider now runs on the provider it declared -- and a run whose declared provider is
+unserviceable fails loud at Section 36's preflight instead of quietly succeeding on the
+default. Two consequences worth stating plainly rather than discovering later: a
+dual-family-critique pipeline that has actually been single-family becomes genuinely
+dual-family (and now requires the second family's credential to start), and cost/latency for
+any such node moves to the declared model's real economics.
+
+### Evidence
+
+Live, same micro-graph, same command, before and after (`--worker coding-agent`, node
+declaring `openai`/`gpt-5`/`medium`), reading each run's own `provider:response` usage:
+
+| | before | after |
+|---|---|---|
+| `cache_creation_input_tokens` | present on every response (anthropic-only key) | absent |
+| `reasoning_tokens` | `null` | `1024`, then `576` |
+| served family | anthropic | openai |
+
+**Implementation locations:**
+
+- `modules/pipeline-runner/amplifier_module_pipeline_runner/runner.py` --
+  `apply_orchestrator_config` + its application in `make_spawn_fn`
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/preflight.py` --
+  `PROVIDER_SELECTION_ALIASES`, `check_provider_selection_attrs`
+- `modules/loop-pipeline/amplifier_module_loop_pipeline/__init__.py` -- orchestrator wiring
+  (step 5a)
+- `modules/pipeline-runner/amplifier_module_pipeline_runner/runner.py` -- `drive_engine` wiring
+- `modules/pipeline-runner/amplifier_module_pipeline_runner/compat.py` -- new required-symbol
+  entry so a stale engine names itself instead of raising a bare `ImportError`
+- Tests (both RED-proofed):
+  `modules/pipeline-runner/tests/test_node_provider_honored_on_spawn.py`,
+  `modules/loop-pipeline/tests/test_provider_selection_attrs_preflight.py`
