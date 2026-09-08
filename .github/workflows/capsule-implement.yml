@@ -381,10 +381,9 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/capsule-implement/logs"
-          # --on-human-gate auto-approve is REQUIRED for unattended runs:
-          # the CLI default 'fail' crashes at the `escalate` hexagon.
-          # auto-approve answers with its FIRST option, [A] Abandon -- the
-          # declared fail-safe (option order is load-bearing).
+          # CI supplies no Interviewer. The documented 'fail' policy reaches
+          # the handler without one, which records a valid evidence-backed
+          # escalation or refuses an unevidenced gate with canonical FAIL.
           #
           # DETACHED ENGINE: --project points at the $RUNNER_TEMP snapshot
           # taken before any maker touched the tree (root form). --cwd,
@@ -395,7 +394,7 @@ jobs:
             --worker coding-agent \
             --cwd "$GITHUB_WORKSPACE" \
             --logs-root "$RUNNER_TEMP/capsule-implement/logs" \
-            --on-human-gate auto-approve \
+            --on-human-gate fail \
             --param task_file="$GITHUB_WORKSPACE/${{ steps.locate.outputs.capsule_md }}" \
             --param target_dir="$GITHUB_WORKSPACE" \
             --param max_iterations=6 \

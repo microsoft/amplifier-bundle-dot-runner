@@ -430,7 +430,7 @@ jobs:
             --worker coding-agent \
             --cwd "$GITHUB_WORKSPACE" \
             --logs-root "$RUNNER_TEMP/capsule-run/logs" \
-            --on-human-gate auto-approve \
+            --on-human-gate fail \
             --param issue_file="${{ steps.issue.outputs.file }}" \
             --param criteria_file="${{ steps.criteria.outputs.file }}" \
             --param target_dir="$GITHUB_WORKSPACE" \
