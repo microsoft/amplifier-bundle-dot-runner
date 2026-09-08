@@ -84,6 +84,7 @@ from amplifier_module_loop_pipeline.validation import SHAPE_TO_HANDLER, validate
 # ledger/checks/<this file> -> ledger/checks -> ledger -> repo root
 BUNDLE_ROOT = Path(__file__).parent.parent.parent
 LEDGER_PATH = BUNDLE_ROOT / "ledger" / "rows.yaml"
+VISION_PATH = BUNDLE_ROOT / "docs" / "VISION.md"
 EXTENSIONS_LEDGER = BUNDLE_ROOT / "specs" / "EXTENSIONS.md"
 #: The retired human ledger, frozen: still the dated decision record every
 #: ATX-* / ULM-* / CAL-* id lives in, and still cited by rows via decision.history.
@@ -132,16 +133,22 @@ def _load_ledger() -> list[dict[str, Any]]:
     live implementation of that format wrapped its rows in ``{meta, rows}`` and
     the ambiguity was real.
     """
+    assert VISION_PATH.exists(), (
+        "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
+        f"  The doctrine target is missing: {VISION_PATH}\n"
+        "  Restore it before changing this guard: its mechanical-enforcement "
+        "claim is the reason a missing ledger must fail closed."
+    )
     if not LEDGER_PATH.exists():
         raise AssertionError(
             "SPEC-CONFORMANCE LEDGER FLIP -- LEDGER-INTEGRITY\n"
             f"  The ledger file is missing: {LEDGER_PATH}\n"
             "  This file is NOT optional. It is the executable form of\n"
-            "  docs/SPEC_CONFORMANCE_HISTORY.md and specs/EXTENSIONS.md; skipping\n"
-            "  it would leave every ledgered divergence unasserted while CI stayed\n"
-            "  green. Restore it, or -- if the ledger is being deliberately\n"
-            "  retired -- remove these checks and docs/QUALITY_PROTOCOL.md's\n"
-            "  Layer 2 claim in the same PR.\n"
+            f"  {VISION_PATH.relative_to(BUNDLE_ROOT)}'s claim that "
+            "ledger/rows.yaml plus these checks mechanically enforce the\n"
+            "  doctrine. Skipping it would leave every ledgered divergence\n"
+            "  unasserted while CI stayed green. Restore it, or retire the\n"
+            "  ledger and this enforcement together.\n"
             "  Doing neither means main carries a ledger that lies. That is drift."
         )
     try:
@@ -973,6 +980,25 @@ def test_selfcheck_ledger_shape_is_a_bare_top_level_list():
     )
     assert all(isinstance(r, dict) and "id" in r for r in raw)
     assert raw[0]["id"] == "ATX-M-000"
+
+
+def test_selfcheck_missing_ledger_fails_closed_with_the_vision_doctrine(
+    tmp_path, monkeypatch
+):
+    """The missing-ledger failure stays linked to the doctrine that requires it."""
+    temporary_ledger = tmp_path / "rows.yaml"
+    temporary_ledger.write_text(
+        LEDGER_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    temporary_ledger.unlink()
+    monkeypatch.setattr(sys.modules[__name__], "LEDGER_PATH", temporary_ledger)
+
+    with pytest.raises(AssertionError, match="LEDGER-INTEGRITY") as exc_info:
+        _load_ledger()
+
+    message = str(exc_info.value)
+    assert str(VISION_PATH.relative_to(BUNDLE_ROOT)) in message
+    assert "ledger/rows.yaml plus these checks mechanically enforce" in message
 
 
 def test_selfcheck_indexed_cite_resolution_rejects_dangling_cites():
