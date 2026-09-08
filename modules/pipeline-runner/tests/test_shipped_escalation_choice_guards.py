@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 import unified_llm
-
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.dot_parser import parse_dot
 from amplifier_module_loop_pipeline.engine import PipelineEngine
@@ -24,8 +23,8 @@ from amplifier_module_loop_pipeline.pipeline_events import (
     PIPELINE_NODE_COMPLETE,
     PIPELINE_NODE_START,
 )
-from amplifier_module_pipeline_runner import cli
 
+from amplifier_module_pipeline_runner import cli
 
 REPO = Path(__file__).resolve().parents[3]
 GRAPHS = REPO / ".github" / "capsule-pipeline"
