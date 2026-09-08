@@ -1,0 +1,1 @@
+{"stage":"feature","outcome":"partial_met","exit_code":14,"comment_contains":"re-scope the criteria block (edit it in place; same owner) and re-apply the label.","finding_verbatim":"# Finding: acceptance criteria partially MET at the pinned base SHA","census_rows":["| AC-1 | UNMET |","| AC-2 | MET |","| AC-3 | MET |","| AC-4 | MET |","| AC-5 | UNMET |"]}
