@@ -694,7 +694,8 @@ jobs:
           if [ "$OUTCOME" = "refused_unspecced" ] || \
              [ "$OUTCOME" = "blocked_on_criteria" ] || \
              [ "$OUTCOME" = "escalated" ] || \
-             [ "$OUTCOME" = "green_at_base" ]; then
+             [ "$OUTCOME" = "green_at_base" ] || \
+             [ "$OUTCOME" = "partial_met" ]; then
             python3 .github/capsule-pipeline/outcome_classifier.py comment \
               --outcome "$OUTCOME" \
               --ai-dir "$GITHUB_WORKSPACE/.ai" \

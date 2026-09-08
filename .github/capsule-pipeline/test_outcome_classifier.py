@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,19 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 CLASSIFIER = ROOT / "outcome_classifier.py"
 FIXTURES = ROOT / "fixtures" / "outcome-classifier"
+FINDING_GRAPHS = (
+    ROOT / "capsule.dot",
+    ROOT / "feature-capsule.dot",
+    ROOT / "task-runner.dot",
+)
+FINDING_NODE_FIXTURES = {
+    "write_cant_gate_finding": "escalated",
+    "write_green_finding": "green-at-base",
+    "write_unspecced_finding": "refused-unspecced",
+    "write_blocked_on_criteria": "blocked-on-criteria",
+    "write_partial_finding": "partial-met",
+}
+DEFAULT_OUTCOMES = {"converged", "non_convergence", "fuse"}
 
 
 def load_module():
@@ -68,13 +82,39 @@ class OutcomeClassifierTests(unittest.TestCase):
                     self.assertIn(expected["finding_verbatim"], comment)
                     self.assertIn(run_url, comment)
                     self.assertNotIn("stale-123", comment)
+                    self.assertIsNotNone(outcome.finding)
+                    self.assertIn(
+                        outcome.finding.read_text(encoding="utf-8").rstrip(), comment
+                    )
+                for row in expected.get("census_rows", []):
+                    self.assertIn(row, comment)
+
+    def test_every_terminal_finding_node_maps_to_a_nondefault_outcome(self) -> None:
+        """A graph finding node cannot silently fall through to a default outcome."""
+        seen: set[str] = set()
+        for graph in FINDING_GRAPHS:
+            nodes = set(
+                re.findall(
+                    r"\b(write_(?:[A-Za-z0-9_]*finding|blocked_on_criteria))\b",
+                    graph.read_text(),
+                )
+            )
+            seen.update(nodes)
+            for node in nodes:
+                with self.subTest(graph=graph.name, node=node):
+                    fixture = FINDING_NODE_FIXTURES.get(node)
+                    self.assertIsNotNone(fixture, f"{node} has no classifier mapping")
+                    expected = json.loads((FIXTURES / fixture / "expected.json").read_text())
+                    self.assertNotIn(expected["outcome"], DEFAULT_OUTCOMES)
+
+        self.assertEqual(seen, set(FINDING_NODE_FIXTURES))
 
     def test_cli_writes_outputs_before_returning_nonzero_outcome(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
             ai_dir = tmp_path / ".ai"
-            (ai_dir / "criteria-refusal.md").parent.mkdir(parents=True)
-            (ai_dir / "criteria-refusal.md").write_text("missing ACs\n")
+            (ai_dir / "findings").mkdir(parents=True)
+            (ai_dir / "findings" / "unspecced.md").write_text("missing ACs\n")
             github_output = tmp_path / "github-output"
 
             result = subprocess.run(
@@ -114,3 +154,13 @@ class OutcomeClassifierTests(unittest.TestCase):
             text = workflow.read_text(encoding="utf-8")
             self.assertIn("${{ github.workspace }}/.ai", text)
             self.assertIn("include-hidden-files: true", text)
+
+    def test_every_workflow_dispatches_partial_met_to_its_comment_template(self) -> None:
+        workflows = (
+            ROOT.parent / "workflows" / "capsule-specify.yml",
+            ROOT.parent / "workflows" / "feature-specify.yml",
+            ROOT.parent / "workflows" / "capsule-implement.yml",
+        )
+        for workflow in workflows:
+            with self.subTest(workflow=workflow.name):
+                self.assertIn('[ "$OUTCOME" = "partial_met" ]', workflow.read_text())

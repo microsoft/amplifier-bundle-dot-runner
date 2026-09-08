@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -31,6 +32,7 @@ EXIT_CODES = {
     "refused_unspecced": 11,
     "blocked_on_criteria": 12,
     "escalated": 13,
+    "partial_met": 14,
     "non_convergence": 20,
     "fuse": 21,
 }
@@ -61,10 +63,11 @@ def classify(
     """Return the most specific terminal state represented by run evidence."""
     findings = ai_dir / "findings"
     candidates: Sequence[tuple[str, Path]] = (
-        ("refused_unspecced", ai_dir / "criteria-refusal.md"),
+        ("refused_unspecced", findings / "unspecced.md"),
         ("blocked_on_criteria", findings / "blocked-on-criteria.md"),
         ("escalated", ai_dir / "escalation.md"),
         ("green_at_base", findings / "green-on-main.md"),
+        ("partial_met", findings / "partial-met.md"),
     )
     for name, path in candidates:
         if path.is_file():
@@ -101,10 +104,33 @@ def read_finding(path: Path) -> str:
         raise SystemExit(f"required finding is unreadable: {path}: {error}") from error
 
 
+def census_table(finding: str) -> str:
+    """Render the exact base-census rows from a partial-met finding as a table."""
+    marker = "--- base census (.ai/census) ---"
+    _, separator, remainder = finding.partition(marker)
+    if not separator:
+        raise SystemExit("partial_met finding lacks its base census")
+
+    rows: list[tuple[str, str]] = []
+    for line in remainder.lstrip("\n").splitlines():
+        match = re.fullmatch(r"(AC-\d+(?: \[guard\])?): (MET|UNMET)", line)
+        if match:
+            rows.append(match.groups())
+        elif rows:
+            break
+
+    if not rows:
+        raise SystemExit("partial_met finding has no parseable base-census rows")
+
+    table_rows = "\n".join(f"| {criterion} | {status} |" for criterion, status in rows)
+    return f"| criterion | base result |\n| --- | --- |\n{table_rows}"
+
+
 def render_comment(outcome: str, ai_dir: Path, run_url: str) -> str:
     """Render terminal-outcome comments whose evidence is a finding file."""
+    census = ""
     if outcome == "refused_unspecced":
-        finding = read_finding(ai_dir / "criteria-refusal.md")
+        finding = read_finding(ai_dir / "findings" / "unspecced.md")
         heading = (
             "**Feature specify stage: refused an unspecced feature request before "
             "spending the iteration budget.**"
@@ -147,6 +173,18 @@ def render_comment(outcome: str, ai_dir: Path, run_url: str) -> str:
         )
         label = "Blocked-on-criteria finding (verbatim)"
         finding += questions
+    elif outcome == "partial_met":
+        finding = read_finding(ai_dir / "findings" / "partial-met.md")
+        heading = (
+            "**Pipeline stage: acceptance criteria were partially MET at the "
+            "pinned base commit.**"
+        )
+        action = (
+            "**Next action:** re-scope the criteria block (edit it in place; "
+            "same owner) and re-apply the label."
+        )
+        label = "Partial-met finding (verbatim)"
+        census = f"## Base census\n\n{census_table(finding)}\n\n"
     elif outcome == "escalated":
         finding = read_finding(ai_dir / "escalation.md")
         heading = (
@@ -162,7 +200,8 @@ def render_comment(outcome: str, ai_dir: Path, run_url: str) -> str:
         raise SystemExit(f"no special-outcome comment template for: {outcome}")
 
     return (
-        f"{heading}\n\n{action}\n\n## {label}\n\n{finding}\n\nWorkflow run: {run_url}\n"
+        f"{heading}\n\n{action}\n\n{census}## {label}\n\n{finding}\n\n"
+        f"Workflow run: {run_url}\n"
     )
 
 
