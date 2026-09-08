@@ -138,7 +138,7 @@
 // at the nodes and edges it shaped — not in this header.
 //
 // Invocation (process cwd MUST equal --cwd — primer §6.7/§6.13).
-// --worker coding-agent is REQUIRED for the dual-family critique: as of
+// --worker coding-agent is REQUIRED for the configured-instance pins: as of
 // engine 0.2.0 the named-worker path resolves each node's declared
 // llm_provider natively, so critique_b's llm_provider="luna" -- a
 // CONFIGURED PROVIDER INSTANCE id, not a module name (EXTENSIONS Sec 36
@@ -186,9 +186,10 @@
 //     verify ({"gate": "verify", ...} + budget-exhausted records) and verdict
 //     ({"gate": "critique", "ship", "a", "b"}; an unwritten verdict is
 //     recorded "noverdict", never false).
-//   - DUAL-FAMILY CRITIQUE: two INDEPENDENT reviewers from different model
-//     families run in SEQUENCE (critique -> stamp_a -> critique_b); B never
-//     reads A's output; verdict ships only on consensus. Sequential, not
+//   - TWO-PASS CRITIQUE: two INDEPENDENT reviewers run in SEQUENCE
+//     (critique -> stamp_a -> critique_b); B never reads A's output; verdict
+//     ships only on consensus. They share the configured `luna` instance by
+//     the 2026-09-08 owner ruling. Sequential, not
 //     parallel, deliberately: parallel branches route through run_subgraph's
 //     permissive fail path (engine-semantics.md).
 // ============================================================================
@@ -225,11 +226,18 @@ digraph BacklogTaskRunner {
         tool_command="echo 'FATAL: task_file or its sibling .verify.sh not found' >&2; exit 1"]
 
     // ---------- orient: understand before acting ----------
+    // JUDGE-FAMILY COLLAPSE (2026-09-08 owner ruling): every LLM node is
+    // pinned to the configured `luna` instance, including both critics and
+    // the maker. The two independent-review passes remain, but no longer
+    // provide cross-family independence; do not mistake their distinct nodes
+    // for a family-diversity guarantee.
     orient [shape=box, class="maker",
+        llm_provider="luna", reasoning_effort="high", max_agent_turns="388",
         prompt="You are starting a backlog task. Read the task file at $task_file IN FULL, and the doctrine primer it references (follow the task's own source references). Then survey the current state of the target repository at $target_dir: git status, the files and areas the task names. Write .ai/brief.md containing: (1) the goal in your own words, as an end-state of the world; (2) the definition of done — both the mechanical DoD script and the judgment criteria; (3) the quality dimensions that matter and the risks you foresee; (4) the repo's current state, including any partial or dirty work this run must be robust to. Capture understanding, not a step-by-step plan."]
 
     // ---------- attempt: the maker (inner-loop session continuity) ----------
     attempt [shape=box, class="maker", thread_id="work", fidelity="full",
+        llm_provider="luna", reasoning_effort="high", max_agent_turns="1438",
         prompt="Advance the task's goal. Sources of truth: the task file at $task_file, your brief at .ai/brief.md, and ALL files in .ai/feedback/ — accumulated critique from prior iterations; read them FIRST and address them. If .ai/verify.log exists it holds the DoD script's latest output — if it was failing, fix exactly what it reports. If .ai/postmortem/diagnosis.md exists, honor its change of course. Work in the target repository at $target_dir with your file and shell tools; make real changes; honor the repo's own conventions (AGENTS.md, PR templates, design docs) and the task's stated non-goals. Never fabricate evidence or game the DoD script — your work is verified by code, then critiqued against the task's judgment criteria."]
 
     // ---------- verify: CHEAP deterministic gate (the task's own DoD) ----------
@@ -255,6 +263,7 @@ digraph BacklogTaskRunner {
         tool_command="B=$(cat .ai/budget 2>/dev/null); B=${B:-6}; n=$(cat .ai/iter 2>/dev/null || echo 0); sig=$(tail -20 .ai/verify.log 2>/dev/null | sed -E 's|/tmp/[A-Za-z0-9._-]+|TMPPATH|g; s/[0-9]+\\.[0-9]+s?//g' | md5sum | cut -d' ' -f1); prev=$(cat .ai/last-fail-sig 2>/dev/null || echo none); echo $sig > .ai/last-fail-sig; if [ \"$n\" -ge \"$B\" ]; then printf exhausted; elif [ \"$sig\" = \"$prev\" ]; then printf repeat; else printf novel; fi"]
 
     diagnose [shape=box, class="gate",
+        llm_provider="luna", reasoning_effort="high", max_agent_turns="98",
         prompt="Verification failed twice with the SAME failure signature. Stop patching — find the root cause. Read .ai/verify.log, the task file at $task_file, and the relevant code and docs in $target_dir. Determine what is actually wrong: (a) the current approach, (b) the environment or tooling, (c) the DoD script itself, or (d) the task's assumptions. Write .ai/postmortem/diagnosis.md with the root cause, the evidence, and the single change of course for the next attempt. An attractor absorbs model drift, not deterministic bugs — do not recommend another blind retry. If the blocker cannot be resolved from inside this run (missing access, a genuinely broken DoD script, a contradictory task), include the word BLOCKED on its own line and explain."]
 
     // Clears the failure signature so the post-diagnosis attempt gets one
@@ -283,6 +292,7 @@ digraph BacklogTaskRunner {
     // ceiling is measured, not assumed. Relative path resolves against
     // context.target_dir per §27 (primer §6.18 / engine EXTENSIONS §27).
     critique [shape=box, class="gate", must_write=".ai/critique.md",
+        llm_provider="luna", reasoning_effort="high", max_agent_turns="314",
         prompt="The mechanical DoD script passed. Now judge the work against the task's FULL definition of done — especially the judgment criteria the script cannot check. Read the task file at $task_file, the brief at .ai/brief.md, and review the ACTUAL changes in $target_dir (git diff, new and changed files; .ai/verify.log for what was verified). Apply the doctrine: evidence over claims — verify that claimed evidence is real; no test-gaming or DoD-script-gaming; docs and paired guides updated; repo conventions honored; non-goals respected; exemplar quality where the task demands it. HARD EVIDENCE RULE: a blocking finding MUST include its reproduction re-run against the CURRENT tree in THIS iteration — quote the exact command and its output. A finding carried over from a previous iteration without fresh re-run evidence is not a finding: re-run it first; if it no longer reproduces, say so explicitly and drop it. Your own prior critique is a hypothesis to re-verify, never evidence. Write .ai/critique.md: specific findings with file references, then a final line reading exactly 'VERDICT: SHIP' or 'VERDICT: ITERATE'. Be strict — a wrong-but-plausible result that ships is worse than another iteration."]
 
     // FORGE-STAMP GUARD (T2-7 council, forge-seam close): snapshot
@@ -292,7 +302,7 @@ digraph BacklogTaskRunner {
     // SAME-ROUND OVERWRITE direction: critique's must_write floor passes
     // on A's file, then critic B (or any later actor) rewrites
     // .ai/critique.md ending 'VERDICT: SHIP' and the verdict would read
-    // the forgery as A's verdict — dual-family consensus forged by ONE
+    // the forgery as A's verdict — two-pass consensus forged by ONE
     // actor, no accomplice needed (the B-plants-A inverse of the
     // A-plants-B direction the engine floor closes).
     // HASH, not mtime (mtime is what the floor already spends; a same-
@@ -318,18 +328,17 @@ digraph BacklogTaskRunner {
     stamp_a [shape=parallelogram, class="glue", max_retries=0,
         tool_command="hs=$(sha256sum .ai/critique.md 2>/dev/null) && printf '%s' \"${hs%% *}\" > .ai/critique.hash && printf stamped || { printf nostamp; exit 1; }"]
 
-    // Second, INDEPENDENT reviewer from a different model family. Runs
+    // Second, INDEPENDENT reviewer in a separate session. Runs
     // sequentially after critique (not in parallel — see FILE CONTRACTS). Must not
     // read .ai/critique.md: independence is what makes agreement
     // meaningful. llm_provider names the CONFIGURED PROVIDER INSTANCE
     // `luna` (EXTENSIONS Sec 36 addendum): an instance is a
     // `config.providers[]` entry carrying an `id`, and the engine mounts it
     // under that id and routes a profile to it, so the named-worker path
-    // resolves it natively. `luna` is a provider-openai instance, so the
-    // dual-FAMILY property this node exists for is unchanged (maker =
-    // Anthropic, judge = OpenAI family); what changed on 2026-09-07 is
-    // WHICH OpenAI endpoint/model, per the owner's standing model policy
-    // (EXTENSIONS Sec 36 addendum 4).
+    // resolves it natively. `luna` is a provider-openai instance. Every LLM
+    // node now uses it by the 2026-09-08 owner ruling; the dated
+    // JUDGE-FAMILY COLLAPSE record at orient names the resulting loss of
+    // cross-family independence.
     //
     // NO llm_model, deliberately. The instance's own `default_model`
     // (`gpt-5.6-luna`) stands -- "letting the module default stand is a
@@ -341,7 +350,8 @@ digraph BacklogTaskRunner {
     // forced the engine to resolve a catalog (see the fire-9 note in
     // feature-capsule.dot's critique_fail_class).
     critique_b [shape=box, class="gate", llm_provider="luna", must_write=".ai/critique-b.md",
-        prompt="You are a second, independent reviewer from a DIFFERENT model family than the first reviewer. Do NOT read .ai/critique.md and do NOT assume any other reviewer's conclusions — your value is independent judgment. The mechanical DoD script passed. Judge the work against the task's FULL definition of done — especially the judgment criteria the script cannot check. Read the task file at $task_file, the brief at .ai/brief.md, and review the ACTUAL changes in $target_dir (git diff, new and changed files; .ai/verify.log for what was verified). Apply the doctrine: evidence over claims — verify that claimed evidence is real; no test-gaming or DoD-script-gaming; docs and paired guides updated; repo conventions honored; non-goals respected; exemplar quality where the task demands it. HARD EVIDENCE RULE: a blocking finding MUST include its reproduction re-run against the CURRENT tree in THIS iteration — quote the exact command and its output. A finding carried over from a previous iteration without fresh re-run evidence is not a finding: re-run it first; if it no longer reproduces, say so explicitly and drop it. Your own prior critique is a hypothesis to re-verify, never evidence. Write .ai/critique-b.md: specific findings with file references, then a final line reading exactly 'VERDICT: SHIP' or 'VERDICT: ITERATE'. Be strict — a wrong-but-plausible result that ships is worse than another iteration."]
+        reasoning_effort="high", max_agent_turns="314",
+        prompt="You are a second, independent reviewer in a separate session from the first reviewer. Do NOT read .ai/critique.md and do NOT assume any other reviewer's conclusions — your value is independent judgment. The mechanical DoD script passed. Judge the work against the task's FULL definition of done — especially the judgment criteria the script cannot check. Read the task file at $task_file, the brief at .ai/brief.md, and review the ACTUAL changes in $target_dir (git diff, new and changed files; .ai/verify.log for what was verified). Apply the doctrine: evidence over claims — verify that claimed evidence is real; no test-gaming or DoD-script-gaming; docs and paired guides updated; repo conventions honored; non-goals respected; exemplar quality where the task demands it. HARD EVIDENCE RULE: a blocking finding MUST include its reproduction re-run against the CURRENT tree in THIS iteration — quote the exact command and its output. A finding carried over from a previous iteration without fresh re-run evidence is not a finding: re-run it first; if it no longer reproduces, say so explicitly and drop it. Your own prior critique is a hypothesis to re-verify, never evidence. Write .ai/critique-b.md: specific findings with file references, then a final line reading exactly 'VERDICT: SHIP' or 'VERDICT: ITERATE'. Be strict — a wrong-but-plausible result that ships is worse than another iteration."]
 
     // STALL DETECTION (lesson from live run t11-attempt-3): the iteration
     // budget only gates the RED path (triage runs on verify failure), so a
@@ -395,10 +405,12 @@ digraph BacklogTaskRunner {
 
     // ---------- feedback: accumulate critique -> descent, not re-flip ----------
     feedback [shape=box, class="maker",
-        prompt="Read BOTH critique files — .ai/critique.md and .ai/critique-b.md — and .ai/verify.log if relevant. The two reviewers are from different model families: where they DISAGREE, name the disagreement explicitly and address the STRICTER view — disagreement is signal, not noise. Distill the highest-leverage change for the next iteration into a new file in .ai/feedback/ — read .ai/iter for the current iteration number N and name the file N-next.md. Format: Key finding / What to change / Why it matters / Reviewer disagreements (if any). Then curate the channel: consolidate or delete earlier feedback files that are now stale or addressed. Accumulated critique must descend toward the goal, not pile up into sludge."]
+        llm_provider="luna", reasoning_effort="high", max_agent_turns="146",
+        prompt="Read BOTH critique files — .ai/critique.md and .ai/critique-b.md — and .ai/verify.log if relevant. The two reviewers ran in separate sessions: where they DISAGREE, name the disagreement explicitly and address the STRICTER view — disagreement is signal, not noise. Distill the highest-leverage change for the next iteration into a new file in .ai/feedback/ — read .ai/iter for the current iteration number N and name the file N-next.md. Format: Key finding / What to change / Why it matters / Reviewer disagreements (if any). Then curate the channel: consolidate or delete earlier feedback files that are now stale or addressed. Accumulated critique must descend toward the goal, not pile up into sludge."]
 
     // ---------- package: ship on a branch with real evidence ----------
     package [shape=box, class="maker",
+        llm_provider="luna", reasoning_effort="high", max_agent_turns="1438",
         prompt="Both gates passed. Prepare the work for handoff in $target_dir: ensure runner artifacts (.ai/) are excluded from version control via .git/info/exclude (do NOT commit them); create or reuse a branch named task/<task id> (the id is in the task file's frontmatter at $task_file); commit all task changes with a clear conventional commit message stating WHAT changed and WHY (draw on .ai/brief.md and .ai/critique.md; include the standard Amplifier co-authored-by attribution); and write .ai/SHIPPED.md summarizing the goal, what shipped, where the evidence lives (.ai/verify.log, .ai/convergence.jsonl, run events), and anything a reviewer should know."]
 
     // TRACKED-.ai LEAK CHANNEL (T1-7 council): the porcelain grep excludes
@@ -426,6 +438,7 @@ digraph BacklogTaskRunner {
     // (prompt skeleton + pm_gate grep); both ends are removed in this
     // same change.
     postmortem [shape=box, class="gate", must_write=".ai/postmortem/report.md",
+        llm_provider="luna", reasoning_effort="high", max_agent_turns="98",
         prompt="The run has hit a decision point without convergence: either the iteration budget is exhausted (repeated verification failures) or the quality loop has stalled (repeated critique refusals on mechanically-green work). Read .ai/convergence.jsonl (the descent record), .ai/critique.md, .ai/critique-b.md, .ai/verify.log, and .ai/feedback/. Write .ai/postmortem/report.md: what each iteration attempted, whether the loop was DESCENDING, OSCILLATING, or WANDERING (cite the convergence record), your best hypothesis for why it has not converged, and the options (continue with more budget / change approach / split the task / abandon). Be honest — this report is the value salvaged from a non-converging run."]
 
     // FAIL-PATH STUB SYNTHESIZER (S2 end-state, T1-7 council 4-1): pm_gate
@@ -544,8 +557,8 @@ digraph BacklogTaskRunner {
     diagnose_gate -> attempt  [condition="context.tool.last_line=continue", label="change course"]
     diagnose_gate -> salvage  [condition="context.tool.last_line=blocked"]
 
-    // Expensive gate: two independent family-diverse reviewers in
-    // sequence, then a deterministic consensus verdict.
+    // Expensive gate: two independent reviewers in separate sessions,
+    // then a deterministic consensus verdict.
     // clean_b RETIRED (T1-7 council; scheduled in backlog/decisions/
     // clean-b-retirement-SCHEDULED.md). The verdict-channel plant class
     // has TWO directions; name both, and the mechanism that covers each:

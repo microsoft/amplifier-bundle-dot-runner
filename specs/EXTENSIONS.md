@@ -5162,3 +5162,32 @@ convert a working salvage path into a guaranteed artifact-contract failure.
   `modules/pipeline-runner/tests/test_node_provider_honored_on_spawn.py` (the join onto the
   child bundle), `modules/pipeline-runner/tests/test_engine_native_direct_provider.py` (the
   empty tool set), `.github/capsule-pipeline/test_turn_caps.py` (the shipped floors)
+
+*Addendum (2026-09-08, owner ruling): the three shipped graphs now declare
+`llm_provider="luna"`, no `llm_model`, `reasoning_effort="high"`, and
+`max_agent_turns` on every box/prompt (LLM-consuming) node. `luna` is the
+configured provider instance established by Section 36; omitting `llm_model`
+deliberately keeps its default model in one settings entry. `high` is the
+effort measured for the successful k=3 author choice in PR #84; no node has
+evidence for a lower effort.*
+
+*The cap formula is `2 * ceil(1.25 * largest provider-call count)`: Section
+47's measured two-turn unit first, then the 25% headroom. Read-only event
+evidence supplied the maxima: orient 155 (`34162618376`), rival 451
+(`34162618376`), feature author 575 (`34162618376`), mutate 37
+(`capsule-64-run3`), mutate_b 58 (`capsule-64-run3`), void 78
+(`34161733454`), critique 125 (`capsule-64-run3`), and postmortem 39
+(`capsule-64-run3`). Thus the derived caps are 388, 1128, 1438, 94, 146,
+196, 314, and 98 respectively. The already-proven `capsule.dot` author
+cap remains 410 (164 calls, Actions `34064448082`) by the owner instruction
+to keep it.*
+
+*No durable per-node event history exists for task-runner's attempt,
+diagnose, feedback, package, or second critic. Their caps are explicit
+Anthropic-run assumptions rather than invented observations: attempt/package
+use the conservative 575-call author proxy; diagnose/postmortem use the
+39-call tool-writing failure-analysis proxy; feedback uses the 58-call
+alternate-maker proxy; critique_b uses the 125-call independent-critic
+proxy. `.github/capsule-pipeline/test_turn_caps.py` contains the complete
+graph/node census, exact caps, sources, and these assumptions, so a new
+LLM node cannot escape the pin or cap silently.*
