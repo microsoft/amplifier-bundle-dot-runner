@@ -16,6 +16,9 @@
 // VENDORED COPY -- see .github/capsule-pipeline/README.md for provenance,
 // scope, and re-sync instructions. Source: a private working repository
 // (not publicly reachable), pinned at its commit fae27d0e1969fd48f9b890b9c9660b10f2489471
+// Issue #78 narrowly re-vendors only the source-owned escalation-edge guards
+// from amplifier-bundle-attractor commit e6d14fdca3d2548ee8d793a89d375134a6ad6646
+// (based on source main 6d301c6); it is not a full vendor refresh.
 // (runner/task-runner.dot, 2026-08-17 -- WORK DURABILITY re-sync, issue #220:
 // one new deterministic `salvage` node commits the run's working tree to the
 // CURRENT branch on the three NON-shipping doors into the human gate
@@ -644,7 +647,7 @@ digraph BacklogTaskRunner {
     // durable — what a human needs at that door is the forensic picture the
     // gate just refused, not another commit on top of it.
     salvage -> escalate
-    escalate -> abandon     [label="[A] Abandon — keep the postmortem"]
-    escalate -> bump_budget [label="[C] Continue — raise the budget"]
+    escalate -> abandon     [condition="outcome=success && context.human.gate.selected=A", label="[A] Abandon — keep the postmortem"]
+    escalate -> bump_budget [condition="outcome=success && context.human.gate.selected=C", label="[C] Continue — raise the budget"]
     bump_budget -> attempt
 }

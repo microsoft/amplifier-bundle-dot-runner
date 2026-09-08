@@ -10,9 +10,12 @@
 // remove `.ai/hypothesis.patch` after the `.ai`-preserving clean and prove
 // it is neither present nor a dangling symlink before `reset_proven`. It is
 // not a full vendor refresh; do not infer byte identity to that later source
-// tree. See .github/capsule-pipeline/README.md for provenance, the re-sync
-// procedure, and the runner-specific deltas (dot-runner IS the engine here,
-// not a consumer of it -- see the workflows for what changes).
+// tree. Issue #78 narrowly re-vendors only the source-owned escalation-edge
+// guards from amplifier-bundle-attractor commit e6d14fdca3d2548ee8d793a89d375134a6ad6646
+// (based on source main 6d301c6); it is not a full vendor refresh. See
+// .github/capsule-pipeline/README.md for provenance, the re-sync procedure,
+// and the runner-specific deltas (dot-runner IS the engine here, not a
+// consumer of it -- see the workflows for what changes).
 // ==============================================================================
 // ============================================================================
 // VENDORED COPY -- see .github/capsule-pipeline/README.md for provenance,
@@ -969,8 +972,8 @@ digraph CapsulePipeline {
     pm_gate -> escalate
 
     // Abandon FIRST: timeout/auto-approve interviewers fail safe.
-    escalate -> abandon     [label="[A] Abandon -- keep the postmortem"]
-    escalate -> bump_budget [label="[C] Continue -- raise the budget"]
-    escalate -> package     [label="[K] Keep -- accept the capsule as-is, findings and postmortem attached"]
+    escalate -> abandon     [condition="outcome=success && context.human.gate.selected=A", label="[A] Abandon -- keep the postmortem"]
+    escalate -> bump_budget [condition="outcome=success && context.human.gate.selected=C", label="[C] Continue -- raise the budget"]
+    escalate -> package     [condition="outcome=success && context.human.gate.selected=K", label="[K] Keep -- accept the capsule as-is, findings and postmortem attached"]
     bump_budget -> author
 }
