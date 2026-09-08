@@ -633,6 +633,16 @@ jobs:
           bash .github/capsule-pipeline/capsule_pair_fence.sh verify \
             "$OUT" "$RUNNER_TEMP/capsule-pair.sha256"
 
+          # This only establishes that the credential can perform this
+          # read. It does NOT prove that it can push or create a PR; those
+          # operations retain their real failures below. Run it before any
+          # publication-side mutation so an unavailable credential cannot
+          # leave a local branch or remote branch behind.
+          if ! gh api graphql -f query='query { viewer { login } }' >/dev/null; then
+            echo "::error::Could not verify the configured GitHub credential before capsule publication. The failure may be due to network, authentication, or permissions; no branch was created, committed, or pushed. A successful viewer query would not prove permission to create a pull request." >&2
+            exit 1
+          fi
+
           git checkout -b "$BRANCH"
           mkdir -p "$DEST"
           cp "$OUT"/"$ID".md "$OUT"/"$ID".verify.sh "$DEST"/
@@ -723,21 +733,29 @@ jobs:
           OUTCOME="${{ steps.outcome.outputs.kind }}"
           DURATION_HINT="${{ steps.classify.outputs.duration_hint }}"
 
-          if [ "$OUTCOME" = "refused_unspecced" ] || \
-             [ "$OUTCOME" = "refused_escalation" ] || \
-             [ "$OUTCOME" = "blocked_on_criteria" ] || \
-             [ "$OUTCOME" = "escalated" ] || \
-             [ "$OUTCOME" = "green_at_base" ] || \
-             [ "$OUTCOME" = "partial_met" ]; then
+          # Publication status is an outer boundary, independent from the
+          # pipeline's inner terminal evidence. A real capsule must not be
+          # reported as a classifier refusal merely because residual evidence
+          # also exists: it is opened only after this step succeeded and
+          # supplied a non-empty PR URL.
+          if [ "$KIND" = "capsule" ] && [ "$PR_STEP" = "success" ] && [ -n "${PR_URL:-}" ]; then
+            KIND="capsule"
+          elif [ "$KIND" = "capsule" ]; then
+            KIND="capsule_blocked"
+          fi
+
+          if [ "$KIND" != "capsule" ] && [ "$KIND" != "capsule_blocked" ] && \
+             { [ "$OUTCOME" = "refused_unspecced" ] || \
+               [ "$OUTCOME" = "refused_escalation" ] || \
+               [ "$OUTCOME" = "blocked_on_criteria" ] || \
+               [ "$OUTCOME" = "escalated" ] || \
+               [ "$OUTCOME" = "green_at_base" ] || \
+               [ "$OUTCOME" = "partial_met" ]; }; then
             python3 .github/capsule-pipeline/outcome_classifier.py comment \
               --outcome "$OUTCOME" \
               --ai-dir "$GITHUB_WORKSPACE/.ai" \
               --run-url "$RUN_URL" > "$COMMENT"
           else
-          if [ "$KIND" = "capsule" ] && [ -z "${PR_URL:-}" ]; then
-            KIND="capsule_blocked"
-          fi
-
           case "$KIND" in
             capsule)
               {
@@ -753,11 +771,11 @@ jobs:
               ;;
             capsule_blocked)
               {
-                echo "**Feature specify stage: a work capsule was produced, but a pre-publication check failed -- no PR was opened.**"
+                echo "**Feature specify stage: a work capsule was produced, but publication did not complete -- no PR URL is available.**"
                 echo
-                echo "**What happened:** the pipeline converged on a work capsule, but one"
-                echo "of the checks that runs between producing it and publishing it did"
-                echo "not pass, so nothing was pushed."
+                echo "**What happened:** the pipeline produced a work capsule, but the"
+                echo "publication boundary did not complete. Check the statuses below and"
+                echo "the workflow run for the failed or skipped publication step."
                 echo
                 echo "**What happens next:** a maintainer will personally review this issue"
                 echo "and follow up. The capsule itself is preserved in this run's evidence."
