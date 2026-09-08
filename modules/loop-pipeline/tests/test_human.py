@@ -356,6 +356,54 @@ class TestHumanGateHandler:
         assert outcome.suggested_next_ids == ["fix"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("answer_key", "target_id", "expected_label"),
+        [
+            ("A", "abandon", "[A] Abandon -- preserve the finding"),
+            ("C", "continue", "[C] Continue -- spend another iteration budget"),
+            ("K", "keep", "[K] Keep -- review the proposal"),
+        ],
+    )
+    async def test_choice_metadata_uses_the_handler_built_option(
+        self, answer_key, target_id, expected_label
+    ):
+        """Each accelerator resolves to its graph target and canonical option metadata."""
+        graph = _make_escalation_graph()
+        captured_questions: list[Question] = []
+
+        class CapturingQueueInterviewer(QueueInterviewer):
+            def ask(self, question: Question) -> Answer:
+                captured_questions.append(question)
+                return super().ask(question)
+
+        interviewer = CapturingQueueInterviewer(
+            [
+                Answer(
+                    value=answer_key,
+                    # This deliberately is not one of the handler-built
+                    # Question options. Metadata must come from the latter.
+                    selected_option=Option(key="foreign", label="foreign"),
+                )
+            ]
+        )
+        outcome = await HumanGateHandler(interviewer=interviewer).execute(
+            graph.nodes["escalate"], _make_context(), graph, "/tmp"
+        )
+
+        assert [
+            (option.key, option.label) for option in captured_questions[0].options
+        ] == [
+            ("A", "[A] Abandon -- preserve the finding"),
+            ("C", "[C] Continue -- spend another iteration budget"),
+            ("K", "[K] Keep -- review the proposal"),
+        ]
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == [target_id]
+        assert outcome.context_updates is not None
+        assert outcome.context_updates["human.gate.selected"] == answer_key
+        assert outcome.context_updates["human.gate.label"] == expected_label
+
+    @pytest.mark.asyncio
     async def test_skipped_answer_returns_fail(self):
         """M-13: SKIPPED answer returns FAIL per spec, not SUCCESS."""
         graph = _make_graph_with_human_gate()
@@ -365,6 +413,10 @@ class TestHumanGateHandler:
         outcome = await handler.execute(node, _make_context(), graph, "/tmp")
         assert outcome.status == StageStatus.FAIL
         assert "skipped" in (outcome.notes or outcome.failure_reason or "").lower()
+        assert outcome.context_updates == {
+            "human.gate.selected": None,
+            "human.gate.label": "Approve changes?",
+        }
 
     @pytest.mark.asyncio
     async def test_timeout_answer_uses_default_choice(self):
@@ -419,6 +471,28 @@ class TestHumanGateHandler:
             graph.nodes["gate"], _make_context(), graph, "/tmp"
         )
         assert outcome.status == StageStatus.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_gate_with_no_choices_preserves_confirmation_metadata(self):
+        """A confirmation gate has no handler-built Option to record."""
+        graph = Graph(
+            name="test",
+            nodes={
+                "gate": Node(id="gate", shape="hexagon", label="Wait"),
+                "exit": Node(id="exit", shape="Msquare"),
+            },
+            edges=[],
+        )
+
+        outcome = await HumanGateHandler(interviewer=AutoApproveInterviewer()).execute(
+            graph.nodes["gate"], _make_context(), graph, "/tmp"
+        )
+
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids is None
+        assert outcome.context_updates is not None
+        assert outcome.context_updates["human.gate.selected"] is None
+        assert outcome.context_updates["human.gate.label"] == "Wait"
 
     @pytest.mark.asyncio
     async def test_no_interviewer_raises_valueerror(self):
@@ -673,7 +747,7 @@ class TestHumanGateHandlerContextUpdates:
         assert outcome.context_updates["human.gate.selected"] == "Approve"
         # L-16: spec says human.gate.label (not human.gate.node_id)
         assert "human.gate.label" in outcome.context_updates
-        assert outcome.context_updates["human.gate.label"] == "Approve changes?"
+        assert outcome.context_updates["human.gate.label"] == "Approve"
 
 
 # --- M-12: suggested_next_ids instead of preferred_label ---

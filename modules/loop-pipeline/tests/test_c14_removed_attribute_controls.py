@@ -362,5 +362,6 @@ class TestWaitHumanFreeformRemovedAttributeControl:
             "to every outgoing edge is the freeform rule and must not leak here"
         )
         assert outcome.context_updates is not None
-        assert outcome.context_updates["human.gate.selected"] == "[A] Approve"
+        assert outcome.context_updates["human.gate.selected"] == "A"
+        assert outcome.context_updates["human.gate.label"] == "[A] Approve"
         assert "human.gate.text" not in outcome.context_updates

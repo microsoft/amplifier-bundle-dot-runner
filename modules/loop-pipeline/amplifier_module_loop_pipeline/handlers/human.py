@@ -569,10 +569,13 @@ class HumanGateHandler:
         # Extract accelerator keys from labels for option keys
         key_to_label: dict[str, str] = {}
         options: list[Option] = []
+        label_to_option: dict[str, Option] = {}
         for c in choices:
             key = _parse_accelerator_key(c)
             key_to_label[key] = c
-            options.append(Option(key=key, label=c))
+            option = Option(key=key, label=c)
+            options.append(option)
+            label_to_option[c] = option
         if choices:
             question = Question(
                 text=prompt,
@@ -619,6 +622,7 @@ class HumanGateHandler:
         # 6. Determine the selected label and map to target node IDs (M-12)
         selected = self._resolve_selection(answer, choices, key_to_label)
         target_ids = label_to_targets.get(selected or "", []) if selected else []
+        selected_option = label_to_option.get(selected or "")
 
         return Outcome(
             status=StageStatus.SUCCESS,
@@ -628,8 +632,15 @@ class HumanGateHandler:
             is_explicit=True,
             suggested_next_ids=target_ids if target_ids else None,
             context_updates={
-                "human.gate.selected": selected,
-                "human.gate.label": node.label,
+                # The answer may carry an Option constructed by another
+                # interviewer. Record the handler-built option that resolved
+                # the graph's choice so these values remain canonical.
+                "human.gate.selected": (
+                    selected_option.key if selected_option is not None else selected
+                ),
+                "human.gate.label": (
+                    selected_option.label if selected_option is not None else node.label
+                ),
                 # Set last_response and last_stage so $context works in downstream nodes.
                 # Mirrors the codergen convention: context_updates={"last_stage": ..., "last_response": ...[:200]}
                 "last_response": (selected or "")[:200],
