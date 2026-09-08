@@ -47,6 +47,18 @@ def _init_repo(path: Path, *, commit: bool = True) -> None:
     )
 
 
+@pytest.fixture
+def tracked_ai_repo(tmp_path: Path) -> Path:
+    """Build the staged .ai/ leak before the async ToolHandler test begins."""
+    repo = tmp_path / "tracked-ai-repo"
+    repo.mkdir()
+    _init_repo(repo)
+    (repo / ".ai").mkdir()
+    (repo / ".ai" / "artifact").write_text("leak\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".ai/artifact"], check=True)
+    return repo
+
+
 def _fail_git_subcommand(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, subcommand: str
 ) -> None:
@@ -90,23 +102,21 @@ async def _run_ship_check(repo: Path, logs_root: Path):
 async def test_ship_check_routes_only_a_clean_committed_tree_to_shipped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    tracked_ai_repo: Path,
     scenario: str,
     expected: str,
 ) -> None:
     """The parsed, real ToolHandler command preserves its zero-exit routing token."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo, commit=scenario != "no_head")
+    repo = tracked_ai_repo if scenario == "tracked_ai" else tmp_path / "repo"
+    if scenario != "tracked_ai":
+        repo.mkdir()
+        _init_repo(repo, commit=scenario != "no_head")
 
     if scenario == "untracked_ai":
         (repo / ".ai").mkdir()
         (repo / ".ai" / "SHIPPED").write_text("run artifact\n", encoding="utf-8")
     elif scenario == "unexpected_file":
         (repo / "unexpected").write_text("not shipped\n", encoding="utf-8")
-    elif scenario == "tracked_ai":
-        (repo / ".ai").mkdir()
-        (repo / ".ai" / "artifact").write_text("leak\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(repo), "add", ".ai/artifact"], check=True)
     elif scenario == "git_status_failure":
         _fail_git_subcommand(monkeypatch, tmp_path, "status")
     elif scenario == "ai_prefixed_neighbor":
