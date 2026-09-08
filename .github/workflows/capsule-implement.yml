@@ -692,6 +692,7 @@ jobs:
           COMMENT="$RUNNER_TEMP/capsule-implement/comment.md"
           OUTCOME="${{ steps.outcome.outputs.kind }}"
           if [ "$OUTCOME" = "refused_unspecced" ] || \
+             [ "$OUTCOME" = "refused_escalation" ] || \
              [ "$OUTCOME" = "blocked_on_criteria" ] || \
              [ "$OUTCOME" = "escalated" ] || \
              [ "$OUTCOME" = "green_at_base" ] || \

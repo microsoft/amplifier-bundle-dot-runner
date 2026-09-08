@@ -479,6 +479,130 @@ class TestHumanGateHandler:
         assert "https://github.example/acme/repo/pull/42" in artifact
         assert "Decision context" in artifact
         assert "proposal" in artifact.lower()
+        assert "Required next action" in artifact
+        assert "[A] Abandon -- preserve the finding" in artifact
+
+    @pytest.mark.asyncio
+    async def test_ci_escalation_with_concrete_evidence_renders_the_choice(
+        self, tmp_path, monkeypatch
+    ):
+        """An evidence-backed choice includes the evidence, options, and next action."""
+        monkeypatch.chdir(tmp_path)
+        context = _make_context()
+        context.set(
+            "escalation.question",
+            "Should AC-12 use the observed legacy behavior or the documented API?",
+        )
+        context.set(
+            "escalation.evidence",
+            "AC-12 is UNMET: the current API and the authenticated criterion conflict.",
+        )
+        context.set(
+            "escalation.next_action",
+            "Reply with [C] or [K] in an authenticated issue comment, then re-apply the label.",
+        )
+
+        graph = _make_escalation_graph()
+        await HumanGateHandler().execute(
+            graph.nodes["escalate"], context, graph, str(tmp_path / "logs")
+        )
+        artifact = (tmp_path / ".ai" / "escalation.md").read_text(encoding="utf-8")
+
+        assert "AC-12" in artifact
+        assert "conflict" in artifact.lower()
+        assert "[A] Abandon -- preserve the finding" in artifact
+        assert "[C] Continue -- spend another iteration budget" in artifact
+        assert "[K] Keep -- review the proposal" in artifact
+        assert "Reply with [C] or [K]" in artifact
+
+    @pytest.mark.asyncio
+    async def test_ci_escalation_refuses_the_generic_default_payload(
+        self, tmp_path, monkeypatch
+    ):
+        """CI must terminalize a bare gate instead of issuing an empty decision."""
+        monkeypatch.chdir(tmp_path)
+        graph = _make_escalation_graph()
+
+        outcome = await HumanGateHandler().execute(
+            graph.nodes["escalate"], _make_context(), graph, str(tmp_path / "logs")
+        )
+        finding = (tmp_path / ".ai" / "findings" / "invalid-escalation.md").read_text(
+            encoding="utf-8"
+        )
+
+        assert outcome.status == StageStatus.FAIL
+        assert "proposal or a concrete evidence-backed choice" in finding
+        assert "Need decision" not in finding
+        assert "Abandon -- preserve" not in finding
+        assert not (tmp_path / ".ai" / "escalation.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_interactive_escalation_keeps_its_existing_choice_routing(self):
+        """An Interviewer still sees and selects the graph's original choices."""
+        graph = _make_escalation_graph()
+        handler = HumanGateHandler(interviewer=QueueInterviewer([Answer(value="C")]))
+
+        outcome = await handler.execute(
+            graph.nodes["escalate"], _make_context(), graph, "/tmp"
+        )
+
+        assert outcome.status == StageStatus.SUCCESS
+        assert outcome.suggested_next_ids == ["continue"]
+
+    @pytest.mark.asyncio
+    async def test_every_shipped_ci_escalation_route_refuses_a_generic_payload(
+        self, tmp_path, monkeypatch
+    ):
+        """Every shipped route gets the same terminal safeguard in unattended CI."""
+        graph_dir = Path(__file__).parents[3] / ".github" / "capsule-pipeline"
+        params = {
+            "issue_file": "/tmp/issue",
+            "criteria_file": "/tmp/criteria",
+            "target_dir": "/tmp",
+            "base_sha": "test-base",
+            "later_commit": "",
+            "uplift_dir": "/tmp/uplift",
+            "capsule_out": "/tmp/capsule-out",
+            "max_iterations": "8",
+            "gate_time_ceiling": "5",
+            "max_duration": "30m",
+        }
+        route_count = 0
+        for graph_path in (
+            graph_dir / "capsule.dot",
+            graph_dir / "feature-capsule.dot",
+            graph_dir / "task-runner.dot",
+        ):
+            graph = parse_dot(graph_path.read_text(encoding="utf-8"), params=params)
+            routes = [edge for edge in graph.edges if edge.to_node == "escalate"]
+            assert routes, graph_path.name
+            for route_index, route in enumerate(routes):
+                route_count += 1
+                workspace = (
+                    tmp_path / graph_path.stem / f"{route.from_node}-{route_index}"
+                )
+                workspace.mkdir(parents=True)
+                monkeypatch.chdir(workspace)
+
+                outcome = await HumanGateHandler().execute(
+                    graph.nodes["escalate"],
+                    _make_context(),
+                    graph,
+                    str(workspace / "logs"),
+                )
+
+                finding = (
+                    workspace / ".ai" / "findings" / "invalid-escalation.md"
+                ).read_text(encoding="utf-8")
+                assert outcome.status == StageStatus.FAIL
+                assert "CI escalation refused" in finding
+                assert "Need decision" not in finding
+                assert "Abandon -- preserve" not in finding
+                assert not (workspace / ".ai" / "escalation.md").exists()
+
+        # Audit census: adding an escalation edge requires an explicit update
+        # to this proof instead of silently inheriting an unexamined fallback.
+        assert route_count == 15
 
 
 def test_partially_met_feature_with_remaining_work_continues_to_authoring(tmp_path):

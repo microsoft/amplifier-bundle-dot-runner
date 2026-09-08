@@ -1,0 +1,1 @@
+{"stage":"feature","outcome":"refused_escalation","exit_code":15,"comment_contains":"Escalation refusal (verbatim)","finding_verbatim":"CI will not ask an owner to approve, abandon, or continue an unevidenced decision."}
