@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 WORKFLOWS = {
@@ -443,6 +445,193 @@ fi
         for workflow in WORKFLOWS.values():
             source = workflow.read_text()
             self.assertIn("${{ secrets.CAPSULE_PR_TOKEN || github.token }}", source)
+
+
+class PublicationProofWorkflowTests(unittest.TestCase):
+    """Structural regressions for the one-off, branch-pinned proof path."""
+
+    proof_operation = "publish-existing-issue-78"
+    proof_ref = "refs/heads/proof/publication-issue-78-20260908"
+    capsule_branch = "feature-capsule/issue-78-20260908T123833Z"
+    capsule_sha = "4bbc8f3d04b97b27ca4710453063bd2453eeba02"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = WORKFLOWS["feature"].read_text(encoding="utf-8")
+        cls.workflow = yaml.safe_load(cls.source)
+        cls.jobs = cls.workflow["jobs"]
+
+    def _script(self, name: str) -> str:
+        return step_script(self.source, name)
+
+    def test_dispatch_operation_preserves_the_normal_specify_job(self) -> None:
+        dispatch = self.workflow[True]["workflow_dispatch"]
+        operation = dispatch["inputs"]["operation"]
+        self.assertEqual(operation["default"], "specify")
+        self.assertEqual(operation["options"], ["specify", self.proof_operation])
+        specify_if = self.jobs["specify"]["if"]
+        self.assertIn("inputs.operation != 'publish-existing-issue-78'", specify_if)
+        self.assertIn("github.event.label.name == 'ready:feature-spec'", specify_if)
+        self.assertIn("Run feature-capsule.dot", self.source)
+
+    def test_validation_is_branch_pinned_read_only_and_runs_no_generation(self) -> None:
+        validation = self.jobs["publication-proof-validation"]
+        condition = validation["if"]
+        for expected in (
+            "github.repository == 'microsoft/amplifier-bundle-dot-runner'",
+            f"github.ref == '{self.proof_ref}'",
+            "inputs.issue_number == '78'",
+            f"inputs.operation == '{self.proof_operation}'",
+        ):
+            self.assertIn(expected, condition)
+        self.assertEqual(validation["permissions"], {"contents": "read"})
+        self.assertNotIn("secrets.", yaml.safe_dump(validation))
+        self.assertEqual(validation["timeout-minutes"], 10)
+        self.assertIn("verdict", validation["outputs"])
+        scope = self._script("Restrict the dispatched proof commit to reviewed files")
+        self.assertIn("WORKFLOW_SHA: ${{ github.sha }}", yaml.safe_dump(validation))
+        self.assertIn('git fetch --no-tags origin "$WORKFLOW_SHA"', scope)
+        self.assertIn('[ "$(git rev-parse FETCH_HEAD)" = "$WORKFLOW_SHA" ]', scope)
+        self.assertIn(".github/capsule-pipeline/test_publication_boundary.py", scope)
+        self.assertIn(".github/workflows/feature-specify.yml", scope)
+        self.assertIn('git diff --name-only "$TRUSTED_SHA" "$WORKFLOW_SHA"', scope)
+        saved = self._script("Pin and save the five reviewed capsule files")
+        self.assertIn(self.capsule_branch, saved)
+        self.assertIn(self.capsule_sha, saved)
+        self.assertIn("reviewed-capsule.sha256", saved)
+        self.assertIn("sha256sum --check --strict", saved)
+        self.assertIn("Saved capsule does not contain exactly", saved)
+        expected_hashes = {
+            "ci-safe-escalated-human-gate.base-sha": "3af62c0008871c70243919a489c8d9fc5c412d3dcb7eee5e530b3ff044563a0f",
+            "ci-safe-escalated-human-gate.criteria-digest": "1a7a95456b70ae512d46d117ff5c09cc8a8c50a6b5e377dd984ddda579eb29b1",
+            "ci-safe-escalated-human-gate.discrimination.md": "b76f07edc5258b3c4b0276721ead5967bacc6058b3f57a16d600583c08e27be2",
+            "ci-safe-escalated-human-gate.md": "a4eb564b2823f4f639493663bc4dbd4564c5ec6ba244b11a785b6eca2d40d13c",
+            "ci-safe-escalated-human-gate.verify.sh": "0d17814534721af0288c4fdf727ea2b79e31edc50d4674881f0aff47913db6af",
+        }
+        for filename, digest in expected_hashes.items():
+            self.assertIn(f"{digest}  {filename}", saved)
+        manifest = saved.split('cat > "$IDENTITY_MANIFEST" <<\'EOF\'\n', 1)[1].split(
+            "\nEOF\n", 1
+        )[0]
+        self.assertEqual(
+            {
+                filename: digest
+                for digest, filename in (
+                    line.split(maxsplit=1) for line in manifest.splitlines()
+                )
+            },
+            expected_hashes,
+        )
+        self.assertIn("capsule_pair_fence.sh record", saved)
+        self.assertIn("capsule_pair_fence.sh verify", saved)
+        verifier = self._script("Run archived verifier without Actions command channels")
+        self.assertIn("env -i", verifier)
+        for allowed in ("PATH=", "HOME=", "TMPDIR=", "RUNNER_TEMP=", "UV_CACHE_DIR="):
+            self.assertIn(allowed, verifier)
+        for forbidden in (
+            "GITHUB_ENV=",
+            "GITHUB_OUTPUT=",
+            "GITHUB_SUMMARY=",
+            "GITHUB_PATH=",
+            "GH_TOKEN=",
+            "GITHUB_TOKEN=",
+            "CAPSULE_PR_TOKEN=",
+            "ANTHROPIC_API_KEY=",
+            "OPENAI_API_KEY=",
+        ):
+            self.assertNotIn(forbidden, verifier)
+        self.assertNotIn("feature-capsule.dot", saved + verifier)
+
+    def test_literal_archival_manifest_rejects_a_tampered_verifier(self) -> None:
+        script = self._script("Pin and save the five reviewed capsule files")
+        manifest = script.split("cat > \"$IDENTITY_MANIFEST\" <<'EOF'\n", 1)[1].split(
+            "\nEOF\n", 1
+        )[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for line in manifest.splitlines():
+                _, filename = line.split(maxsplit=1)
+                source = (
+                    ".github/capsule-pipeline/proposals/issue-78/" + filename
+                )
+                content = subprocess.run(
+                    ["git", "-C", str(REPO), "show", f"{self.capsule_sha}:{source}"],
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                ).stdout
+                root.joinpath(filename).write_text(content, encoding="utf-8")
+            identity = root / "manifest.sha256"
+            identity.write_text(manifest + "\n", encoding="utf-8")
+            clean = subprocess.run(
+                ["sha256sum", "--check", "--strict", str(identity)],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(clean.returncode, 0, clean.stderr)
+            verifier = root / "ci-safe-escalated-human-gate.verify.sh"
+            verifier.write_text("# tampered\n", encoding="utf-8")
+            tampered = subprocess.run(
+                ["sha256sum", "--check", "--strict", str(identity)],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertIn("ci-safe-escalated-human-gate.verify.sh: FAILED", tampered.stdout)
+
+    def test_publication_needs_validation_and_limits_the_write_credential(self) -> None:
+        publication = self.jobs["publication-proof-publish"]
+        self.assertEqual(publication["needs"], "publication-proof-validation")
+        self.assertIn(
+            "needs.publication-proof-validation.result == 'success'", publication["if"]
+        )
+        self.assertNotIn("needs.publication-proof-validation.outputs", publication["if"])
+        self.assertEqual(
+            publication["permissions"],
+            {"contents": "read", "pull-requests": "write"},
+        )
+        self.assertEqual(publication["timeout-minutes"], 10)
+        self.assertEqual(len(publication["steps"]), 1)
+        step = publication["steps"][0]
+        self.assertEqual(
+            step["env"]["GH_TOKEN"], "${{ secrets.CAPSULE_PR_TOKEN || github.token }}"
+        )
+        self.assertEqual(
+            step["env"]["TOKEN_SOURCE"],
+            "${{ secrets.CAPSULE_PR_TOKEN != '' && 'CAPSULE_PR_TOKEN' || 'GITHUB_TOKEN' }}",
+        )
+        self.assertNotIn("uses", step)
+        script = self._script("Preflight and create one draft proof PR")
+        self.assertEqual(script.count("gh pr create"), 1)
+        self.assertIn("--draft", script)
+        self.assertIn("gh pr list", script)
+        self.assertIn("gh pr view", script)
+        self.assertIn(self.capsule_branch, script)
+        self.assertIn(self.capsule_sha, script)
+        self.assertNotIn("git push", script)
+        self.assertNotIn("feature-capsule.dot", script)
+
+    def test_new_shell_blocks_parse_with_bash(self) -> None:
+        for name in (
+            "Pin and save the five reviewed capsule files",
+            "Restrict the dispatched proof commit to reviewed files",
+            "Run archived verifier without Actions command channels",
+            "Record trusted validation verdict",
+            "Preflight and create one draft proof PR",
+        ):
+            with self.subTest(name=name):
+                result = subprocess.run(
+                    ["bash", "-n"],
+                    input=self._script(name),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

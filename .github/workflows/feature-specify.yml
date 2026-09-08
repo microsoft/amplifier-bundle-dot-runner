@@ -38,6 +38,14 @@ on:
     types: [labeled]
   workflow_dispatch:
     inputs:
+      operation:
+        description: "Run the normal specify stage, or the one-off issue #78 publication proof"
+        required: false
+        default: "specify"
+        type: choice
+        options:
+          - specify
+          - publish-existing-issue-78
       issue_number:
         description: "Issue number to run the feature-specify stage against"
         required: true
@@ -65,7 +73,9 @@ concurrency:
 
 jobs:
   specify:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ready:feature-spec'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.operation != 'publish-existing-issue-78')
+      || (github.event_name == 'issues' && github.event.label.name == 'ready:feature-spec')
     name: "Run feature-capsule.dot on issue #${{ github.event.issue.number || inputs.issue_number }}"
     runs-on: ubuntu-latest
     env:
@@ -931,3 +941,246 @@ jobs:
             echo "::error::feature-capsule.dot did not converge (no capsule, no recorded finding) -- see the postmortem comment posted on the issue and the uploaded run evidence."
             exit 1
           fi
+
+  publication-proof-validation:
+    # This is a one-off, deliberately narrow proof of the publication boundary.
+    # It is not a second feature-specify implementation path and never invokes
+    # feature-capsule.dot or accepts a newly generated capsule.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.operation == 'publish-existing-issue-78'
+      && github.repository == 'microsoft/amplifier-bundle-dot-runner'
+      && github.ref == 'refs/heads/proof/publication-issue-78-20260908'
+      && inputs.issue_number == '78'
+    name: "Validate existing issue #78 capsule for publication proof"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    steps:
+      - name: Checkout trusted proof verifier
+        uses: actions/checkout@v4
+        with:
+          # actions/checkout requires a token input.  github.token is valid
+          # here because this read-only job receives no publication secret.
+          token: ${{ github.token }}
+          persist-credentials: false
+          ref: 58d4041bd9876f8b0e15a48ae1db0c0d0519bb6f
+          fetch-depth: 0
+
+      - name: Restrict the dispatched proof commit to reviewed files
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TRUSTED_SHA='58d4041bd9876f8b0e15a48ae1db0c0d0519bb6f'
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::workflow SHA is not a full lowercase Git SHA." >&2; exit 1; }
+          git fetch --no-tags origin "$WORKFLOW_SHA"
+          [ "$(git rev-parse FETCH_HEAD)" = "$WORKFLOW_SHA" ] \
+            || { echo "::error::Fetched workflow commit does not match github.sha." >&2; exit 1; }
+          expected="$(cat <<'EOF'
+          .github/capsule-pipeline/test_publication_boundary.py
+          .github/workflows/feature-specify.yml
+          EOF
+          )"
+          actual="$(git diff --name-only "$TRUSTED_SHA" "$WORKFLOW_SHA" | LC_ALL=C sort)"
+          [ "$actual" = "$expected" ] \
+            || { echo "::error::Dispatched proof commit changes files outside the reviewed allowlist." >&2; exit 1; }
+
+      - name: Set up Python for the locked verifier dependencies
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Pin and save the five reviewed capsule files
+        run: |
+          set -euo pipefail
+          CAPSULE_BRANCH='feature-capsule/issue-78-20260908T123833Z'
+          CAPSULE_SHA='4bbc8f3d04b97b27ca4710453063bd2453eeba02'
+          BASE_SHA='fb35263d598187f05f33908c36f72287b95f4bfb'
+          CAPSULE_DIR='.github/capsule-pipeline/proposals/issue-78'
+          ID='ci-safe-escalated-human-gate'
+          SAVED="$RUNNER_TEMP/publication-proof/capsule"
+          IDENTITY_MANIFEST="$RUNNER_TEMP/publication-proof/reviewed-capsule.sha256"
+          PAIR_MANIFEST="$RUNNER_TEMP/publication-proof/capsule-pair.sha256"
+
+          git fetch --no-tags origin "refs/heads/$CAPSULE_BRANCH"
+          [ "$(git rev-parse FETCH_HEAD)" = "$CAPSULE_SHA" ] \
+            || { echo "::error::Reviewed capsule branch no longer resolves to its pinned SHA." >&2; exit 1; }
+          [ "$(git rev-parse "$CAPSULE_SHA^")" = "$BASE_SHA" ] \
+            || { echo "::error::Reviewed capsule commit no longer has its pinned base parent." >&2; exit 1; }
+
+          expected_paths="$(cat <<EOF
+          $CAPSULE_DIR/$ID.base-sha
+          $CAPSULE_DIR/$ID.criteria-digest
+          $CAPSULE_DIR/$ID.discrimination.md
+          $CAPSULE_DIR/$ID.md
+          $CAPSULE_DIR/$ID.verify.sh
+          EOF
+          )"
+          actual="$(git ls-tree -r --name-only "$CAPSULE_SHA" "$CAPSULE_DIR" | LC_ALL=C sort)"
+          [ "$actual" = "$expected_paths" ] \
+            || { echo "::error::Reviewed capsule does not contain exactly the five pinned files." >&2; exit 1; }
+
+          mkdir -p "$SAVED"
+          while IFS= read -r path; do
+            git show "$CAPSULE_SHA:$path" > "$SAVED/$(basename "$path")"
+          done <<EOF
+          $expected_paths
+          EOF
+          (
+            cd "$SAVED"
+            cat > "$IDENTITY_MANIFEST" <<'EOF'
+          3af62c0008871c70243919a489c8d9fc5c412d3dcb7eee5e530b3ff044563a0f  ci-safe-escalated-human-gate.base-sha
+          1a7a95456b70ae512d46d117ff5c09cc8a8c50a6b5e377dd984ddda579eb29b1  ci-safe-escalated-human-gate.criteria-digest
+          b76f07edc5258b3c4b0276721ead5967bacc6058b3f57a16d600583c08e27be2  ci-safe-escalated-human-gate.discrimination.md
+          a4eb564b2823f4f639493663bc4dbd4564c5ec6ba244b11a785b6eca2d40d13c  ci-safe-escalated-human-gate.md
+          0d17814534721af0288c4fdf727ea2b79e31edc50d4674881f0aff47913db6af  ci-safe-escalated-human-gate.verify.sh
+          EOF
+            expected_names="$(awk '{print $2}' "$IDENTITY_MANIFEST" | LC_ALL=C sort)"
+            actual_names="$(find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+            [ "$actual_names" = "$expected_names" ] \
+              || { echo "::error::Saved capsule does not contain exactly the reviewed manifest files." >&2; exit 1; }
+            sha256sum --check --strict "$IDENTITY_MANIFEST"
+          )
+          [ "$(tr -d '\r\n' < "$SAVED/$ID.base-sha")" = "$BASE_SHA" ] \
+            || { echo "::error::Capsule base-sha file does not match its pinned parent." >&2; exit 1; }
+          [ "$(tr -d '\r\n' < "$SAVED/$ID.criteria-digest")" = 'f9561b323c08266bcb4973d53fc19a16e041d09ff7d08cf00262e26d08711908' ] \
+            || { echo "::error::Capsule criteria digest does not match the reviewed identity." >&2; exit 1; }
+          grep -qx "id: $ID" "$SAVED/$ID.md"
+          grep -qx "base_sha: $BASE_SHA" "$SAVED/$ID.md"
+          grep -qx 'criteria_digest: f9561b323c08266bcb4973d53fc19a16e041d09ff7d08cf00262e26d08711908' "$SAVED/$ID.md"
+
+          bash .github/capsule-pipeline/capsule_pair_fence.sh record "$SAVED" "$PAIR_MANIFEST"
+          chmod a-w "$SAVED"/*
+          bash .github/capsule-pipeline/capsule_pair_fence.sh verify "$SAVED" "$PAIR_MANIFEST"
+
+      - name: Run archived verifier without Actions command channels
+        run: |
+          set -euo pipefail
+          ID='ci-safe-escalated-human-gate'
+          BASE_SHA='fb35263d598187f05f33908c36f72287b95f4bfb'
+          SAVED="$RUNNER_TEMP/publication-proof/capsule"
+          VERIFIER_LOG="$RUNNER_TEMP/publication-proof/archived-verifier.log"
+          TRUSTED_REPO="$GITHUB_WORKSPACE"
+          mkdir -p "$RUNNER_TEMP/publication-proof/tmp" "$RUNNER_TEMP/publication-proof/uv-cache"
+
+          # The archived verifier is untrusted input.  It receives only the
+          # runtime it needs; no GitHub, provider, capsule, or Actions command
+          # file environment is inherited.  Its raw output stays local.
+          if ! env -i \
+              PATH="$PATH" \
+              HOME="$HOME" \
+              TMPDIR="$RUNNER_TEMP/publication-proof/tmp" \
+              RUNNER_TEMP="$RUNNER_TEMP" \
+              UV_CACHE_DIR="$RUNNER_TEMP/publication-proof/uv-cache" \
+              bash .github/capsule-pipeline/verify_shipped_gate.sh \
+                --lane feature \
+                --capsule-dir "$SAVED" \
+                --id "$ID" \
+                --repo "$TRUSTED_REPO" \
+                --base-sha "$BASE_SHA" \
+                --log-dir "$RUNNER_TEMP/publication-proof/shipped-gate" \
+                --timeout 300 >"$VERIFIER_LOG" 2>&1; then
+            echo "::error::Reviewed capsule did not reproduce its expected RED verdict." >&2
+            exit 1
+          fi
+          echo "Archived verifier passed: expected RED verdict reproduced for issue #78."
+
+      - name: Record trusted validation verdict
+        id: verdict
+        run: |
+          set -euo pipefail
+          echo "verdict=passed" >> "$GITHUB_OUTPUT"
+
+  publication-proof-publish:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.operation == 'publish-existing-issue-78'
+      && github.repository == 'microsoft/amplifier-bundle-dot-runner'
+      && github.ref == 'refs/heads/proof/publication-issue-78-20260908'
+      && inputs.issue_number == '78'
+      && needs.publication-proof-validation.result == 'success'
+    name: "Publish one existing issue #78 capsule proof PR"
+    needs: publication-proof-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Preflight and create one draft proof PR
+        env:
+          # This is the only publication credential injection.  TOKEN_SOURCE
+          # records only which expression branch was selected, never a value.
+          GH_TOKEN: ${{ secrets.CAPSULE_PR_TOKEN || github.token }}
+          TOKEN_SOURCE: ${{ secrets.CAPSULE_PR_TOKEN != '' && 'CAPSULE_PR_TOKEN' || 'GITHUB_TOKEN' }}
+        run: |
+          set -euo pipefail
+          REPO='microsoft/amplifier-bundle-dot-runner'
+          CAPSULE_BRANCH='feature-capsule/issue-78-20260908T123833Z'
+          CAPSULE_SHA='4bbc8f3d04b97b27ca4710453063bd2453eeba02'
+          WORK="$RUNNER_TEMP/publication-proof"
+          mkdir -p "$WORK"
+
+          if ! viewer="$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.login' 2>"$WORK/viewer.err")"; then
+            echo "::error::Publication credential preflight failed; no PR was created." >&2
+            exit 1
+          fi
+          remote_head="$(git ls-remote --heads "https://github.com/$REPO.git" "refs/heads/$CAPSULE_BRANCH" | awk '{print $1}')"
+          [ "$remote_head" = "$CAPSULE_SHA" ] \
+            || { echo "::error::Capsule branch no longer resolves to the reviewed SHA; no PR was created." >&2; exit 1; }
+          existing="$(gh pr list --repo "$REPO" --head "$CAPSULE_BRANCH" --base main --state all --json url --jq 'length' 2>"$WORK/pr-list.err")"
+          [ "$existing" = '0' ] \
+            || { echo "::error::A PR already exists for the fixed capsule branch; refusing to create another." >&2; exit 1; }
+
+          cat > "$WORK/body.md" <<'BODY'
+          Publication proof only: existing specify-stage RED capsule.
+
+          Refs #78.
+
+          This draft proves the guarded publication boundary can create a pull request.
+          It neither accepts the capsule nor authorizes a merge.
+          BODY
+          url="$(gh pr create --draft --repo "$REPO" \
+            --base main --head "$CAPSULE_BRANCH" \
+            --title 'publication proof: existing specify-stage RED capsule for issue #78' \
+            --body-file "$WORK/body.md" 2>"$WORK/pr-create.err")"
+          gh pr view "$url" --repo "$REPO" \
+            --json url,state,isDraft,headRefName,headRefOid,baseRefName,labels,autoMergeRequest,author \
+            > "$WORK/pr.json" 2>"$WORK/pr-view.err"
+          python3 - "$WORK/pr.json" "$viewer" "$CAPSULE_BRANCH" "$CAPSULE_SHA" <<'PY'
+          import json
+          import sys
+
+          path, viewer, branch, sha = sys.argv[1:]
+          with open(path, encoding="utf-8") as handle:
+              pr = json.load(handle)
+          expected = {
+              "state": "OPEN",
+              "isDraft": True,
+              "headRefName": branch,
+              "headRefOid": sha,
+              "baseRefName": "main",
+          }
+          for field, value in expected.items():
+              if pr.get(field) != value:
+                  raise SystemExit(f"publication readback mismatch: {field}")
+          if pr.get("labels") or pr.get("autoMergeRequest") is not None:
+              raise SystemExit("publication readback mismatch: labels or auto-merge")
+          if (pr.get("author") or {}).get("login") != viewer:
+              raise SystemExit("publication readback mismatch: author")
+          if not pr.get("url"):
+              raise SystemExit("publication readback mismatch: missing URL")
+          PY
+          {
+            echo "Publication proof PR: $url"
+            echo "Capsule SHA: $CAPSULE_SHA"
+            echo "Token source: $TOKEN_SOURCE"
+          } >> "$GITHUB_STEP_SUMMARY"
