@@ -9,7 +9,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 WORKFLOWS = {
@@ -208,7 +207,11 @@ fi
         }
         return (
             subprocess.run(
-                ["bash", "-c", script], text=True, capture_output=True, env=env
+                ["bash", "-c", script],
+                check=False,
+                text=True,
+                capture_output=True,
+                env=env,
             ),
             workspace,
             root,
@@ -261,7 +264,7 @@ fi
     def test_selected_token_preflights_once_then_creates_one_pr_on_expected_branch(
         self,
     ) -> None:
-        for lane in WORKFLOWS:
+        for lane, workflow in WORKFLOWS.items():
             with self.subTest(lane=lane):
                 proc, workspace, root = self._open(
                     lane, None, "ok", f"{lane}-capsule-token"
@@ -288,7 +291,7 @@ fi
                 finding.joinpath("invalid-escalation.md").write_text("residual\n")
                 comment_script = render(
                     step_script(
-                        WORKFLOWS[lane].read_text(),
+                        workflow.read_text(),
                         "Comment on the issue with the outcome",
                     ),
                     {
@@ -317,6 +320,7 @@ fi
                 result = subprocess.run(
                     ["bash", "-c", comment_script],
                     cwd=workspace,
+                    check=False,
                     text=True,
                     capture_output=True,
                     env=comment_env,
@@ -370,6 +374,7 @@ fi
                 comment = subprocess.run(
                     ["bash", "-c", script],
                     cwd=workspace,
+                    check=False,
                     text=True,
                     capture_output=True,
                     env=env,
@@ -423,6 +428,7 @@ fi
         result = subprocess.run(
             ["bash", "-c", script],
             cwd=workspace,
+            check=False,
             text=True,
             capture_output=True,
             env=env,
