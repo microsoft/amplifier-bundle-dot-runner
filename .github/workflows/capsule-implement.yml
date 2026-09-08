@@ -493,6 +493,27 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "classification: attractor_exit='$EXIT' recorded_outcome='$RECORDED' converged=$CONVERGED duration_ceiling=$DURATION_CEILING"
 
+      - name: Classify the terminal outcome
+        id: outcome
+        # The process exit is only one fact. A saved escalation or other
+        # evidence file is the terminal state the maintainer needs to see.
+        if: always() && steps.locate.outputs.skip != 'true'
+        env:
+          ATTRACTOR_EXIT: ${{ steps.run.outputs.attractor_exit }}
+        run: |
+          set -euo pipefail
+          set +e
+          python3 .github/capsule-pipeline/outcome_classifier.py classify \
+            --stage implement \
+            --ai-dir "$GITHUB_WORKSPACE/.ai" \
+            --out-dir "$RUNNER_TEMP/capsule-implement/out" \
+            --log-dir "$RUNNER_TEMP/capsule-implement/logs" \
+            --attractor-exit "${ATTRACTOR_EXIT:-}" \
+            --github-output "$GITHUB_OUTPUT"
+          classifier_exit=$?
+          set -e
+          echo "terminal outcome classifier exit: $classifier_exit"
+
       - name: Scrub secrets from run evidence
         if: always() && steps.locate.outputs.skip != 'true'
         env:
@@ -669,7 +690,16 @@ jobs:
           ISSUE="${{ steps.locate.outputs.issue_number }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           COMMENT="$RUNNER_TEMP/capsule-implement/comment.md"
-          if [ "${{ steps.classify.outputs.converged }}" = "true" ] && [ -n "${PR_URL:-}" ]; then
+          OUTCOME="${{ steps.outcome.outputs.kind }}"
+          if [ "$OUTCOME" = "refused_unspecced" ] || \
+             [ "$OUTCOME" = "blocked_on_criteria" ] || \
+             [ "$OUTCOME" = "escalated" ] || \
+             [ "$OUTCOME" = "green_at_base" ]; then
+            python3 .github/capsule-pipeline/outcome_classifier.py comment \
+              --outcome "$OUTCOME" \
+              --ai-dir "$GITHUB_WORKSPACE/.ai" \
+              --run-url "$RUN_URL" > "$COMMENT"
+          elif [ "${{ steps.classify.outputs.converged }}" = "true" ] && [ -n "${PR_URL:-}" ]; then
             {
               echo "**Implement stage: fix PR opened.**"
               echo
@@ -729,17 +759,21 @@ jobs:
           path: |
             ${{ runner.temp }}/capsule-implement/logs
             ${{ github.workspace }}/.ai
+          # upload-artifact v4 otherwise drops this hidden, already-scrubbed
+          # evidence tree (including findings and any escalation).
+          include-hidden-files: true
           if-no-files-found: warn
 
       - name: Fail the job on genuine non-convergence
         if: always() && steps.locate.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          if [ "${{ steps.classify.outputs.duration_ceiling }}" = "true" ]; then
+          OUTCOME="${{ steps.outcome.outputs.kind }}"
+          if [ "$OUTCOME" = "fuse" ]; then
             echo "::error::task-runner.dot hit its wall-clock ceiling mid-work (${{ steps.classify.outputs.duration_hint }}) -- this is NOT 'did not converge within its iteration budget', and no postmortem is possible on this path."
             exit 1
           fi
-          if [ "${{ steps.classify.outputs.converged }}" != "true" ]; then
+          if [ "$OUTCOME" = "non_convergence" ]; then
             echo "::error::task-runner.dot did not converge -- see the issue comment and the uploaded run evidence (a work-in-progress PR may still have been opened)."
             exit 1
           fi
