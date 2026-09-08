@@ -575,6 +575,24 @@ jobs:
           echo "duration_hint=$duration_hint" >> "$GITHUB_OUTPUT"
           echo "Classified as: kind=$kind id=$id duration_hint=$duration_hint"
 
+      - name: Classify the terminal outcome
+        id: outcome
+        # A criteria refusal or a question for its owner is a truthful,
+        # successful stop, not a failed attempt to converge.
+        if: always() && steps.idem.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          set +e
+          python3 .github/capsule-pipeline/outcome_classifier.py classify \
+            --stage feature \
+            --ai-dir "$GITHUB_WORKSPACE/.ai" \
+            --out-dir "$RUNNER_TEMP/capsule-run/out" \
+            --log-dir "$RUNNER_TEMP/capsule-run/logs" \
+            --github-output "$GITHUB_OUTPUT"
+          classifier_exit=$?
+          set -e
+          echo "terminal outcome classifier exit: $classifier_exit"
+
       - name: "Execute the SHIPPED gate at the pinned base SHA"
         id: gate_exec
         if: always() && steps.classify.outputs.kind == 'capsule' && steps.capsule_secret_gate.outputs.capsule_clean == 'true'
@@ -702,8 +720,18 @@ jobs:
           COMMENT="$RUNNER_TEMP/capsule-run/comment.md"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           KIND="${{ steps.classify.outputs.kind }}"
+          OUTCOME="${{ steps.outcome.outputs.kind }}"
           DURATION_HINT="${{ steps.classify.outputs.duration_hint }}"
 
+          if [ "$OUTCOME" = "refused_unspecced" ] || \
+             [ "$OUTCOME" = "blocked_on_criteria" ] || \
+             [ "$OUTCOME" = "escalated" ] || \
+             [ "$OUTCOME" = "green_at_base" ]; then
+            python3 .github/capsule-pipeline/outcome_classifier.py comment \
+              --outcome "$OUTCOME" \
+              --ai-dir "$GITHUB_WORKSPACE/.ai" \
+              --run-url "$RUN_URL" > "$COMMENT"
+          else
           if [ "$KIND" = "capsule" ] && [ -z "${PR_URL:-}" ]; then
             KIND="capsule_blocked"
           fi
@@ -827,6 +855,7 @@ jobs:
               } > "$COMMENT"
               ;;
           esac
+          fi
 
           gh issue comment "$ISSUE_NUMBER" \
             --repo "${{ github.repository }}" \
@@ -864,18 +893,21 @@ jobs:
             ${{ runner.temp }}/capsule-run/logs
             ${{ runner.temp }}/capsule-run/out
             ${{ github.workspace }}/.ai
+          # Keep scrubbed terminal evidence: .ai/findings/,
+          # .ai/criteria-refusal.md, and .ai/escalation.md when present.
+          include-hidden-files: true
           if-no-files-found: warn
 
       - name: Fail the job on genuine non-convergence
         if: always() && steps.idem.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          KIND="${{ steps.classify.outputs.kind }}"
-          if [ "$KIND" = "duration_ceiling" ]; then
+          OUTCOME="${{ steps.outcome.outputs.kind }}"
+          if [ "$OUTCOME" = "fuse" ]; then
             echo "::error::feature-capsule.dot hit its wall-clock ceiling mid-work (${{ steps.classify.outputs.duration_hint }}) -- this is NOT 'did not converge within its iteration budget', and no postmortem is possible on this path."
             exit 1
           fi
-          if [ "$KIND" = "failure" ]; then
+          if [ "$OUTCOME" = "non_convergence" ]; then
             echo "::error::feature-capsule.dot did not converge (no capsule, no recorded finding) -- see the postmortem comment posted on the issue and the uploaded run evidence."
             exit 1
           fi
