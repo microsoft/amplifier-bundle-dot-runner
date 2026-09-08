@@ -35,9 +35,11 @@
 # THE ASSERTED CONTRACT, per lane, is the vendored .dot's own -- not a new
 # opinion invented here:
 #
-#   feature  (feature-capsule.dot, `redgate`): the gate is invoked as
-#            `bash .ai/capsule/DEFINITION.verify.sh` with the repo root as
-#            cwd, and on EVERY run writes .ai/census with exactly one
+#   feature  (feature-capsule.dot, `redgate`): the gate is invoked from the
+#            repo root through its locked project runtime as
+#            `uv run --locked --project <worktree> bash
+#            .ai/capsule/DEFINITION.verify.sh`, and on EVERY run writes
+#            .ai/census with exactly one
 #            `AC-<n>: MET` / `AC-<n>: UNMET` row per ingested criterion and
 #            nothing else. At the pinned base it must exit 1 (articulate
 #            RED) with a complete, well-formed census. When the capsule
@@ -198,7 +200,7 @@ rm -f "$WORKTREE/.ai/census"
 
 # --- run it ------------------------------------------------------------
 rc=0
-( cd "$WORKTREE" && timeout "$TIMEOUT" bash .ai/capsule/DEFINITION.verify.sh ) \
+( cd "$WORKTREE" && timeout "$TIMEOUT" uv run --locked --project "$WORKTREE" bash .ai/capsule/DEFINITION.verify.sh ) \
     > "$GATE_LOG" 2>&1 || rc=$?
 [ -f "$WORKTREE/.ai/census" ] && cp "$WORKTREE/.ai/census" "$CENSUS_COPY"
 

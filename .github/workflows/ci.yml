@@ -305,8 +305,10 @@ jobs:
     # tests that only ever ran when a human remembered to. A scrubber whose
     # tests nobody runs is a scrubber nobody has checked.
     #
-    # Stdlib `unittest`, no dependencies, no network -- so this job is a few
-    # seconds and needs no uv, no venv, and no matrix.
+    # The test harness is stdlib `unittest`, but the shipped-gate runtime
+    # regression executes a verifier through the repository's locked `uv`
+    # project environment. Keep that real boundary under test rather than
+    # substituting a helper or ambient package.
     name: Capsule Pipeline Scripts (scrub, evidence cap, timing table)
     runs-on: ubuntu-latest
     steps:
@@ -314,7 +316,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # The locked root project executed by test_shipped_gate_runtime.py
+          # declares Python >=3.12.
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
 
       - name: Run the capsule-pipeline script tests
         working-directory: .github/capsule-pipeline
