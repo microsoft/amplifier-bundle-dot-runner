@@ -6,7 +6,7 @@
 // The source was copied byte-identically at the re-sync pin above. This
 // graph now also carries deliberate runner-local policy changes, recorded
 // inline and in the port README. Issue #79 ports ONLY the source-owned
-// `author_reset` correction from attractor worktree 1ac365242d30fe5960e188f7c641a06bb889483c:
+// `author_reset` correction at reviewed source commit c330fcc9d2ecbcaa694609d9be50565df8e1a8ca:
 // remove `.ai/hypothesis.patch` after the `.ai`-preserving clean and prove
 // it is neither present nor a dangling symlink before `reset_proven`. It is
 // not a full vendor refresh; do not infer byte identity to that later source
