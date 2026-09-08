@@ -13,9 +13,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,7 @@ EXIT_CODES = {
     "blocked_on_criteria": 12,
     "escalated": 13,
     "partial_met": 14,
+    "refused_escalation": 15,
     "non_convergence": 20,
     "fuse": 21,
 }
@@ -52,6 +53,18 @@ def checkpoint_outcome(checkpoint: Path) -> str:
     return value if isinstance(value, str) else "absent"
 
 
+def checkpoint_completed_nodes(checkpoint: Path) -> set[str]:
+    """Return the completed graph nodes recorded by the engine checkpoint."""
+    try:
+        payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    completed = payload.get("completed_nodes")
+    if not isinstance(completed, list):
+        return set()
+    return {node for node in completed if isinstance(node, str)}
+
+
 def classify(
     *,
     stage: str,
@@ -62,11 +75,23 @@ def classify(
 ) -> Outcome:
     """Return the most specific terminal state represented by run evidence."""
     findings = ai_dir / "findings"
+    completed_nodes = checkpoint_completed_nodes(log_dir / "checkpoint.json")
+
+    # A gate test can intentionally exercise HumanGateHandler and leave its
+    # synthetic .ai/escalation.md behind.  The graph's own terminal finding is
+    # causal evidence; that incidental test artifact is not.  This exact shape
+    # occurred in run 34201009463: redgate returned green_on_main, but the
+    # classifier advertised a bare test-generated escalation instead.
+    green_finding = findings / "green-on-main.md"
+    if "write_green_finding" in completed_nodes and green_finding.is_file():
+        return Outcome("green_at_base", EXIT_CODES["green_at_base"], green_finding)
+
     candidates: Sequence[tuple[str, Path]] = (
         ("refused_unspecced", findings / "unspecced.md"),
+        ("refused_escalation", findings / "invalid-escalation.md"),
         ("blocked_on_criteria", findings / "blocked-on-criteria.md"),
         ("escalated", ai_dir / "escalation.md"),
-        ("green_at_base", findings / "green-on-main.md"),
+        ("green_at_base", green_finding),
         ("partial_met", findings / "partial-met.md"),
     )
     for name, path in candidates:
@@ -142,6 +167,18 @@ def render_comment(outcome: str, ai_dir: Path, run_url: str) -> str:
             "and one or more `AC-<n>:` lines, then re-apply `ready:feature-spec`."
         )
         label = "Criteria refusal (verbatim)"
+    elif outcome == "refused_escalation":
+        finding = read_finding(ai_dir / "findings" / "invalid-escalation.md")
+        heading = (
+            "**Pipeline stage: refused a CI human-gate escalation with no "
+            "actionable decision payload.**"
+        )
+        action = (
+            "**Next action:** do not approve, abandon, or continue this run. "
+            "Terminalize the preceding finding, or supply a proposal or concrete "
+            "evidence-backed choice, then re-apply the triggering label."
+        )
+        label = "Escalation refusal (verbatim)"
     elif outcome == "green_at_base":
         finding = read_finding(ai_dir / "findings" / "green-on-main.md")
         heading = (

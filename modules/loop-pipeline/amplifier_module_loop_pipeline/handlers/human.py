@@ -312,13 +312,79 @@ class HumanGateHandler:
             return ""
         return value
 
+    @staticmethod
+    def _ci_evidence_payload(
+        context: PipelineContext, graph: Graph, node: Node
+    ) -> tuple[str, str, str] | None:
+        """Return a complete concrete-choice payload supplied by a CI graph.
+
+        A generic human-gate prompt is not evidence.  CI callers must explicitly
+        provide the question, evidence, and next action, so a new edge cannot
+        accidentally turn an opaque failure into an owner decision.
+        """
+        values: list[str] = []
+        for key in (
+            "escalation.question",
+            "escalation.evidence",
+            "escalation.next_action",
+        ):
+            value = context.get(key)
+            if not isinstance(value, str) or not value.strip():
+                return None
+            values.append(value.strip())
+
+        option_meanings = {
+            _BRACKET_KEY_RE.sub("", edge.label or edge.to_node).strip()
+            for edge in graph.outgoing_edges(node.id)
+        }
+        if len(option_meanings) < 2:
+            return None
+
+        question, evidence, next_action = values
+        if not re.search(r"\bAC-\d+\b|\bconflict(?:ing)?\b", evidence, re.I):
+            return None
+        return question, evidence, next_action
+
+    @staticmethod
+    def _write_refused_ci_escalation(ai_dir: pathlib.Path, node: Node) -> pathlib.Path:
+        """Record that CI reached an owner gate without a decision payload."""
+        (ai_dir / "escalation.md").unlink(missing_ok=True)
+        finding = ai_dir / "findings" / "invalid-escalation.md"
+        finding.parent.mkdir(parents=True, exist_ok=True)
+        finding.write_text(
+            "\n".join(
+                [
+                    "# Finding: CI escalation refused",
+                    "",
+                    (
+                        f"The `{node.id}` human gate reached CI without a proposal or "
+                        "a concrete evidence-backed choice. CI will not ask an owner to "
+                        "approve, abandon, or continue an unevidenced decision."
+                    ),
+                    "",
+                    "## Required next action",
+                    (
+                        "Change the preceding route to terminalize its finding, or provide "
+                        "`escalation.question`, `escalation.evidence` (naming an unmet "
+                        "AC or conflicting evidence), and `escalation.next_action`. "
+                        "Re-run only after that payload exists."
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return finding
+
     def _write_ci_escalation(
         self, node: Node, context: PipelineContext, graph: Graph
     ) -> Outcome:
         """Record a CI-safe escalation without manufacturing a human selection.
 
         CI has no Interviewer.  An ``escalate`` node must therefore stop with
-        its evidence rather than defaulting through an arbitrary first edge.
+        a proposal or concrete evidence rather than defaulting through an
+        arbitrary first edge.  Missing payload is a terminal refusal, never an
+        empty owner question.
         Partial-met evidence is special: an approval question is invalid until
         a proposal exists, so the artifact names the remaining acceptance
         criterion and the concrete proposal work still required.
@@ -339,6 +405,7 @@ class HumanGateHandler:
         )
         unmet = self._partial_unmet_criteria(ai_dir)
         proposal = self._proposal_reference(context, ai_dir)
+        evidence_payload = self._ci_evidence_payload(context, graph, node)
 
         lines = [f"# Escalation: {node.id}", ""]
         if unmet and not proposal:
@@ -356,23 +423,65 @@ class HumanGateHandler:
                     ),
                 ]
             )
-        else:
+        elif proposal:
             lines.extend(["## Question", prompt, ""])
-            if proposal:
-                lines.extend(
-                    [
-                        "## Decision context",
-                        f"- Proposal for review: {proposal}",
-                        (
-                            "- Decide whether its scoped diff is the right response to "
-                            "the recorded finding before selecting an outcome."
-                        ),
-                        "",
-                    ]
-                )
-            lines.append("## Options")
-            for edge in graph.outgoing_edges(node.id):
-                lines.append(f"- {edge.label or edge.to_node}")
+            lines.extend(
+                [
+                    "## Decision context",
+                    f"- Proposal for review: {proposal}",
+                    (
+                        "- Decide whether that scoped diff is the right response to "
+                        "the recorded finding before selecting an outcome."
+                    ),
+                    "",
+                ]
+            )
+            lines.extend(
+                [
+                    "## Options",
+                    *[
+                        f"- {edge.label or edge.to_node}"
+                        for edge in graph.outgoing_edges(node.id)
+                    ],
+                    "",
+                    "## Required next action",
+                    (
+                        "Review the proposal's scoped diff, record the decision in an "
+                        "authenticated issue comment, then re-apply the triggering label."
+                    ),
+                ]
+            )
+        elif evidence_payload:
+            question, evidence, next_action = evidence_payload
+            lines.extend(
+                [
+                    "## Question",
+                    question,
+                    "",
+                    "## Decision context",
+                    f"- Evidence: {evidence}",
+                    "",
+                    "## Options",
+                    *[
+                        f"- {edge.label or edge.to_node}"
+                        for edge in graph.outgoing_edges(node.id)
+                    ],
+                    "",
+                    "## Required next action",
+                    next_action,
+                ]
+            )
+        else:
+            finding = self._write_refused_ci_escalation(ai_dir, node)
+            return Outcome(
+                status=StageStatus.FAIL,
+                is_explicit=True,
+                context_updates={
+                    "human.gate.label": node.label,
+                    "escalation.finding": str(finding),
+                },
+                notes=f"Human gate '{node.id}': CI escalation refused at {finding}",
+            )
 
         artifact.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return Outcome(

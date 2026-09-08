@@ -724,6 +724,7 @@ jobs:
           DURATION_HINT="${{ steps.classify.outputs.duration_hint }}"
 
           if [ "$OUTCOME" = "refused_unspecced" ] || \
+             [ "$OUTCOME" = "refused_escalation" ] || \
              [ "$OUTCOME" = "blocked_on_criteria" ] || \
              [ "$OUTCOME" = "escalated" ] || \
              [ "$OUTCOME" = "green_at_base" ] || \

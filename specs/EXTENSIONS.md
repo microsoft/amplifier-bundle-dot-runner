@@ -5219,3 +5219,20 @@ no-proposal and proposal-backed artifacts, while the existing interactive
 human-gate tests remain the removed-path control. The `redgate` partial-census
 probe in the feature pipeline returns `red_ok` when AC-1 remains UNMET and
 AC-3/AC-4 guards plus AC-5 are already MET.
+
+*Addendum (2026-09-08, post-merge proof of issue #78): CI now refuses a bare
+`escalate` payload instead of serializing the generic prompt and first option
+as an owner decision. A valid CI escalation must carry either a proposal URL
+or all of `escalation.question`, `escalation.evidence`, and
+`escalation.next_action`; evidence must name an `AC-<n>` or conflicting
+evidence, and the graph must offer materially different options. The refusal
+is the distinct terminal `refused_escalation` finding and its workflows render
+the repair action rather than an approve/abandon prompt. This remains an
+implementer extension on the spec-silent CI artifact surface, so no frozen
+contract or ledger row changes. `outcome_classifier.py` also gives a
+checkpoint-proven `write_green_finding` precedence over a stray
+`.ai/escalation.md`: Actions run `34201009463` actually followed
+`redgate -> write_green_finding -> done` with an all-MET census; the capsule
+gate's synthetic no-Interviewer probe left the generic artifact behind, and
+the old existence-only classifier misreported that test residue as an
+escalation.*

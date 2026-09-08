@@ -12,7 +12,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).parent
 CLASSIFIER = ROOT / "outcome_classifier.py"
 FIXTURES = ROOT / "fixtures" / "outcome-classifier"
@@ -104,7 +103,9 @@ class OutcomeClassifierTests(unittest.TestCase):
                 with self.subTest(graph=graph.name, node=node):
                     fixture = FINDING_NODE_FIXTURES.get(node)
                     self.assertIsNotNone(fixture, f"{node} has no classifier mapping")
-                    expected = json.loads((FIXTURES / fixture / "expected.json").read_text())
+                    expected = json.loads(
+                        (FIXTURES / fixture / "expected.json").read_text()
+                    )
                     self.assertNotIn(expected["outcome"], DEFAULT_OUTCOMES)
 
         self.assertEqual(seen, set(FINDING_NODE_FIXTURES))
@@ -155,7 +156,9 @@ class OutcomeClassifierTests(unittest.TestCase):
             self.assertIn("${{ github.workspace }}/.ai", text)
             self.assertIn("include-hidden-files: true", text)
 
-    def test_every_workflow_dispatches_partial_met_to_its_comment_template(self) -> None:
+    def test_every_workflow_dispatches_partial_met_to_its_comment_template(
+        self,
+    ) -> None:
         workflows = (
             ROOT.parent / "workflows" / "capsule-specify.yml",
             ROOT.parent / "workflows" / "feature-specify.yml",
@@ -164,3 +167,18 @@ class OutcomeClassifierTests(unittest.TestCase):
         for workflow in workflows:
             with self.subTest(workflow=workflow.name):
                 self.assertIn('[ "$OUTCOME" = "partial_met" ]', workflow.read_text())
+
+    def test_every_workflow_dispatches_refused_escalation_to_its_comment_template(
+        self,
+    ) -> None:
+        workflows = (
+            ROOT.parent / "workflows" / "capsule-specify.yml",
+            ROOT.parent / "workflows" / "feature-specify.yml",
+            ROOT.parent / "workflows" / "capsule-implement.yml",
+        )
+        for workflow in workflows:
+            with self.subTest(workflow=workflow.name):
+                self.assertIn(
+                    '[ "$OUTCOME" = "refused_escalation" ]',
+                    workflow.read_text(),
+                )
