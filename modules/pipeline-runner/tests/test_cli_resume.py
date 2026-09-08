@@ -165,3 +165,43 @@ def test_param_colliding_with_restored_context_is_refused(tmp_path, capsys):
     err = capsys.readouterr().err
     assert rc == 1
     assert "collide with context restored from the checkpoint" in err
+
+
+def test_param_colliding_only_with_restored_params_mapping_is_refused(
+    tmp_path, capsys, monkeypatch
+):
+    """Nested parameter state is restored too, even without a flat duplicate."""
+    run_dir = _run_dir(
+        tmp_path,
+        _checkpoint(
+            context={
+                "graph.params_values": {"duration": "existing"},
+                "outcome": "success",
+            }
+        ),
+    )
+    checkpoint_before = (run_dir / "checkpoint.json").read_bytes()
+
+    async def _forbid_execution(*_args, **_kwargs):
+        raise AssertionError("resume must reject before driving the engine")
+
+    from amplifier_module_pipeline_runner import runner
+
+    monkeypatch.setattr(runner, "drive_engine", _forbid_execution)
+    rc = cli.main(
+        [
+            "resume",
+            str(run_dir),
+            "--param",
+            "duration=replacement",
+            "--worker",
+            "llm-direct",
+        ]
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "duration" in err
+    assert "graph.params_values" in err
+    assert (run_dir / "checkpoint.json").read_bytes() == checkpoint_before
+    assert [path.name for path in run_dir.iterdir()] == ["checkpoint.json"]

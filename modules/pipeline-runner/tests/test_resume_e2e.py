@@ -25,6 +25,9 @@ from pathlib import Path
 
 import pytest
 
+from amplifier_module_loop_pipeline.checkpoint import Checkpoint, fingerprint_dot_source
+from amplifier_module_pipeline_runner.runner import drive_engine
+
 # ---------------------------------------------------------------------------
 # Fixture graph
 # ---------------------------------------------------------------------------
@@ -504,3 +507,77 @@ def test_ac3_fidelity_full_degrades_for_exactly_one_hop_across_a_kill(tmp_path):
     assert l3_instruction.startswith("three"), l3_instruction
     assert "Goal:" not in l3_instruction
     assert "Status File Contract" in l3_instruction
+
+
+@pytest.mark.asyncio
+async def test_resume_param_addition_reaches_a_child_graph_parse(tmp_path, monkeypatch):
+    """An allowed resume-time param must extend the restored child-param map.
+
+    ``PipelineEngine.resume`` restores the checkpoint context after
+    ``seed_context`` runs.  That ordering is right for restored state, but a
+    plain restore would replace ``graph.params_values`` wholesale: the new flat
+    key survives, while a child graph's parse-time ``"$duration"`` lookup cannot
+    see it.  Exercise the real resume and folder-handler paths, not a hand-built
+    context merge.
+    """
+    work = tmp_path / "work"
+    logs = tmp_path / "logs"
+    work.mkdir()
+    logs.mkdir()
+    child = tmp_path / "child.dot"
+    child.write_text(
+        """digraph child {
+            graph [max_pipeline_duration="$duration", params="duration"]
+            start [shape=Mdiamond]
+            write [shape=parallelogram, tool_command="printf child-ran > child-ran.txt"]
+            exit [shape=Msquare]
+            start -> write -> exit
+        }"""
+    )
+    parent = """digraph parent {
+        start [shape=Mdiamond]
+        child [shape=folder, dot_file="child.dot"]
+        exit [shape=Msquare]
+        start -> child -> exit
+    }"""
+    checkpoint = Checkpoint(
+        current_node="start",
+        completed_nodes=["start"],
+        context_snapshot={
+            "graph.params_values": {"previous": "kept"},
+            "outcome": "success",
+        },
+        timestamp="2026-09-08T00:00:00Z",
+        node_retries={"start": 0},
+        node_outcomes={"start": {"status": "success", "is_explicit": True}},
+        engine_state={"steps": 1, "node_execution_counts": {"start": 1}},
+        graph={"fingerprint": fingerprint_dot_source(parent), "dot_source": parent},
+    )
+
+    class Coordinator:
+        hooks = None
+        config = {"agents": {}}
+        session = None
+
+        def get_capability(self, _name):
+            return None
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-used-by-tool-graph")
+    outcome = await drive_engine(
+        parent,
+        Coordinator(),
+        params={"duration": "5s"},
+        cwd=work,
+        logs_root=logs,
+        source_dir=str(tmp_path),
+        transform=True,
+        resume_checkpoint=checkpoint,
+    )
+
+    assert outcome.status.value == "success"
+    assert (work / "child-ran.txt").read_text() == "child-ran"
+    final_context = json.loads((logs / "checkpoint.json").read_text())["context"]
+    assert final_context["graph.params_values"] == {
+        "previous": "kept",
+        "duration": "5s",
+    }

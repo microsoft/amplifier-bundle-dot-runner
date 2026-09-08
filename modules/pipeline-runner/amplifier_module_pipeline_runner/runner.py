@@ -104,6 +104,24 @@ class NoProviderConfiguredError(RuntimeError):
     """
 
 
+def _stringify_params(params: Mapping[str, Any] | None) -> dict[str, str]:
+    """Return a detached string-valued copy for both parameter context forms."""
+    return {key: str(value) for key, value in (params or {}).items()}
+
+
+def _resume_param_collisions(
+    params: Mapping[str, Any], context_snapshot: Mapping[str, Any]
+) -> list[str]:
+    """Return resume-param keys that would replace restored state."""
+    restored_params = context_snapshot.get("graph.params_values", {})
+    mapping_collisions = (
+        set(params) & set(restored_params)
+        if isinstance(restored_params, Mapping)
+        else set()
+    )
+    return sorted((set(params) & set(context_snapshot)) | mapping_collisions)
+
+
 def _bootstrap_direct_provider() -> tuple[Any, Any]:
     """Construct a real LLM provider for the engine-native ``direct`` worker.
 
@@ -214,8 +232,9 @@ def seed_context(
         if key in _RESERVED_CONTEXT_KEYS:
             raise ValueError(f"--param key {key!r} collides with reserved context key")
 
-    for key, value in params.items():
-        context.set(key, str(value))
+    string_params = _stringify_params(params)
+    for key, value in string_params.items():
+        context.set(key, value)
 
     context.set("context.target_dir", str(cwd))
 
@@ -228,7 +247,7 @@ def seed_context(
     # child's own parse, producing a failure whose diagnostic told the operator
     # to pass the flag they had just passed. `str()` per value matches the flat
     # seeding above so both forms agree on type.
-    context.set("graph.params_values", {k: str(v) for k, v in params.items()})
+    context.set("graph.params_values", string_params)
 
 
 async def _load_graph(
@@ -555,13 +574,47 @@ async def drive_engine(
             )
 
             verify_checkpoint_structure(resume_checkpoint, graph)
-            return await engine.resume(
-                resume_checkpoint,
+            context_overrides: dict[str, Any] = {
                 # --cwd is process-level wiring that cannot be serialized, so
                 # the RESUMING invocation owns it (it behaves exactly as on
-                # `run`). Everything else in the context is restored verbatim
-                # from the checkpoint.
-                context_overrides={"context.target_dir": str(resolved_cwd)},
+                # `run`).
+                "context.target_dir": str(resolved_cwd),
+            }
+            if params:
+                # The checkpoint restores context after seed_context(), so it
+                # would otherwise replace the newly seeded mapping wholesale.
+                # Flat additions would survive, but a child graph only reads
+                # graph.params_values while it is parsed and could not see
+                # them. Preserve the checkpoint's original mapping and merge
+                # in the allowed resume-time additions.
+                restored_params = resume_checkpoint.context_snapshot.get(
+                    "graph.params_values", {}
+                )
+                collisions = _resume_param_collisions(
+                    params, resume_checkpoint.context_snapshot
+                )
+                if collisions:
+                    raise ValueError(
+                        f"--param key(s) {collisions!r} collide with context restored "
+                        "from the checkpoint (including graph.params_values). Restored "
+                        "state wins on resume, so the param would be silently discarded. "
+                        "Remove the param, or start a new run with 'dot-runner run' if "
+                        "you need a different value."
+                    )
+                if not isinstance(restored_params, Mapping):
+                    raise ValueError(
+                        "checkpoint context key 'graph.params_values' must be a "
+                        "mapping to resume with --param additions"
+                    )
+                context_overrides["graph.params_values"] = {
+                    **restored_params,
+                    **_stringify_params(params),
+                }
+            return await engine.resume(
+                resume_checkpoint,
+                # The snapshot remains authoritative except for process-level
+                # wiring and the additive mapping reconciliation above.
+                context_overrides=context_overrides,
             )
 
         return await engine.run()
@@ -1444,18 +1497,21 @@ async def resume_pipeline(
     )
     resolved_dot_source = checkpoint.graph_dot_source
 
-    # A resume-time param may only ADD keys.  Restored context wins by
+    # A resume-time param may only ADD keys. Restored context wins by
     # construction (engine.resume applies the snapshot over the seeded
     # context), so a collision would silently discard what the caller asked
-    # for — refuse instead.
+    # for — refuse instead. The child-parse mapping is restored as one nested
+    # context value, so check its keys too: mounted-style runs need not have a
+    # duplicate flat key for every entry in that map.
     if params:
-        collisions = sorted(set(params) & set(checkpoint.context_snapshot))
+        collisions = _resume_param_collisions(params, checkpoint.context_snapshot)
         if collisions:
             raise ValueError(
                 f"--param key(s) {collisions!r} collide with context restored "
-                "from the checkpoint. Restored state wins on resume, so the "
-                "param would be silently discarded. Remove the param, or start "
-                "a new run with 'dot-runner run' if you need a different value."
+                "from the checkpoint (including graph.params_values). Restored "
+                "state wins on resume, so the param would be silently discarded. "
+                "Remove the param, or start a new run with 'dot-runner run' if "
+                "you need a different value."
             )
 
     cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else Path.cwd()
