@@ -279,6 +279,112 @@ class HumanGateHandler:
 
         return None
 
+    @staticmethod
+    def _partial_unmet_criteria(ai_dir: pathlib.Path) -> list[str]:
+        """Return the remaining non-guard AC IDs from a partial-met finding."""
+        finding = ai_dir / "findings" / "partial-met.md"
+        try:
+            text = finding.read_text(encoding="utf-8")
+        except OSError:
+            return []
+
+        return [
+            match.group(1)
+            for match in re.finditer(
+                r"^(AC-\d+)(?: \[guard\])?: UNMET$",
+                text,
+                flags=re.MULTILINE,
+            )
+            if "[guard]" not in match.group(0)
+        ]
+
+    @staticmethod
+    def _proposal_reference(context: PipelineContext, ai_dir: pathlib.Path) -> str:
+        """Find a proposal URL supplied by the pipeline or its prior artifact."""
+        for key in ("proposal_url", "proposal_pr"):
+            value = context.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        try:
+            value = (ai_dir / "proposal-url").read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        return value
+
+    def _write_ci_escalation(
+        self, node: Node, context: PipelineContext, graph: Graph
+    ) -> Outcome:
+        """Record a CI-safe escalation without manufacturing a human selection.
+
+        CI has no Interviewer.  An ``escalate`` node must therefore stop with
+        its evidence rather than defaulting through an arbitrary first edge.
+        Partial-met evidence is special: an approval question is invalid until
+        a proposal exists, so the artifact names the remaining acceptance
+        criterion and the concrete proposal work still required.
+        """
+        ai_dir = pathlib.Path.cwd() / ".ai"
+        ai_dir.mkdir(parents=True, exist_ok=True)
+        artifact = ai_dir / "escalation.md"
+        raw_prompt = (
+            node.prompt
+            or node.attrs.get("prompt")
+            or node.label
+            or f"Human gate: {node.id}"
+        )
+        prompt = (
+            _expand_description(raw_prompt, graph, context)
+            if "$" in raw_prompt
+            else raw_prompt
+        )
+        unmet = self._partial_unmet_criteria(ai_dir)
+        proposal = self._proposal_reference(context, ai_dir)
+
+        lines = [f"# Escalation: {node.id}", ""]
+        if unmet and not proposal:
+            criteria = ", ".join(unmet)
+            lines.extend(
+                [
+                    "## Decision context",
+                    f"- Remaining unmet acceptance criterion: {criteria}.",
+                    "- No proposal PR or diff exists to approve or reject.",
+                    "",
+                    "## Required next action",
+                    (
+                        f"Produce a scoped proposal for {criteria}, with a RED proof and "
+                        "ordinary CI. Do not ask for approval until that proposal exists."
+                    ),
+                ]
+            )
+        else:
+            lines.extend(["## Question", prompt, ""])
+            if proposal:
+                lines.extend(
+                    [
+                        "## Decision context",
+                        f"- Proposal for review: {proposal}",
+                        (
+                            "- Decide whether its scoped diff is the right response to "
+                            "the recorded finding before selecting an outcome."
+                        ),
+                        "",
+                    ]
+                )
+            lines.append("## Options")
+            for edge in graph.outgoing_edges(node.id):
+                lines.append(f"- {edge.label or edge.to_node}")
+
+        artifact.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return Outcome(
+            status=StageStatus.FAIL,
+            is_explicit=True,
+            context_updates={
+                "human.gate.label": node.label,
+                "escalation.artifact": str(artifact),
+            },
+            notes=f"Human gate '{node.id}': CI escalation recorded at {artifact}",
+        )
+
     async def execute(
         self,
         node: Node,
@@ -295,6 +401,8 @@ class HumanGateHandler:
         3. Ask the interviewer.
         4. Map the answer to suggested_next_ids for edge selection.
         """
+        if self._interviewer is None and node.id == "escalate":
+            return self._write_ci_escalation(node, context, graph)
         if self._interviewer is None:
             raise ValueError(
                 "HumanGateHandler requires an Interviewer but none was provided. "
