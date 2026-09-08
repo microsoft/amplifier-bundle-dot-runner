@@ -10,14 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-import sys
 
 import pytest
-
-# The port requires the local canonical-metadata prerequisite (aa53281), not
-# pipeline-runner's published loop-pipeline dependency in this module venv.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "loop-pipeline"))
-
 import unified_llm
 
 from amplifier_module_loop_pipeline.context import PipelineContext
