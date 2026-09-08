@@ -577,11 +577,13 @@ class TestHumanGateHandler:
         )
 
         graph = _make_escalation_graph()
-        await HumanGateHandler().execute(
+        outcome = await HumanGateHandler().execute(
             graph.nodes["escalate"], context, graph, str(tmp_path / "logs")
         )
         artifact = (tmp_path / ".ai" / "escalation.md").read_text(encoding="utf-8")
 
+        assert outcome.status == StageStatus.FAIL
+        assert outcome.suggested_next_ids is None
         assert "AC-12" in artifact
         assert "conflict" in artifact.lower()
         assert "[A] Abandon -- preserve the finding" in artifact

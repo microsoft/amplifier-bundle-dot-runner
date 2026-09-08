@@ -446,6 +446,7 @@ jobs:
             --worker coding-agent \
             --cwd "$GITHUB_WORKSPACE" \
             --logs-root "$RUNNER_TEMP/capsule-run/logs" \
+            --on-human-gate fail \
             --param issue_file="${{ steps.issue.outputs.file }}" \
             --param target_dir="$GITHUB_WORKSPACE" \
             --param base_sha="${{ steps.base.outputs.sha }}" \

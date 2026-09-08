@@ -28,6 +28,21 @@ FINDING_NODE_FIXTURES = {
     "write_partial_finding": "partial-met",
 }
 DEFAULT_OUTCOMES = {"converged", "non_convergence", "fuse"}
+WORKFLOW_RUN_STEPS = (
+    (
+        ROOT.parent / "workflows" / "capsule-specify.yml",
+        "\n      - name: Run capsule.dot (specify stage)",
+    ),
+    (
+        ROOT.parent / "workflows" / "feature-specify.yml",
+        "\n      - name: Run feature-capsule.dot (feature specify stage)",
+    ),
+    (
+        ROOT.parent / "workflows" / "capsule-implement.yml",
+        "\n      - name: Run task-runner.dot (implement stage)",
+    ),
+)
+WORKFLOWS = tuple(workflow for workflow, _ in WORKFLOW_RUN_STEPS)
 
 
 def load_module():
@@ -146,37 +161,34 @@ class OutcomeClassifierTests(unittest.TestCase):
             )
 
     def test_every_workflow_archives_scrubbed_hidden_ai_evidence(self) -> None:
-        workflows = (
-            ROOT.parent / "workflows" / "capsule-specify.yml",
-            ROOT.parent / "workflows" / "feature-specify.yml",
-            ROOT.parent / "workflows" / "capsule-implement.yml",
-        )
-        for workflow in workflows:
+        for workflow in WORKFLOWS:
             text = workflow.read_text(encoding="utf-8")
             self.assertIn("${{ github.workspace }}/.ai", text)
             self.assertIn("include-hidden-files: true", text)
 
+    def test_shipped_workflow_runs_use_fail_human_gate_policy(self) -> None:
+        """The shipped CI invocations do not opt in to auto-approve."""
+        for workflow, step_name in WORKFLOW_RUN_STEPS:
+            with self.subTest(workflow=workflow.name):
+                _, marker, step = workflow.read_text(encoding="utf-8").partition(
+                    step_name
+                )
+                self.assertTrue(marker, f"missing run step {step_name!r}")
+                run_block = step.partition("\n      - name:")[0]
+                self.assertIn("--on-human-gate fail", run_block)
+                self.assertNotIn("--on-human-gate auto-approve", run_block)
+
     def test_every_workflow_dispatches_partial_met_to_its_comment_template(
         self,
     ) -> None:
-        workflows = (
-            ROOT.parent / "workflows" / "capsule-specify.yml",
-            ROOT.parent / "workflows" / "feature-specify.yml",
-            ROOT.parent / "workflows" / "capsule-implement.yml",
-        )
-        for workflow in workflows:
+        for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow.name):
                 self.assertIn('[ "$OUTCOME" = "partial_met" ]', workflow.read_text())
 
     def test_every_workflow_dispatches_refused_escalation_to_its_comment_template(
         self,
     ) -> None:
-        workflows = (
-            ROOT.parent / "workflows" / "capsule-specify.yml",
-            ROOT.parent / "workflows" / "feature-specify.yml",
-            ROOT.parent / "workflows" / "capsule-implement.yml",
-        )
-        for workflow in workflows:
+        for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow.name):
                 self.assertIn(
                     '[ "$OUTCOME" = "refused_escalation" ]',

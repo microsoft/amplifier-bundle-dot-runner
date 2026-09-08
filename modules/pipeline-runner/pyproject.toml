@@ -129,4 +129,4 @@ asyncio_mode = "strict"
 # unified-llm-client change needs the LOCAL sibling checked out first, same
 # as modules/loop-agent/pyproject.toml's own established `pythonpath`
 # convention for the exact same cross-module-in-one-PR situation.
-pythonpath = ["../unified-llm-client"]
+pythonpath = ["../loop-pipeline", "../unified-llm-client"]

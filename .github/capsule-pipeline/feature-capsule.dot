@@ -5,12 +5,14 @@
 // (path: .github/capsule-pipeline/feature-capsule.dot), that repo's PR #343 head at re-sync time (2026-08-30, ba9 lane-honesty wave -- pending merge; re-sync again after merge if the SHA moves).
 // Everything below this box -- INCLUDING that source file's own
 // provenance header, if it carries one -- is byte-identical to the
-// source; do not hand-edit it. Re-sync by re-copying the source file
-// and re-applying only this outer box. See
-// .github/capsule-pipeline/README.md for the overview, re-sync
-// procedure, and the deltas this port introduces (dot-runner IS the
-// engine here, not a consumer of it -- see the workflows for what
-// changes).
+// source; do not hand-edit it. Issue #78 narrowly re-vendors only the
+// source-owned escalation-edge guards from amplifier-bundle-attractor commit
+// e6d14fdca3d2548ee8d793a89d375134a6ad6646 (based on source main 6d301c6);
+// it is not a full vendor refresh. Re-sync by re-copying the source file and
+// re-applying only this outer box. See .github/capsule-pipeline/README.md for
+// the overview, re-sync procedure, and the deltas this port introduces
+// (dot-runner IS the engine here, not a consumer of it -- see the workflows
+// for what changes).
 // ==============================================================================
 // ============================================================================
 // VENDORED COPY -- see .github/capsule-pipeline/README.md for provenance,
@@ -1000,8 +1002,8 @@ digraph FeatureCapsulePipeline {
     pm_gate -> escalate
 
     // Abandon FIRST: timeout/auto-approve interviewers fail safe.
-    escalate -> abandon     [label="[A] Abandon -- keep the postmortem"]
-    escalate -> bump_budget [label="[C] Continue -- raise the budget"]
-    escalate -> package     [label="[K] Keep -- accept the capsule as-is, findings, questions, and postmortem attached"]
+    escalate -> abandon     [condition="outcome=success && context.human.gate.selected=A", label="[A] Abandon -- keep the postmortem"]
+    escalate -> bump_budget [condition="outcome=success && context.human.gate.selected=C", label="[C] Continue -- raise the budget"]
+    escalate -> package     [condition="outcome=success && context.human.gate.selected=K", label="[K] Keep -- accept the capsule as-is, findings, questions, and postmortem attached"]
     bump_budget -> author
 }
