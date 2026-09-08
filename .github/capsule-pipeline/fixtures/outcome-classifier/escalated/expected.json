@@ -1,1 +1,1 @@
-{"stage":"implement","outcome":"escalated","exit_code":13,"comment_contains":"Escalation (verbatim)","finding_verbatim":"A maintainer decision is required."}
+{"stage":"implement","outcome":"escalated","exit_code":13,"comment_contains":"Escalation (verbatim)","finding_verbatim":"Proposal for review: https://github.example/acme/repo/pull/42"}
