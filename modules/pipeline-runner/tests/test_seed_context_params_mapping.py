@@ -49,7 +49,9 @@ class _Ctx:
 class TestMappingIsSeeded:
     def test_mapping_is_present_and_complete(self) -> None:
         ctx = _Ctx()
-        seed_context(ctx, {"max_duration": "19800s", "issue_file": "/tmp/i.md"}, Path("/tmp"))
+        seed_context(
+            ctx, {"max_duration": "19800s", "issue_file": "/tmp/i.md"}, Path("/tmp")
+        )
         assert ctx.get("graph.params_values") == {
             "max_duration": "19800s",
             "issue_file": "/tmp/i.md",
