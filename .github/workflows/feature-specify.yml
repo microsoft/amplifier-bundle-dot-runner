@@ -1129,14 +1129,29 @@ jobs:
           WORK="$RUNNER_TEMP/publication-proof"
           mkdir -p "$WORK"
 
+          safe_failure_category() {
+            local phase="$1" error_file="$2" category='other'
+            if grep -Eq '(^|[^0-9])401([^0-9]|$)' "$error_file"; then
+              category='http_401'
+            elif grep -Eq '(^|[^0-9])403([^0-9]|$)' "$error_file"; then
+              category='http_403'
+            elif grep -Eqi 'network|connection|timed out|timeout|temporary failure|could not resolve|tls' "$error_file"; then
+              category='network'
+            fi
+            echo "::error::publication proof: phase=$phase failure_category=$category" >&2
+          }
+
           if ! viewer="$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.login' 2>"$WORK/viewer.err")"; then
-            echo "::error::Publication credential preflight failed; no PR was created." >&2
+            safe_failure_category 'viewer' "$WORK/viewer.err"
             exit 1
           fi
           remote_head="$(git ls-remote --heads "https://github.com/$REPO.git" "refs/heads/$CAPSULE_BRANCH" | awk '{print $1}')"
           [ "$remote_head" = "$CAPSULE_SHA" ] \
             || { echo "::error::Capsule branch no longer resolves to the reviewed SHA; no PR was created." >&2; exit 1; }
-          existing="$(gh pr list --repo "$REPO" --head "$CAPSULE_BRANCH" --base main --state all --json url --jq 'length' 2>"$WORK/pr-list.err")"
+          if ! existing="$(gh pr list --repo "$REPO" --head "$CAPSULE_BRANCH" --base main --state all --json url --jq 'length' 2>"$WORK/pr-list.err")"; then
+            safe_failure_category 'prlist' "$WORK/pr-list.err"
+            exit 1
+          fi
           [ "$existing" = '0' ] \
             || { echo "::error::A PR already exists for the fixed capsule branch; refusing to create another." >&2; exit 1; }
 
@@ -1148,13 +1163,21 @@ jobs:
           This draft proves the guarded publication boundary can create a pull request.
           It neither accepts the capsule nor authorizes a merge.
           BODY
-          url="$(gh pr create --draft --repo "$REPO" \
+          if ! url="$(gh pr create --draft --repo "$REPO" \
             --base main --head "$CAPSULE_BRANCH" \
             --title 'publication proof: existing specify-stage RED capsule for issue #78' \
-            --body-file "$WORK/body.md" 2>"$WORK/pr-create.err")"
-          gh pr view "$url" --repo "$REPO" \
+            --body-file "$WORK/body.md" 2>"$WORK/pr-create.err")"; then
+            safe_failure_category 'prcreate' "$WORK/pr-create.err"
+            echo "::error::PR creation failed or indeterminate; inspect fixed head for an existing PR before any retry." >&2
+            exit 1
+          fi
+          if ! gh pr view "$url" --repo "$REPO" \
             --json url,state,isDraft,headRefName,headRefOid,baseRefName,labels,autoMergeRequest,author \
-            > "$WORK/pr.json" 2>"$WORK/pr-view.err"
+            > "$WORK/pr.json" 2>"$WORK/pr-view.err"; then
+            safe_failure_category 'prview' "$WORK/pr-view.err"
+            echo "::error::PR creation failed or indeterminate; inspect fixed head for an existing PR before any retry." >&2
+            exit 1
+          fi
           python3 - "$WORK/pr.json" "$viewer" "$CAPSULE_BRANCH" "$CAPSULE_SHA" <<'PY'
           import json
           import sys
@@ -1183,4 +1206,4 @@ jobs:
             echo "Publication proof PR: $url"
             echo "Capsule SHA: $CAPSULE_SHA"
             echo "Token source: $TOKEN_SOURCE"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -615,6 +615,39 @@ class PublicationProofWorkflowTests(unittest.TestCase):
         self.assertNotIn("git push", script)
         self.assertNotIn("feature-capsule.dot", script)
 
+    def test_publication_http_failure_category_does_not_echo_server_body(self) -> None:
+        script = self._script("Preflight and create one draft proof PR")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            gh = bin_dir / "gh"
+            gh.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo 'HTTP 401 DUMMYCANARY: server body' >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            gh.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "RUNNER_TEMP": str(root),
+                    "GITHUB_STEP_SUMMARY": str(root / "summary"),
+                    "TOKEN_SOURCE": "GITHUB_TOKEN",
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "phase=viewer failure_category=http_401", result.stderr
+            )
+            self.assertNotIn("DUMMYCANARY", result.stdout + result.stderr)
+
     def test_new_shell_blocks_parse_with_bash(self) -> None:
         for name in (
             "Pin and save the five reviewed capsule files",
