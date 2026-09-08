@@ -3,9 +3,13 @@
 Spec coverage: HUMAN-001–008, INTV-001–010, Section 6.
 """
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from amplifier_module_loop_pipeline.context import PipelineContext
+from amplifier_module_loop_pipeline.dot_parser import parse_dot
 from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers.human import HumanGateHandler
 from amplifier_module_loop_pipeline.interviewer import (
@@ -50,6 +54,66 @@ def _make_graph_with_human_gate() -> Graph:
 
 def _make_context() -> PipelineContext:
     return PipelineContext()
+
+
+def _make_escalation_graph() -> Graph:
+    """A shipped-shape escalation gate with no configured interviewer."""
+    return Graph(
+        name="escalation",
+        nodes={
+            "escalate": Node(
+                id="escalate",
+                shape="hexagon",
+                label="Escalation",
+                prompt="A maintainer decision is required.",
+            ),
+            "abandon": Node(id="abandon", shape="box"),
+            "continue": Node(id="continue", shape="box"),
+            "keep": Node(id="keep", shape="box"),
+        },
+        edges=[
+            Edge(
+                from_node="escalate",
+                to_node="abandon",
+                label="[A] Abandon -- preserve the finding",
+            ),
+            Edge(
+                from_node="escalate",
+                to_node="continue",
+                label="[C] Continue -- spend another iteration budget",
+            ),
+            Edge(
+                from_node="escalate",
+                to_node="keep",
+                label="[K] Keep -- review the proposal",
+            ),
+        ],
+    )
+
+
+def _feature_redgate_command() -> str:
+    """Load the shipped redgate with the parameters its graph requires."""
+    source = (
+        Path(__file__).parents[3]
+        / ".github"
+        / "capsule-pipeline"
+        / "feature-capsule.dot"
+    ).read_text(encoding="utf-8")
+    graph = parse_dot(
+        source,
+        params={
+            "gate_time_ceiling": "5",
+            "max_duration": "30m",
+            "target_dir": "/tmp",
+            "base_sha": "test-base",
+            "criteria_file": "/tmp/criteria",
+            "issue_file": "/tmp/issue",
+            "capsule_out": "/tmp/capsule-out",
+            "later_commit": "",
+            "uplift_dir": "/tmp/uplift",
+        },
+    )
+    return graph.nodes["redgate"].attrs["tool_command"]
 
 
 # --- Interviewer models ---
@@ -367,6 +431,111 @@ class TestHumanGateHandler:
         ):
             await handler.execute(node, _make_context(), graph, "/tmp")
 
+    @pytest.mark.asyncio
+    async def test_ci_escalation_with_partial_met_no_proposal_is_actionable(
+        self, tmp_path, monkeypatch
+    ):
+        """A CI escalation cannot ask approval when AC-1 has no proposal."""
+        monkeypatch.chdir(tmp_path)
+        finding = tmp_path / ".ai" / "findings" / "partial-met.md"
+        finding.parent.mkdir(parents=True)
+        finding.write_text(
+            "--- base census (.ai/census) ---\n"
+            "AC-1: UNMET\n"
+            "AC-3 [guard]: MET\n"
+            "AC-4 [guard]: MET\n"
+            "AC-5: MET\n",
+            encoding="utf-8",
+        )
+
+        graph = _make_escalation_graph()
+        outcome = await HumanGateHandler().execute(
+            graph.nodes["escalate"], _make_context(), graph, str(tmp_path / "logs")
+        )
+        artifact = (tmp_path / ".ai" / "escalation.md").read_text(encoding="utf-8")
+
+        assert outcome.status == StageStatus.FAIL
+        assert "AC-1" in artifact
+        assert "scoped proposal" in artifact.lower()
+        assert "Approve changes?" not in artifact
+        assert "- Approve: Approve" not in artifact
+        assert "- Reject: Reject" not in artifact
+
+    @pytest.mark.asyncio
+    async def test_ci_escalation_with_proposal_names_it_and_its_decision_context(
+        self, tmp_path, monkeypatch
+    ):
+        """A proposal-backed CI escalation gives the maintainer its real choice."""
+        monkeypatch.chdir(tmp_path)
+        context = _make_context()
+        context.set("proposal_url", "https://github.example/acme/repo/pull/42")
+
+        graph = _make_escalation_graph()
+        await HumanGateHandler().execute(
+            graph.nodes["escalate"], context, graph, str(tmp_path / "logs")
+        )
+        artifact = (tmp_path / ".ai" / "escalation.md").read_text(encoding="utf-8")
+
+        assert "https://github.example/acme/repo/pull/42" in artifact
+        assert "Decision context" in artifact
+        assert "proposal" in artifact.lower()
+
+
+def test_partially_met_feature_with_remaining_work_continues_to_authoring(tmp_path):
+    """Only all-MET guards plus AC-1 remaining must not force re-scoping."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+    (tmp_path / "anchor").write_text("anchor\n", encoding="utf-8")
+    subprocess.run(["git", "add", "anchor"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "anchor"], cwd=tmp_path, check=True)
+    base = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+
+    ai = tmp_path / ".ai"
+    (ai / "capsule").mkdir(parents=True)
+    (ai / "base-sha").write_text(f"{base}\n", encoding="utf-8")
+    (ai / "iter").write_text("0\n", encoding="utf-8")
+    (ai / "criteria-ids").write_text("AC-1\nAC-3\nAC-4\nAC-5\n", encoding="utf-8")
+    (ai / "criteria-guard-ids").write_text("AC-3\nAC-4\n", encoding="utf-8")
+    (ai / "capsule" / "DEFINITION.md").write_text(
+        "---\nred_signal: AC-1: UNMET\n---\n", encoding="utf-8"
+    )
+    (ai / "capsule" / "DEFINITION.verify.sh").write_text(
+        "set -euo pipefail\n"
+        "cat > .ai/census <<'CENSUS'\n"
+        "AC-1: UNMET\n"
+        "AC-3: MET\n"
+        "AC-4: MET\n"
+        "AC-5: MET\n"
+        "CENSUS\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", _feature_redgate_command()],
+        cwd=tmp_path,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+    assert completed.stdout == "red_ok"
+    assert (ai / "census-red").read_text(encoding="utf-8").splitlines() == [
+        "AC-1: UNMET",
+        "AC-3: MET",
+        "AC-4: MET",
+        "AC-5: MET",
+    ]
+
+
+class TestHumanGateHandlerContextUpdates:
     @pytest.mark.asyncio
     async def test_sets_context_updates_with_spec_keys(self):
         """L-16: Handler sets human.gate.selected and human.gate.label per spec."""

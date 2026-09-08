@@ -5191,3 +5191,31 @@ alternate-maker proxy; critique_b uses the 125-call independent-critic
 proxy. `.github/capsule-pipeline/test_turn_caps.py` contains the complete
 graph/node census, exact caps, sources, and these assumptions, so a new
 LLM node cannot escape the pin or cap silently.*
+
+## 48. CI-Safe Escalation Artifacts Must Be Actionable
+
+**Classification: implementer extension on a spec-silent surface. No
+`ledger/rows.yaml` row applies.** Dated 2026-09-08; owner ruling recorded in
+issue #78's authenticated criteria.
+
+**What:** An `escalate` human gate with no configured `Interviewer` writes
+`.ai/escalation.md` and ends loudly instead of selecting an arbitrary outgoing
+edge. Interactive gates keep the canonical choice-and-route behavior.
+
+For a partial-met finding without a proposal, the artifact names each remaining
+non-guard `AC-<n>` and requires a scoped proposal with a RED proof and ordinary
+CI; it does not manufacture an approve/reject decision. A proposal-backed
+artifact names the proposal URL and states that the maintainer is deciding
+whether its scoped diff is the right response to the recorded finding.
+
+**Why:** A CI run cannot honestly choose a human option. More importantly, a
+maintainer cannot approve a proposal that does not exist. The feature graph
+therefore continues when only ordinary feature criteria remain UNMET and every
+guard is MET, preserving the already-MET rows as base invariants while its
+capsule proves the remaining work.
+
+**Evidence:** `modules/loop-pipeline/tests/test_human.py` asserts both
+no-proposal and proposal-backed artifacts, while the existing interactive
+human-gate tests remain the removed-path control. The `redgate` partial-census
+probe in the feature pipeline returns `red_ok` when AC-1 remains UNMET and
+AC-3/AC-4 guards plus AC-5 are already MET.
