@@ -275,11 +275,15 @@ async def execute_with_retry(
                     node.id,
                     type(e).__name__,
                 )
-                return Outcome(
+                terminal_outcome = Outcome(
                     status=StageStatus.FAIL,
                     failure_reason=str(e),
                     attempt_count=attempt,
                 )
+                await _emit_stage_failed(
+                    hooks, node.id, attempt, terminal_outcome.status
+                )
+                return terminal_outcome
             if attempt < policy.max_attempts:
                 # support#379: exception-driven retries previously emitted no
                 # stage_retrying event at all — only RETRY-status and
@@ -300,11 +304,13 @@ async def execute_with_retry(
                     )
                 await _sleep_backoff(policy.backoff, attempt)
                 continue
-            return Outcome(
+            terminal_outcome = Outcome(
                 status=StageStatus.FAIL,
                 failure_reason=str(e),
                 attempt_count=attempt,
             )
+            await _emit_stage_failed(hooks, node.id, attempt, terminal_outcome.status)
+            return terminal_outcome
 
         # Spec §4.5 / Appendix C status-file contract read-side pickup.
         # EXTENSIONS.md §41: a node's own stage-dir status.json (written by
@@ -365,11 +371,13 @@ async def execute_with_retry(
             # Return the FAIL directly — allow_partial does NOT soften a
             # must_write violation (fail-closed).
             must_write_fail.attempt_count = attempt
+            await _emit_stage_failed(hooks, node.id, attempt, must_write_fail.status)
             return must_write_fail
 
         # FAIL — return immediately, no retries
         if outcome.status == StageStatus.FAIL:
             outcome.attempt_count = attempt
+            await _emit_stage_failed(hooks, node.id, attempt, outcome.status)
             return outcome
 
         # SKIPPED — return immediately.  Decision (EXTENSIONS.md §27): SKIPPED
@@ -447,23 +455,28 @@ async def execute_with_retry(
             attempt_count=policy.max_attempts,
         )
 
-    if hooks is not None:
-        from .pipeline_events import PIPELINE_STAGE_FAILED
-
-        await hooks.emit(
-            PIPELINE_STAGE_FAILED,
-            {
-                "node_id": node.id,
-                "attempts": policy.max_attempts,
-                "final_status": (
-                    "partial_success"
-                    if final_outcome.status == StageStatus.PARTIAL_SUCCESS
-                    else "fail"
-                ),
-            },
-        )
+    await _emit_stage_failed(hooks, node.id, policy.max_attempts, final_outcome.status)
 
     return final_outcome
+
+
+async def _emit_stage_failed(
+    hooks: Any, node_id: str, attempts: int, final_status: StageStatus
+) -> None:
+    """Emit the existing terminal failure event without intercepting hook errors."""
+    if hooks is None:
+        return
+
+    from .pipeline_events import PIPELINE_STAGE_FAILED
+
+    await hooks.emit(
+        PIPELINE_STAGE_FAILED,
+        {
+            "node_id": node_id,
+            "attempts": attempts,
+            "final_status": final_status.value,
+        },
+    )
 
 
 async def _sleep_backoff(backoff: BackoffConfig, attempt: int) -> None:
