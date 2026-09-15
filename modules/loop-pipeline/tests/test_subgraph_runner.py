@@ -336,8 +336,7 @@ async def test_run_subgraph_suppresses_events_when_emit_node_events_false(tmp_pa
 
     assert outcome.status == StageStatus.SUCCESS
     assert hooks.events == [], (
-        f"Expected zero events with emit_node_events=False, "
-        f"got: {hooks.events!r}"
+        f"Expected zero events with emit_node_events=False, got: {hooks.events!r}"
     )
 
 

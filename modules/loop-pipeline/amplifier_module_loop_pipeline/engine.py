@@ -18,7 +18,6 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from .artifacts import ArtifactStore
@@ -666,11 +665,11 @@ class PipelineEngine:
             # Step 1: Check for terminal node (exit)
             if current_node.is_exit_node():
                 self._save_checkpoint(
-                current_node.id,
-                goal_gate_retries=goal_gate_retries,
-                failure_routing_retries=failure_routing_retries,
-                steps=steps,
-            )
+                    current_node.id,
+                    goal_gate_retries=goal_gate_retries,
+                    failure_routing_retries=failure_routing_retries,
+                    steps=steps,
+                )
                 await self._emit(
                     PIPELINE_CHECKPOINT,
                     {
@@ -765,7 +764,9 @@ class PipelineEngine:
                     self._populate_failed_outputs(current_node.id)
 
                     node_duration_ms = 0.0
-                    self._write_node_status(current_node.id, skip_outcome, node_duration_ms)
+                    self._write_node_status(
+                        current_node.id, skip_outcome, node_duration_ms
+                    )
                     await self._emit(
                         PIPELINE_NODE_COMPLETE,
                         {
@@ -780,11 +781,11 @@ class PipelineEngine:
                         },
                     )
                     self._save_checkpoint(
-                    current_node.id,
-                    goal_gate_retries=goal_gate_retries,
-                    failure_routing_retries=failure_routing_retries,
-                    steps=steps,
-                )
+                        current_node.id,
+                        goal_gate_retries=goal_gate_retries,
+                        failure_routing_retries=failure_routing_retries,
+                        steps=steps,
+                    )
                     await self._emit(
                         PIPELINE_CHECKPOINT,
                         {
@@ -1074,7 +1075,8 @@ class PipelineEngine:
                         {
                             "status": "cancelled",
                             "total_nodes_executed": len(self.completed_nodes),
-                            "duration_ms": (time.monotonic() - pipeline_start_time) * 1000,
+                            "duration_ms": (time.monotonic() - pipeline_start_time)
+                            * 1000,
                         },
                     )
                     return cancelled_outcome
@@ -1139,7 +1141,9 @@ class PipelineEngine:
                 # Step 3: Record completion
                 self.completed_nodes.append(current_node.id)
                 self.node_outcomes[current_node.id] = outcome
-                logger.debug("Node %s completed: %s", current_node.id, outcome.status.value)
+                logger.debug(
+                    "Node %s completed: %s", current_node.id, outcome.status.value
+                )
 
                 # Step 3b: Write per-node status.json BEFORE emitting so hook bridge can copy it
                 self._write_node_status(current_node.id, outcome, node_duration_ms)
@@ -2485,7 +2489,6 @@ class PipelineEngine:
         for key in refs:
             if self.context.get(key) is None:
                 self.context.set(key, "")
-
 
     def _check_must_write(
         self, node: Node, outcome: Outcome, node_start_wall: float
