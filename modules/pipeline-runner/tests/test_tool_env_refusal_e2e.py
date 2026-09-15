@@ -157,3 +157,141 @@ class TestRunRefusesToStart:
         captured = tmp_path / "captured.txt"
         assert captured.exists(), "the control run must actually execute the node"
         assert captured.read_text(encoding="utf-8").strip() == "the-answer"
+
+
+_H13_FAILURE_ROUTE_DOT = """\
+digraph FailureRoute {
+    graph [goal="failure event survives an explicit recovery route"]
+    start    [shape=Mdiamond];
+    failed   [shape=parallelogram, tool_command="exit 1"];
+    recovery [shape=parallelogram,
+              tool_command="printf recovered > recovery.marker; printf recovered"];
+    done     [shape=Msquare];
+
+    start -> failed;
+    failed -> recovery [condition="outcome=fail"];
+    recovery -> done;
+}
+"""
+
+
+class _H13RecordingHooks:
+    """Captures the public event stream without changing engine behavior."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(self, event_name: str, data: dict[str, Any]) -> None:
+        self.events.append((event_name, dict(data)))
+
+
+class _H13NoLLMClient:
+    """A request-denying client: tool-only graphs must not use an LLM."""
+
+    def __init__(self) -> None:
+        self.requests = 0
+
+    async def generate(self, *args, **kwargs):
+        self.requests += 1
+        raise AssertionError("the tool-only failure-route graph must not call an LLM")
+
+
+def _h13_checkpoint(logs_root: Path) -> dict[str, Any]:
+    """Return stable checkpoint state, excluding only separate temp-root paths."""
+    import json
+
+    checkpoint = json.loads((logs_root / "checkpoint.json").read_text(encoding="utf-8"))
+    checkpoint.pop("timestamp")
+    checkpoint["context"].pop("context.target_dir")
+    return checkpoint
+
+
+def _h13_logical_outcome(outcome: Any) -> tuple[Any, ...]:
+    return (
+        outcome.status,
+        outcome.failure_reason,
+        outcome.notes,
+        outcome.attempt_count,
+        outcome.context_updates,
+    )
+
+
+@pytest.mark.asyncio
+async def test_h13_real_tool_failure_emits_before_completion_and_recovers(
+    monkeypatch, tmp_path
+):
+    """An actual exit 1 follows ``outcome=fail`` to a real successful tool.
+
+    The no-hook and recording-hook runs must retain identical outcome, checkpoint,
+    context and artifact state.  Only timestamps/durations and their distinct
+    temporary roots are intentionally not compared.
+    """
+    from amplifier_module_loop_pipeline.pipeline_events import (
+        PIPELINE_NODE_COMPLETE,
+        PIPELINE_STAGE_FAILED,
+    )
+    import unified_llm
+
+    client = _H13NoLLMClient()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-never-called")
+    monkeypatch.setattr(
+        unified_llm.Client, "from_env", classmethod(lambda _cls: client)
+    )
+
+    without_hooks_root = tmp_path / "without-hooks"
+    with_hooks_root = tmp_path / "with-hooks"
+    no_hook_outcome = await drive_engine(
+        _H13_FAILURE_ROUTE_DOT,
+        _StubCoordinator(),
+        cwd=without_hooks_root,
+        logs_root=without_hooks_root / "logs",
+        transform=True,
+    )
+    hooks = _H13RecordingHooks()
+    recorded_outcome = await drive_engine(
+        _H13_FAILURE_ROUTE_DOT,
+        _StubCoordinator(),
+        cwd=with_hooks_root,
+        logs_root=with_hooks_root / "logs",
+        hooks=hooks,
+        transform=True,
+    )
+
+    assert client.requests == 0
+    assert _h13_logical_outcome(recorded_outcome) == _h13_logical_outcome(
+        no_hook_outcome
+    )
+    assert _h13_checkpoint(with_hooks_root / "logs") == _h13_checkpoint(
+        without_hooks_root / "logs"
+    )
+    assert (without_hooks_root / "recovery.marker").read_text(
+        encoding="utf-8"
+    ) == "recovered"
+    assert (with_hooks_root / "recovery.marker").read_text(
+        encoding="utf-8"
+    ) == "recovered"
+
+    failed_events = [
+        (index, data)
+        for index, (name, data) in enumerate(hooks.events)
+        if name == PIPELINE_STAGE_FAILED
+    ]
+    assert len(failed_events) == 1
+    assert failed_events[0][1] == {
+        "node_id": "failed",
+        "attempts": 1,
+        "final_status": "fail",
+    }
+    failed_complete_index = next(
+        index
+        for index, (name, data) in enumerate(hooks.events)
+        if name == PIPELINE_NODE_COMPLETE
+        and data["node_id"] == "failed"
+        and data["status"] == "fail"
+    )
+    assert failed_events[0][0] < failed_complete_index
+    assert not [
+        data
+        for name, data in hooks.events
+        if name == PIPELINE_STAGE_FAILED and data["node_id"] == "recovery"
+    ]

@@ -3,6 +3,10 @@
 Spec coverage: RETRY-001–011, FAIL-001, Section 3.5–3.6.
 """
 
+import asyncio
+import json
+from pathlib import Path
+
 import pytest
 
 from amplifier_module_loop_pipeline.context import PipelineContext
@@ -621,3 +625,391 @@ async def test_exhaustion_event_fail_when_must_write_vetoes_partial(tmp_path):
         "must_write vetoed the manufactured partial; the event must say fail, "
         f"got {failed[0]['final_status']!r}."
     )
+
+
+# --- H13: terminal StageFailed coverage ---
+
+
+class _H13RecordingHooks:
+    """Records the retry-ladder events exactly as observers receive them."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event_name: str, data: dict) -> None:
+        self.events.append((event_name, dict(data)))
+
+
+class _H13StatusOverrideHandler:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def execute(self, node, context, graph, logs_root, *, engine=None):
+        self.call_count += 1
+        stage_dir = Path(logs_root) / node.id
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        (stage_dir / "status.json").write_text(
+            json.dumps({"outcome": "fail", "notes": "external verdict"}),
+            encoding="utf-8",
+        )
+        return Outcome(status=StageStatus.SUCCESS, notes="handler success")
+
+
+async def _h13_run(
+    handler, node: Node, policy: RetryPolicy, logs_root: str
+) -> tuple[Outcome, _H13RecordingHooks]:
+    hooks = _H13RecordingHooks()
+    result = await execute_with_retry(
+        handler,
+        node,
+        PipelineContext(),
+        _make_graph(),
+        logs_root,
+        policy,
+        hooks=hooks,
+    )
+    return result, hooks
+
+
+@pytest.mark.asyncio
+async def test_h13_handler_fail_emits_one_exact_terminal_event(tmp_path):
+    handler = MockHandler(
+        [
+            Outcome(
+                status=StageStatus.FAIL,
+                failure_reason="bad input",
+                context_updates={"kept": "yes"},
+            )
+        ]
+    )
+    result, hooks = await _h13_run(
+        handler,
+        _make_node(),
+        RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+        str(tmp_path),
+    )
+
+    assert result.status == StageStatus.FAIL
+    assert result.failure_reason == "bad input"
+    assert result.attempt_count == 1
+    assert result.context_updates == {"kept": "yes"}
+    assert handler.call_count == 1
+    assert hooks.events == [
+        (
+            "pipeline:stage_failed",
+            {"node_id": "step", "attempts": 1, "final_status": "fail"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_h13_fresh_status_override_fail_emits_one_exact_terminal_event(tmp_path):
+    handler = _H13StatusOverrideHandler()
+    result, hooks = await _h13_run(
+        handler,
+        _make_node(),
+        RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+        str(tmp_path),
+    )
+
+    assert result.status == StageStatus.FAIL
+    assert result.notes == "external verdict"
+    assert result.attempt_count == 1
+    assert handler.call_count == 1
+    assert hooks.events == [
+        (
+            "pipeline:stage_failed",
+            {"node_id": "step", "attempts": 1, "final_status": "fail"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_h13_nonretryable_exception_emits_one_exact_terminal_event(tmp_path):
+    class ValueErrorHandler:
+        call_count = 0
+
+        async def execute(self, node, context, graph, logs_root, *, engine=None):
+            self.call_count += 1
+            raise ValueError("bad config")
+
+    handler = ValueErrorHandler()
+    result, hooks = await _h13_run(
+        handler,
+        _make_node(),
+        RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+        str(tmp_path),
+    )
+
+    assert result.status == StageStatus.FAIL
+    assert result.failure_reason == "bad config"
+    assert result.attempt_count == 1
+    assert handler.call_count == 1
+    assert hooks.events == [
+        (
+            "pipeline:stage_failed",
+            {"node_id": "step", "attempts": 1, "final_status": "fail"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_h13_last_retryable_exception_emits_retry_then_one_terminal_event(
+    tmp_path,
+):
+    handler = RaisingHandler(fail_count=2, then=Outcome(status=StageStatus.SUCCESS))
+    result, hooks = await _h13_run(
+        handler,
+        _make_node(),
+        RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+        str(tmp_path),
+    )
+
+    assert result.status == StageStatus.FAIL
+    assert result.failure_reason == "Transient error #2"
+    assert result.attempt_count == 2
+    assert handler.call_count == 2
+    assert hooks.events == [
+        (
+            "pipeline:stage_retrying",
+            {
+                "node_id": "step",
+                "attempt": 1,
+                "max_attempts": 2,
+                "delay_ms": 0,
+                "reason": "exception:TimeoutError",
+            },
+        ),
+        (
+            "pipeline:stage_failed",
+            {"node_id": "step", "attempts": 2, "final_status": "fail"},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_h13_exhausted_must_write_emits_retry_then_one_terminal_event(tmp_path):
+    missing = tmp_path / "missing.txt"
+    handler = MockHandler([Outcome(status=StageStatus.SUCCESS)] * 2)
+    result, hooks = await _h13_run(
+        handler,
+        _make_node(attrs={"must_write": str(missing)}),
+        RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+        str(tmp_path),
+    )
+
+    assert result.status == StageStatus.FAIL
+    assert "must_write" in (result.failure_reason or "")
+    assert result.attempt_count == 2
+    assert handler.call_count == 2
+    assert hooks.events == [
+        (
+            "pipeline:stage_retrying",
+            {
+                "node_id": "step",
+                "attempt": 1,
+                "max_attempts": 2,
+                "delay_ms": 0,
+                "reason": "must_write_violation",
+            },
+        ),
+        (
+            "pipeline:stage_failed",
+            {"node_id": "step", "attempts": 2, "final_status": "fail"},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_h13_cancelled_error_escapes_without_events(tmp_path):
+    class CancelledHandler:
+        call_count = 0
+
+        async def execute(self, node, context, graph, logs_root, *, engine=None):
+            self.call_count += 1
+            raise asyncio.CancelledError()
+
+    handler = CancelledHandler()
+    hooks = _H13RecordingHooks()
+    with pytest.raises(asyncio.CancelledError):
+        await execute_with_retry(
+            handler,
+            _make_node(),
+            PipelineContext(),
+            _make_graph(),
+            str(tmp_path),
+            RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+            hooks=hooks,
+        )
+    assert handler.call_count == 1
+    assert hooks.events == []
+
+
+@pytest.mark.asyncio
+async def test_h13_stage_failed_hook_exception_escapes_without_handler_retry(tmp_path):
+    class RaisingHooks(_H13RecordingHooks):
+        async def emit(self, event_name: str, data: dict) -> None:
+            await super().emit(event_name, data)
+            raise RuntimeError("hook broke")
+
+    handler = MockHandler(
+        [Outcome(status=StageStatus.FAIL, failure_reason="bad input")]
+    )
+    hooks = RaisingHooks()
+    with pytest.raises(RuntimeError, match="hook broke"):
+        await execute_with_retry(
+            handler,
+            _make_node(),
+            PipelineContext(),
+            _make_graph(),
+            str(tmp_path),
+            RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+            hooks=hooks,
+        )
+    assert handler.call_count == 1
+    assert hooks.events == [
+        (
+            "pipeline:stage_failed",
+            {"node_id": "step", "attempts": 1, "final_status": "fail"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected_attempts"),
+    [
+        (StageStatus.SUCCESS, 1),
+        (StageStatus.PARTIAL_SUCCESS, 1),
+        (StageStatus.SKIPPED, 1),
+    ],
+)
+async def test_h13_nonfailure_terminal_outcomes_emit_no_stage_failed(
+    status, expected_attempts, tmp_path
+):
+    handler = MockHandler([Outcome(status=status)])
+    result, hooks = await _h13_run(
+        handler,
+        _make_node(),
+        RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+        str(tmp_path),
+    )
+
+    assert result.status == status
+    assert result.attempt_count == expected_attempts
+    assert handler.call_count == 1
+    assert hooks.events == []
+
+
+@pytest.mark.asyncio
+async def test_h13_retry_recovery_keeps_only_existing_retry_event(tmp_path):
+    handler = MockHandler(
+        [
+            Outcome(status=StageStatus.RETRY, failure_reason="try again"),
+            Outcome(status=StageStatus.SUCCESS),
+        ]
+    )
+    result, hooks = await _h13_run(
+        handler,
+        _make_node(),
+        RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+        str(tmp_path),
+    )
+
+    assert result.status == StageStatus.SUCCESS
+    assert result.attempt_count == 2
+    assert handler.call_count == 2
+    assert hooks.events == [
+        (
+            "pipeline:stage_retrying",
+            {
+                "node_id": "step",
+                "attempt": 1,
+                "max_attempts": 2,
+                "delay_ms": 0,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("allow_partial", "expected_status", "expected_final_status"),
+    [
+        (False, StageStatus.FAIL, "fail"),
+        (True, StageStatus.PARTIAL_SUCCESS, "partial_success"),
+    ],
+)
+async def test_h13_retry_exhaustion_preserves_existing_event_payload(
+    allow_partial, expected_status, expected_final_status, tmp_path
+):
+    handler = MockHandler(
+        [Outcome(status=StageStatus.RETRY, failure_reason="still working")] * 2
+    )
+    result, hooks = await _h13_run(
+        handler,
+        _make_node(attrs={"allow_partial": allow_partial}),
+        RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+        str(tmp_path),
+    )
+
+    assert result.status == expected_status
+    assert result.attempt_count == 2
+    assert handler.call_count == 2
+    assert hooks.events == [
+        (
+            "pipeline:stage_retrying",
+            {
+                "node_id": "step",
+                "attempt": 1,
+                "max_attempts": 2,
+                "delay_ms": 0,
+            },
+        ),
+        (
+            "pipeline:stage_failed",
+            {
+                "node_id": "step",
+                "attempts": 2,
+                "final_status": expected_final_status,
+            },
+        ),
+    ]
+    if allow_partial:
+        assert result.failure_reason == "still working"
+
+
+@pytest.mark.asyncio
+async def test_h13_child_dot_resolution_error_escapes_without_events(tmp_path):
+    from amplifier_module_loop_pipeline.handlers.pipeline import ChildDotResolutionError
+
+    resolution_error = ChildDotResolutionError(
+        node_id="step",
+        dot_file="missing.dot",
+        expanded="missing.dot",
+        resolved_path="missing.dot",
+        candidates=[],
+    )
+
+    class ChildResolutionHandler:
+        call_count = 0
+
+        async def execute(self, node, context, graph, logs_root, *, engine=None):
+            self.call_count += 1
+            raise resolution_error
+
+    handler = ChildResolutionHandler()
+    hooks = _H13RecordingHooks()
+    with pytest.raises(ChildDotResolutionError) as exc_info:
+        await execute_with_retry(
+            handler,
+            _make_node(),
+            PipelineContext(),
+            _make_graph(),
+            str(tmp_path),
+            RetryPolicy(max_attempts=2, backoff=BackoffConfig(initial_delay_ms=0)),
+            hooks=hooks,
+        )
+    assert exc_info.value is resolution_error
+    assert handler.call_count == 1
+    assert hooks.events == []
