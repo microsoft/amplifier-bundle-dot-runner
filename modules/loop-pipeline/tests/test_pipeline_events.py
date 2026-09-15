@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from amplifier_core.hooks import HookRegistry
 
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.dot_parser import parse_dot
@@ -503,6 +504,7 @@ class TestNodeEvents:
         bad_events = [e for e in node_completes if e["node_id"] == "bad"]
         assert len(bad_events) >= 1
         assert bad_events[0]["failure_reason"] == "intentional"
+        assert "session_id" not in bad_events[0]
 
 
 # ---------------------------------------------------------------------------
@@ -531,11 +533,11 @@ class SessionBackend:
 
 
 class TestNodeCompleteSessionId:
-    """Engine emits session_id in PIPELINE_NODE_COMPLETE events."""
+    """Engine preserves worker session IDs without suppressing hook defaults."""
 
     @pytest.mark.asyncio
-    async def test_node_complete_event_has_session_id_key(self, tmp_path):
-        """pipeline:node_complete always includes a session_id key."""
+    async def test_node_complete_event_omits_session_id_without_worker(self, tmp_path):
+        """No worker session means no explicit session_id override."""
         hooks = MockHooks()
         engine = _make_engine(
             dot_source="""
@@ -553,13 +555,13 @@ class TestNodeCompleteSessionId:
         await engine.run()
         node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
         for event in node_completes:
-            assert "session_id" in event, (
-                f"'session_id' missing from node_complete event: {event}"
+            assert "session_id" not in event, (
+                f"'session_id' must be omitted without a worker: {event}"
             )
 
     @pytest.mark.asyncio
-    async def test_node_complete_session_id_none_when_not_set(self, tmp_path):
-        """pipeline:node_complete has session_id=None when outcome has no session."""
+    async def test_node_complete_session_id_omitted_when_not_set(self, tmp_path):
+        """pipeline:node_complete omits session_id when outcome has no session."""
         hooks = MockHooks()
         engine = _make_engine(
             dot_source="""
@@ -578,7 +580,7 @@ class TestNodeCompleteSessionId:
         node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
         work_events = [e for e in node_completes if e["node_id"] == "work"]
         assert len(work_events) == 1
-        assert work_events[0]["session_id"] is None
+        assert "session_id" not in work_events[0]
 
     @pytest.mark.asyncio
     async def test_node_complete_session_id_populated_when_set(self, tmp_path):
@@ -604,8 +606,43 @@ class TestNodeCompleteSessionId:
         assert work_events[0]["session_id"] == "child-sess-xyz"
 
     @pytest.mark.asyncio
-    async def test_timeout_event_has_session_id_none(self, tmp_path):
-        """pipeline:node_complete emitted on timeout has session_id=None."""
+    async def test_node_complete_inherits_parent_hook_session_without_worker(
+        self, tmp_path
+    ):
+        """The real core registry supplies its parent default only when the
+        engine omits session_id; a worker session still overrides that default.
+        """
+        captured: list[dict[str, Any]] = []
+
+        def capture(_event: str, data: dict[str, Any]) -> None:
+            captured.append(dict(data))
+
+        hooks = HookRegistry()
+        hooks.set_default_fields(session_id="parent-session-1")
+        hooks.register(PIPELINE_NODE_COMPLETE, capture, name="capture-completion")
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=SessionBackend(session_node="work", session_id="worker-session-1"),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        await engine.run()
+
+        by_node = {event["node_id"]: event for event in captured}
+        assert by_node["start"]["session_id"] == "parent-session-1"
+        assert by_node["work"]["session_id"] == "worker-session-1"
+
+    @pytest.mark.asyncio
+    async def test_timeout_event_omits_session_id(self, tmp_path):
+        """pipeline:node_complete emitted on timeout has no session_id override."""
         import asyncio
 
         hooks = MockHooks()
@@ -641,8 +678,131 @@ class TestNodeCompleteSessionId:
         timeout_events = [e for e in node_completes if e.get("status") == "timeout"]
         assert len(timeout_events) >= 1
         for event in timeout_events:
-            assert "session_id" in event
-            assert event["session_id"] is None
+            assert "session_id" not in event
+
+    @pytest.mark.asyncio
+    async def test_skip_event_omits_session_id(self, tmp_path):
+        """A no-worker skip does not block a parent hook session default."""
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                skipped [prompt="Do not run"]
+                exit [shape=Msquare]
+                start -> skipped -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        async def force_skip(_node: Node) -> Outcome:
+            return Outcome(status=StageStatus.SKIPPED, notes="test skip")
+
+        engine._check_node_skip = force_skip
+        await engine.run()
+
+        skipped_events = [
+            event
+            for event in hooks.get(PIPELINE_NODE_COMPLETE)
+            if event["node_id"] == "skipped"
+        ]
+        assert len(skipped_events) == 1
+        assert "session_id" not in skipped_events[0]
+
+    @pytest.mark.asyncio
+    async def test_fuse_terminal_event_omits_session_id(self, tmp_path):
+        """The mid-node fuse completion has no synthetic session ID."""
+        import asyncio
+
+        class SlowBackend:
+            async def run(
+                self,
+                node: Node,
+                prompt: str,
+                context: PipelineContext,
+                incoming_edge=None,
+                graph=None,
+            ) -> str:
+                await asyncio.sleep(1)
+                return "done"
+
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                max_pipeline_duration="10ms"
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=SlowBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        await engine.run()
+
+        fuse_events = [
+            event
+            for event in hooks.get(PIPELINE_NODE_COMPLETE)
+            if event["status"] == "fuse_exceeded"
+        ]
+        assert len(fuse_events) == 1
+        assert "session_id" not in fuse_events[0]
+
+    @pytest.mark.asyncio
+    async def test_child_resolution_terminal_event_omits_session_id(self, tmp_path):
+        """A pre-worker child-resolution failure does not override hook defaults."""
+        from amplifier_module_loop_pipeline.handlers.pipeline import (
+            ChildDotResolutionError,
+            DotPathCandidate,
+        )
+
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                child [shape=folder, dot_file="missing.dot"]
+                exit [shape=Msquare]
+                start -> child -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        error = ChildDotResolutionError(
+            node_id="child",
+            dot_file="missing.dot",
+            expanded="missing.dot",
+            resolved_path=str(tmp_path / "missing.dot"),
+            candidates=[
+                DotPathCandidate(
+                    tier="graph.source_dir",
+                    path=str(tmp_path / "missing.dot"),
+                    chosen=True,
+                )
+            ],
+        )
+
+        await engine._terminate_child_dot_resolution(
+            node_id="child",
+            exc=error,
+            node_start_time=0.0,
+            pipeline_start_time=0.0,
+            execution_index=1,
+        )
+
+        completion_events = hooks.get(PIPELINE_NODE_COMPLETE)
+        assert len(completion_events) == 1
+        assert completion_events[0]["node_id"] == "child"
+        assert "session_id" not in completion_events[0]
 
 
 # ---------------------------------------------------------------------------
