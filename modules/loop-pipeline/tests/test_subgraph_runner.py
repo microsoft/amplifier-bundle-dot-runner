@@ -12,6 +12,7 @@ from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
 from amplifier_module_loop_pipeline.handlers import HandlerRegistry
 from amplifier_module_loop_pipeline.handlers.context import HandlerContext
 from amplifier_module_loop_pipeline.outcome import Outcome, StageStatus
+from amplifier_module_loop_pipeline.pipeline_events import PIPELINE_NODE_COMPLETE
 
 
 class CountingHandler:
@@ -26,6 +27,13 @@ class CountingHandler:
             status=StageStatus.SUCCESS,
             notes=f"Executed {node.id}",
         )
+
+
+class RaisingHandler:
+    """Handler that makes the subgraph runner's exception completion path observable."""
+
+    async def execute(self, node, context, graph, logs_root, *, engine=None):
+        raise RuntimeError(f"{node.id} exploded")
 
 
 def _make_subgraph():
@@ -331,3 +339,28 @@ async def test_run_subgraph_suppresses_events_when_emit_node_events_false(tmp_pa
         f"Expected zero events with emit_node_events=False, "
         f"got: {hooks.events!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_subgraph_exception_completion_omits_session_id(tmp_path):
+    """An exception before a worker session exists does not override parent defaults."""
+    graph = _make_subgraph()
+    registry = HandlerRegistry(HandlerContext())
+    registry.register("codergen", RaisingHandler())
+    hooks = _RecordingHooks()
+    engine = PipelineEngine(
+        graph=graph,
+        context=PipelineContext(),
+        handler_registry=registry,
+        logs_root=str(tmp_path),
+        hooks=hooks,
+    )
+    engine._initialize_context(goal="test")
+
+    outcome = await engine.run_subgraph("a")
+
+    assert outcome.status == StageStatus.FAIL
+    completion_events = hooks.events_of_type(PIPELINE_NODE_COMPLETE)
+    assert len(completion_events) == 1
+    assert completion_events[0]["node_id"] == "a"
+    assert "session_id" not in completion_events[0]

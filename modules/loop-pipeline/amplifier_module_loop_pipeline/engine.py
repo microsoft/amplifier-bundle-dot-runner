@@ -774,7 +774,6 @@ class PipelineEngine:
                             "duration_ms": node_duration_ms,
                             "notes": skip_outcome.notes,
                             "failure_reason": skip_outcome.failure_reason,
-                            "session_id": None,
                             "execution_index": self._node_execution_counts.get(
                                 current_node.id, 0
                             ),
@@ -1003,17 +1002,19 @@ class PipelineEngine:
                                 ),
                                 failure_reason="timeout",
                             )
+                            timeout_event = {
+                                "node_id": current_node.id,
+                                "status": "timeout",
+                                "duration_ms": node_duration_ms,
+                                "notes": outcome.notes,
+                                "failure_reason": outcome.failure_reason,
+                                "execution_index": execution_index,  # NEW
+                            }
+                            if outcome.session_id is not None:
+                                timeout_event["session_id"] = outcome.session_id
                             await self._emit(
                                 PIPELINE_NODE_COMPLETE,
-                                {
-                                    "node_id": current_node.id,
-                                    "status": "timeout",
-                                    "duration_ms": node_duration_ms,
-                                    "notes": outcome.notes,
-                                    "failure_reason": outcome.failure_reason,
-                                    "session_id": outcome.session_id,
-                                    "execution_index": execution_index,  # NEW
-                                },
+                                timeout_event,
                             )
                     else:
                         try:
@@ -1143,26 +1144,28 @@ class PipelineEngine:
                 # Step 3b: Write per-node status.json BEFORE emitting so hook bridge can copy it
                 self._write_node_status(current_node.id, outcome, node_duration_ms)
 
+                node_complete_event = {
+                    "node_id": current_node.id,
+                    "status": outcome.status.value,
+                    "duration_ms": node_duration_ms,
+                    "notes": outcome.notes,
+                    "failure_reason": outcome.failure_reason,
+                    "execution_index": execution_index,  # NEW — graph-level visit count
+                    # Issue 10: structured tool-invocation failure payload.
+                    # Populated by ToolHandler on failure; None on success or for
+                    # non-tool nodes.  Consumers check for None before reading.
+                    "failed_step": outcome.failed_step,
+                    # support#379: real attempt count consumed by the retry
+                    # ladder (execute_with_retry sets Outcome.attempt_count).
+                    # Falls back to 1 for outcomes that never entered the
+                    # retry ladder (e.g. the requires= backstop above).
+                    "attempt": outcome.attempt_count or 1,
+                }
+                if outcome.session_id is not None:
+                    node_complete_event["session_id"] = outcome.session_id
                 await self._emit(
                     PIPELINE_NODE_COMPLETE,
-                    {
-                        "node_id": current_node.id,
-                        "status": outcome.status.value,
-                        "duration_ms": node_duration_ms,
-                        "notes": outcome.notes,
-                        "failure_reason": outcome.failure_reason,
-                        "session_id": outcome.session_id,
-                        "execution_index": execution_index,  # NEW — graph-level visit count
-                        # Issue 10: structured tool-invocation failure payload.
-                        # Populated by ToolHandler on failure; None on success or for
-                        # non-tool nodes.  Consumers check for None before reading.
-                        "failed_step": outcome.failed_step,
-                        # support#379: real attempt count consumed by the retry
-                        # ladder (execute_with_retry sets Outcome.attempt_count).
-                        # Falls back to 1 for outcomes that never entered the
-                        # retry ladder (e.g. the requires= backstop above).
-                        "attempt": outcome.attempt_count or 1,
-                    },
+                    node_complete_event,
                 )
 
                 # M2 (R12): If the node failed or was skipped, add its declared
@@ -1474,7 +1477,6 @@ class PipelineEngine:
                                 * 1000,
                                 "notes": fail_outcome.notes,
                                 "failure_reason": fail_outcome.failure_reason,
-                                "session_id": None,
                                 "attempt": 1,
                             },
                         )
@@ -1494,24 +1496,25 @@ class PipelineEngine:
                                 * 1000,
                                 "notes": fail_outcome.notes,
                                 "failure_reason": fail_outcome.failure_reason,
-                                "session_id": None,
                                 "attempt": 1,
                             },
                         )
                     return fail_outcome
                 if emit_node_events:
+                    node_complete_event = {
+                        "node_id": current_node.id,
+                        "status": outcome.status.value,
+                        "duration_ms": (time.monotonic() - node_start_time) * 1000,
+                        "notes": outcome.notes,
+                        "failure_reason": outcome.failure_reason,
+                        "failed_step": outcome.failed_step,
+                        "attempt": outcome.attempt_count or 1,
+                    }
+                    if outcome.session_id is not None:
+                        node_complete_event["session_id"] = outcome.session_id
                     await self._emit(
                         PIPELINE_NODE_COMPLETE,
-                        {
-                            "node_id": current_node.id,
-                            "status": outcome.status.value,
-                            "duration_ms": (time.monotonic() - node_start_time) * 1000,
-                            "notes": outcome.notes,
-                            "failure_reason": outcome.failure_reason,
-                            "session_id": outcome.session_id,
-                            "failed_step": outcome.failed_step,
-                            "attempt": outcome.attempt_count or 1,
-                        },
+                        node_complete_event,
                     )
 
             last_outcome = outcome
@@ -2070,7 +2073,6 @@ class PipelineEngine:
                 "duration_ms": node_duration_ms,
                 "notes": fail_outcome.notes,
                 "failure_reason": fail_outcome.failure_reason,
-                "session_id": None,
                 "execution_index": execution_index,
             },
         )
@@ -2196,7 +2198,6 @@ class PipelineEngine:
                 "duration_ms": node_duration_ms,
                 "notes": interrupted_node_outcome.notes,
                 "failure_reason": interrupted_node_outcome.failure_reason,
-                "session_id": None,
                 "execution_index": execution_index,
             },
         )
