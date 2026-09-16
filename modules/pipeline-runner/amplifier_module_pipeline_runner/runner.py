@@ -1505,6 +1505,7 @@ async def resume_pipeline(
     run_dir: Path | str,
     *,
     dot_source: str | None = None,
+    source_dir: Path | str | None = None,
     params: Mapping[str, str] | None = None,
     cwd: Path | str | None = None,
     provider: str = "anthropic",
@@ -1546,6 +1547,15 @@ async def resume_pipeline(
             is refused (a checkpoint binds to the run that wrote it; there is
             deliberately no override flag).  When omitted, the checkpoint's
             own embedded source is used — resume is self-contained.
+        source_dir: Optional directory to anchor relative ``dot_file=`` children
+            against (EXTENSIONS.md 10 / engine-surface C9 tier 2).  The CLI
+            passes the resolved parent of an explicit ``--dot-file``.  An
+            explicit value wins; otherwise the origin recorded in the
+            checkpoint is used; otherwise the anchor stays empty and resolution
+            falls through to ``context.target_dir`` then the process cwd,
+            exactly as before this parameter existed.  This is NOT ``cwd`` —
+            ``--cwd`` is ``context.target_dir``, an independent knob — and NOT
+            the run directory's copied ``pipeline.dot``.
         params: Additional flat context params.  A param may only ADD keys:
             colliding with a key the checkpoint restores is a loud error, not
             a silent shadow of restored state.
@@ -1583,6 +1593,26 @@ async def resume_pipeline(
         dot_source=dot_source,
     )
     resolved_dot_source = checkpoint.graph_dot_source
+
+    # Where relative `dot_file=` children resolve from (EXTENSIONS.md 10 /
+    # engine-surface C9 tier 2).  Precedence, first non-empty wins:
+    #
+    #   1. an EXPLICIT source_dir from this invocation (the CLI passes the
+    #      resolved parent of --dot-file) -- the caller's present-tense answer
+    #      to "where does this graph live", which outranks a recorded one
+    #      because the graph may legitimately have been relocated;
+    #   2. the origin recorded in the checkpoint by the run that wrote it;
+    #   3. nothing -- the pre-existing empty-anchor behaviour, in which tier 2
+    #      is skipped and resolution falls to context.target_dir then cwd.
+    #
+    # This is NOT `cwd`: --cwd is context.target_dir, an independent knob that
+    # does not shadow source_dir.  Nor is it the run directory's copied
+    # pipeline.dot, which lives beside the logs, not beside the children.
+    resolved_source_dir = (
+        str(Path(source_dir).expanduser().resolve())
+        if source_dir
+        else (checkpoint.graph_source_dir or None)
+    )
 
     # A resume-time param may only ADD keys. Restored context wins by
     # construction (engine.resume applies the snapshot over the seeded
@@ -1671,6 +1701,7 @@ async def resume_pipeline(
                 interviewer=interviewer,
                 transform=transform,
                 validate=validate,
+                source_dir=resolved_source_dir,
                 resume_checkpoint=checkpoint,
             )
     finally:
