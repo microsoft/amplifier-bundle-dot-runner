@@ -470,12 +470,22 @@ def cmd_resume(args: argparse.Namespace) -> int:
         return 1
 
     dot_source: str | None = None
+    source_dir: str | None = None
     if args.dot_file:
         dot_path = Path(args.dot_file).expanduser()
         if not dot_path.is_file():
             print(f"{prog} resume: DOT file not found: {dot_path}", file=sys.stderr)
             return 1
         dot_source = dot_path.read_text(encoding="utf-8")
+        # Seed the anchor exactly as cmd_run does: the directory THIS file was
+        # read from, so a relative `dot_file=` child resolves beside the graph
+        # the caller actually pointed at (EXTENSIONS.md 10 tier 2). An explicit
+        # --dot-file is the caller's present-tense answer to "where does this
+        # graph live", so it outranks the origin recorded in the checkpoint --
+        # the graph may legitimately have been relocated byte-identically.
+        # Without --dot-file, source_dir stays None and resume_pipeline falls
+        # back to the checkpoint's own recorded origin.
+        source_dir = str(dot_path.resolve().parent)
 
     try:
         params = parse_params(args.param)
@@ -531,6 +541,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             runner.resume_pipeline(
                 run_dir,
                 dot_source=dot_source,
+                source_dir=source_dir,
                 params=params or None,
                 provider=args.provider,
                 worker=worker,

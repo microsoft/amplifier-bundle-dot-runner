@@ -1732,13 +1732,28 @@ class PipelineEngine:
         ``manifest.json`` does not carry the source.  The fingerprint is what
         ladder rung 5 compares; it is evaluated ONLY on the explicit resume
         path (see checkpoint.py's module docstring), never here.
+
+        ``source_dir`` rides along as optional PROVENANCE when the graph has
+        one, and is omitted entirely when it does not (an inline ``--dot-source``
+        root has no backing file).  It is deliberately NOT part of the
+        fingerprint: identity stays a function of the DOT bytes alone, so a
+        checkpoint written before this field existed — or one whose graph was
+        relocated byte-identically — still passes rung 5.  Its only job is to
+        let a resume re-seed ``graph.source_dir`` so a relative ``dot_file=``
+        child resolves at tier 2 of the EXTENSIONS.md 10 / engine-surface C9
+        precedence chain, exactly as it did during the original run, instead of
+        sliding down to ``context.target_dir`` (``--cwd``).
         """
         if self._graph_identity_cache is None:
             dot_source = self.graph.dot_source or ""
-            self._graph_identity_cache = {
+            identity: dict[str, Any] = {
                 "fingerprint": fingerprint_dot_source(dot_source),
                 "dot_source": dot_source,
             }
+            source_dir = getattr(self.graph, "source_dir", "") or ""
+            if source_dir:
+                identity["source_dir"] = source_dir
+            self._graph_identity_cache = identity
         return self._graph_identity_cache
 
     def _serialize_node_outcomes(self) -> dict[str, dict[str, Any]]:

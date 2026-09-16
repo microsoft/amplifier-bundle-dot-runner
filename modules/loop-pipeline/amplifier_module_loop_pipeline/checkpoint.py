@@ -26,8 +26,12 @@ Schema v2 (spec §5.3 superset):
     ``node_retries``, ``logs``) at the §5.6 location
     ``{logs_root}/checkpoint.json``.  v2 adds ``schema_version``,
     ``run_state``, ``node_outcomes``, ``engine_state`` and ``graph``
-    (fingerprint + embedded DOT source) so that a resume is self-contained and
-    restores state rather than replaying completed work.
+    (fingerprint + embedded DOT source + the optional ``source_dir`` that
+    source was read from) so that a resume is self-contained and restores
+    state rather than replaying completed work.  ``source_dir`` is provenance
+    only -- it anchors relative ``dot_file=`` children on resume and is NOT
+    part of the fingerprint, so its arrival did not require a version bump and
+    every existing v2 checkpoint stays resumable.
 
 Spec coverage: CHKP-001–006, Section 5.3 (incl. "Resume behavior" rules 1–6)
 """
@@ -163,7 +167,10 @@ class Checkpoint:
 
     #: Graph identity + the DOT source itself, making a resume self-contained
     #: (``manifest.json`` does not carry the source):
-    #: ``{"fingerprint": ..., "dot_source": ...}``.
+    #: ``{"fingerprint": ..., "dot_source": ..., "source_dir": ...}``.
+    #: ``source_dir`` is OPTIONAL provenance (absent for an inline root, and
+    #: for every checkpoint written before the field existed) and is never
+    #: part of the fingerprint -- see :attr:`graph_source_dir`.
     graph: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -175,6 +182,54 @@ class Checkpoint:
     def graph_dot_source(self) -> str:
         """The recorded DOT source, or ``""`` when absent (v1)."""
         return str(self.graph.get("dot_source", ""))
+
+    @property
+    def graph_source_dir(self) -> str:
+        """The directory the recorded DOT source was read from, or ``""``.
+
+        Optional provenance, NOT identity: the fingerprint is a function of the
+        DOT bytes alone, so a checkpoint written before this field existed (or
+        one whose graph was relocated) still matches at ladder rung 5.
+
+        ``""`` means "no recorded origin" and restores the pre-existing
+        empty-anchor behaviour, in which ``resolve_dot_path``'s
+        ``graph.source_dir`` tier is skipped (EXTENSIONS.md 10 /
+        engine-surface C9).  A *present but malformed* value never reaches
+        here: :func:`load_checkpoint` refuses it (see
+        :func:`_validated_graph_block`) rather than coercing it to ``""``,
+        because a silently-dropped anchor is
+        precisely the failure this field exists to end.
+        """
+        return str(self.graph.get("source_dir", ""))
+
+
+def _validated_graph_block(block: Any, path: str) -> dict[str, Any]:
+    """Return the ``graph`` block, refusing a malformed ``source_dir``.
+
+    ``source_dir`` is optional provenance: absent means "no recorded origin"
+    and is entirely legitimate (every checkpoint written before the field
+    existed).  But a value that is PRESENT and not a string is a corrupted
+    record, and coercing it to ``""`` would hand the resume the silent
+    empty-anchor fall-through this field exists to prevent.  Name it, quote it,
+    refuse it.
+    """
+    if not isinstance(block, dict):
+        return {}
+
+    if "source_dir" in block:
+        origin = block["source_dir"]
+        # bool is an int subclass; a `True` here is malformed, not a path.
+        if not isinstance(origin, str) or isinstance(origin, bool):
+            raise CheckpointFormatError(
+                f"checkpoint at {path} has a malformed graph.source_dir: "
+                f"{origin!r} (expected a string path, found "
+                f"{type(origin).__name__}). graph.source_dir is the directory "
+                "the recorded DOT source was read from; it anchors relative "
+                "dot_file= children on resume. Refusing rather than resolving "
+                "children against the wrong directory."
+            )
+
+    return block
 
 
 def save_checkpoint(checkpoint: Checkpoint, path: str) -> None:
@@ -235,9 +290,7 @@ def load_checkpoint(path: str) -> Checkpoint:
     else:
         completed_nodes = list(raw_cn)
 
-    graph_block = data.get("graph", {})
-    if not isinstance(graph_block, dict):
-        graph_block = {}
+    graph_block = _validated_graph_block(data.get("graph", {}), path)
 
     return Checkpoint(
         current_node=data["current_node"],
