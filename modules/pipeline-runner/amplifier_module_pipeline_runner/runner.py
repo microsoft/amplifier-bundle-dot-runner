@@ -71,10 +71,11 @@ _RESERVED_CONTEXT_KEYS: frozenset[str] = frozenset(
     {"context.target_dir", "graph.params_values"}
 )
 
-# In-process cache: load the base bundle once; install deps once, then reuse
-# the offline path for subsequent runs in the same process.
+# In-process cache: load the base bundle once; cache successful dependency
+# preparation by the module source identities actually selected after bundle
+# composition.
 _BASE_BUNDLE: Any = None
-_DEPS_INSTALLED = False
+_PREPARED_SOURCE_IDENTITIES: set[str] = set()
 
 
 class NoProviderConfiguredError(RuntimeError):
@@ -916,6 +917,39 @@ _CONTEXT_SIMPLE_GIT = (
     "git+https://github.com/microsoft/amplifier-module-context-simple@main"
 )
 
+_CONTEXT_INTELLIGENCE_HOOK_SOURCE = (
+    "git+https://github.com/microsoft/amplifier-bundle-context-intelligence"
+    "@3e7d597f086e8c1462ddb132976f78a5bd0d6af7"
+    "#subdirectory=modules/hook-context-intelligence"
+)
+
+
+def _context_intelligence_overlay() -> Any:
+    """Return native CI capture and its existing pipeline-event discovery source.
+
+    No hook config belongs here, so standalone runs remain local-only. A
+    caller's resolved same-module declaration wins through normal Bundle
+    composition; ``_build_prepared`` orders an explicit base after this default
+    and caller ``extra_overlays`` after the runtime overlay.
+    """
+    from amplifier_foundation import Bundle
+    from .default_worker import _HOOK_MODULE_SOURCES
+
+    return Bundle(
+        name="pipeline-runner-context-intelligence",
+        version="1.0.0",
+        hooks=[
+            {
+                "module": "hook-context-intelligence",
+                "source": _CONTEXT_INTELLIGENCE_HOOK_SOURCE,
+            },
+            {
+                "module": "hooks-pipeline-observability",
+                "source": _HOOK_MODULE_SOURCES["hooks-pipeline-observability"],
+            },
+        ],
+    )
+
 
 def _bare_base_bundle() -> Any:
     """Return the default bare base bundle -- no explicit --bundle given.
@@ -949,6 +983,47 @@ def _bare_base_bundle() -> Any:
         },
     )
     return _BARE_BASE_BUNDLE
+
+
+def _selected_module_source_identities(bundle: Any) -> frozenset[str] | None:
+    """Return sources ``Bundle.prepare()`` will activate for this mount plan.
+
+    The runner owns only the preparation decision, so this mirrors
+    Foundation's source-bearing mount-plan traversal.  The source URL is the
+    identity: a caller can replace a module with another source under the same
+    module name through normal composition.
+    """
+    to_mount_plan = getattr(bundle, "to_mount_plan", None)
+    if to_mount_plan is None:
+        return None
+    mount_plan = to_mount_plan()
+    sources: set[str] = set()
+
+    def collect(spec: Any) -> None:
+        if isinstance(spec, dict) and isinstance(spec.get("source"), str):
+            sources.add(spec["source"])
+
+    session = mount_plan.get("session", {})
+    if isinstance(session, dict):
+        collect(session.get("orchestrator"))
+        collect(session.get("context"))
+
+    for section in ("providers", "tools", "hooks"):
+        for spec in mount_plan.get(section, ()):
+            collect(spec)
+
+    for agent in mount_plan.get("agents", {}).values():
+        if not isinstance(agent, dict):
+            continue
+        agent_session = agent.get("session", {})
+        if isinstance(agent_session, dict):
+            collect(agent_session.get("orchestrator"))
+            collect(agent_session.get("context"))
+        for section in ("providers", "tools", "hooks"):
+            for spec in agent.get(section, ()):
+                collect(spec)
+
+    return frozenset(sources)
 
 
 async def _build_prepared(
@@ -994,10 +1069,17 @@ async def _build_prepared(
     bundle reference is what determines network reach here, not a hardcoded
     personality flag.
     """
-    global _DEPS_INSTALLED
+    global _PREPARED_SOURCE_IDENTITIES
     from amplifier_foundation import Bundle
 
-    base = base_bundle if base_bundle is not None else _bare_base_bundle()
+    # A bare run receives the default CI hook after its bare base.  An
+    # explicitly supplied base is composed after the default so its same-module
+    # source/config wins under Bundle's normal module-identity merge semantics.
+    # In both cases, caller extra overlays below remain the final override.
+    if base_bundle is None:
+        composed = _bare_base_bundle().compose(_context_intelligence_overlay())
+    else:
+        composed = _context_intelligence_overlay().compose(base_bundle)
 
     orchestrator_config: dict[str, Any] = {
         "dot_source": dot_source,
@@ -1021,21 +1103,26 @@ async def _build_prepared(
         },
     )
 
-    composed = base.compose(overlay)
+    composed = composed.compose(overlay)
     for extra in extra_overlays or ():
         composed = composed.compose(extra)
 
-    # First prepare in this process resolves/installs modules (slow, first
-    # run only); subsequent ones take the offline path. Override with
-    # ATTRACTOR_INSTALL_DEPS=0/1.
+    # A source's dependencies are installed only after that source was
+    # successfully prepared in this process.  A caller may replace the CI hook
+    # source under the same module identity, so module names cannot decide this.
+    # Override the automatic behavior with ATTRACTOR_INSTALL_DEPS=0/1.
+    source_identities = _selected_module_source_identities(composed)
     env = os.environ.get("ATTRACTOR_INSTALL_DEPS")
     if env is not None:
         install_deps = env not in ("0", "false", "False", "")
     else:
-        install_deps = not _DEPS_INSTALLED
+        install_deps = source_identities is None or not source_identities.issubset(
+            _PREPARED_SOURCE_IDENTITIES
+        )
 
     prepared = await composed.prepare(install_deps=install_deps)
-    _DEPS_INSTALLED = True
+    if install_deps and source_identities is not None:
+        _PREPARED_SOURCE_IDENTITIES.update(source_identities)
     return prepared
 
 

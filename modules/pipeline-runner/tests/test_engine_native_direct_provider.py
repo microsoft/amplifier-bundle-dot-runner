@@ -202,7 +202,9 @@ def test_box_node_without_fix_fails_with_misleading_message(monkeypatch, tmp_pat
     from amplifier_module_loop_pipeline.dot_parser import parse_dot
 
     graph = parse_dot(_make_box_dot())
-    backend = AmplifierBackend(coordinator=None, profiles={}, default_worker="llm-direct")
+    backend = AmplifierBackend(
+        coordinator=None, profiles={}, default_worker="llm-direct"
+    )
     node = graph.nodes["work"]
 
     outcome = asyncio.run(backend.run(node, "do the thing", PipelineContext()))

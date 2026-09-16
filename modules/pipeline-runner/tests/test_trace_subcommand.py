@@ -15,7 +15,6 @@ is implemented in amplifier_module_pipeline_runner.cli.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -124,9 +123,7 @@ class TestAttractorTraceCLI:
         """'trace' is registered as a subcommand in the CLI parser."""
         parser = cli.build_parser()
         # Find the subparser action
-        sub_actions = [
-            a for a in parser._actions if hasattr(a, "_name_parser_map")
-        ]
+        sub_actions = [a for a in parser._actions if hasattr(a, "_name_parser_map")]
         assert sub_actions, "No subparser action found in attractor CLI"
         choices = sub_actions[0]._name_parser_map
         assert "trace" in choices, (

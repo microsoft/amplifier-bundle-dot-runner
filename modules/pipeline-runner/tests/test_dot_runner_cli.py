@@ -244,6 +244,11 @@ def test_run_pipeline_bundle_registers_spawn_and_honors_declared_defaults(
         return declared_bundle
 
     monkeypatch.setattr(runner_mod, "_load_named_bundle", fake_load_named_bundle)
+    # This test's base is a deliberately minimal test double. The dedicated
+    # composition suite exercises the real CI Bundle identity merge.
+    monkeypatch.setattr(
+        runner_mod, "_context_intelligence_overlay", lambda: FakeBundle()
+    )
 
     captured: dict = {}
 
@@ -293,8 +298,7 @@ def test_run_pipeline_worker_and_bundle_both_given_raises_value_error(
 
     def _forbid_load(ref):
         raise AssertionError(
-            "a bundle must never be loaded once the mutual-exclusivity "
-            "guard has fired"
+            "a bundle must never be loaded once the mutual-exclusivity guard has fired"
         )
 
     monkeypatch.setattr(runner_mod, "_load_named_bundle", _forbid_load)

@@ -95,7 +95,7 @@ def test_a_node_declaring_an_instance_id_selects_it(isolated_host: Path) -> None
 def test_the_run_provider_flag_selects_an_instance(isolated_host: Path) -> None:
     """``--provider luna`` with a graph that declares nothing."""
     selected = default_worker.selected_provider_instances(
-        "digraph g { a [shape=box, prompt=\"x\"] }", run_provider="luna"
+        'digraph g { a [shape=box, prompt="x"] }', run_provider="luna"
     )
     assert set(selected) == {"luna"}
 
@@ -103,7 +103,7 @@ def test_the_run_provider_flag_selects_an_instance(isolated_host: Path) -> None:
 def test_unnamed_instances_are_not_mounted(isolated_host: Path) -> None:
     """Mounting all 15 of an operator's configured instances on every run
     would load a dozen provider modules the pipeline never asked for."""
-    assert default_worker.selected_provider_instances(_DOT_TERRA) .keys() == {"terra"}
+    assert default_worker.selected_provider_instances(_DOT_TERRA).keys() == {"terra"}
 
 
 def test_a_module_name_is_never_reinterpreted_as_an_instance(
@@ -112,9 +112,7 @@ def test_a_module_name_is_never_reinterpreted_as_an_instance(
     """An instance someone named ``openai`` must not silently take over the
     module address -- that would change what an existing graph means."""
     (tmp_path / "amplifier-home" / "settings.yaml").write_text(
-        yaml.safe_dump(
-            {"config": {"providers": [{**_TERRA, "id": "openai"}]}}
-        ),
+        yaml.safe_dump({"config": {"providers": [{**_TERRA, "id": "openai"}]}}),
         encoding="utf-8",
     )
     selected = default_worker.selected_provider_instances(

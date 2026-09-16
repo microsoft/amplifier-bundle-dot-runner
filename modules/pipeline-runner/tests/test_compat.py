@@ -25,7 +25,9 @@ def test_compatibility_gate_fails_loud_with_reinstall_instruction(monkeypatch):
         raise ImportError("simulated stale engine")
 
     monkeypatch.setattr(importlib, "import_module", missing_module)
-    monkeypatch.setattr(compat, "_REQUIRED_ENGINE_SYMBOLS", [("missing_engine_module", "feature")])
+    monkeypatch.setattr(
+        compat, "_REQUIRED_ENGINE_SYMBOLS", [("missing_engine_module", "feature")]
+    )
 
     with pytest.raises(IncompatibleEngineError) as exc_info:
         compat.check_engine_compatibility()

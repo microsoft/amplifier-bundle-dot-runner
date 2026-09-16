@@ -141,7 +141,17 @@ def interrupted_run(workspace):
     dot, work, logs = workspace("interrupted", blocked=True)
 
     proc = subprocess.Popen(
-        [*CLI, "run", str(dot), "--logs-root", str(logs), "--cwd", str(work), "--worker", "llm-direct"],
+        [
+            *CLI,
+            "run",
+            str(dot),
+            "--logs-root",
+            str(logs),
+            "--cwd",
+            str(work),
+            "--worker",
+            "llm-direct",
+        ],
         env=_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -173,7 +183,16 @@ def interrupted_run(workspace):
 def control_run(workspace):
     """An uninterrupted run of the same graph bytes, executed at gate runtime."""
     dot, work, logs = workspace("control", blocked=False)
-    result = _cli("run", str(dot), "--logs-root", str(logs), "--cwd", str(work), "--worker", "llm-direct")
+    result = _cli(
+        "run",
+        str(dot),
+        "--logs-root",
+        str(logs),
+        "--cwd",
+        str(work),
+        "--worker",
+        "llm-direct",
+    )
     assert result.returncode == 0, result.stderr
     return dot, work, logs
 
@@ -303,7 +322,12 @@ def test_resume_records_itself_and_finishes_the_run(interrupted_run):
     dot, work, logs, _, _ = interrupted_run
     manifest_before = json.loads((logs / "manifest.json").read_text())
 
-    assert _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct").returncode == 0
+    assert (
+        _cli(
+            "resume", str(logs), "--cwd", str(work), "--worker", "llm-direct"
+        ).returncode
+        == 0
+    )
 
     manifest = json.loads((logs / "manifest.json").read_text())
     assert manifest["start_time"] == manifest_before["start_time"]
@@ -316,7 +340,12 @@ def test_resume_records_itself_and_finishes_the_run(interrupted_run):
 def test_ac6_resuming_a_finished_run_is_refused(interrupted_run):
     """The liveness rung, proven against a genuinely finished run."""
     dot, work, logs, _, _ = interrupted_run
-    assert _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct").returncode == 0
+    assert (
+        _cli(
+            "resume", str(logs), "--cwd", str(work), "--worker", "llm-direct"
+        ).returncode
+        == 0
+    )
 
     a_before = _lines(work / "a_runs.log")
     again = _cli("resume", str(logs), "--cwd", str(work), "--worker", "llm-direct")

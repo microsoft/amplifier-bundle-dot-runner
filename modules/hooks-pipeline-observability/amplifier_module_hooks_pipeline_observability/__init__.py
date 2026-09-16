@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 # Amplifier module metadata
 __amplifier_module_type__ = "hooks"
 
-# All pipeline events this module subscribes to
+# Existing events advertised to capture hooks. Only events that update the
+# aggregator also need a handler in _AGGREGATOR_HANDLER_MAP below.
 _PIPELINE_EVENTS = [
     "pipeline:start",
     "pipeline:complete",
@@ -33,6 +34,10 @@ _PIPELINE_EVENTS = [
     "pipeline:interview_timeout",
     "pipeline:stage_retrying",
     "pipeline:stage_failed",
+    "pipeline:resume",
+    "pipeline:resume_fidelity_degrade",
+    "pipeline:subgraph_start",
+    "pipeline:subgraph_complete",
     "provider:response",
     "model:resolved",
 ]
