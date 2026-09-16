@@ -183,6 +183,150 @@ def test_build_prepared_named_path_has_one_ci_hook_and_preserves_caller_overlays
     assert hook["config"] == {"workspace": "caller-extra"}
 
 
+def test_dependency_preparation_tracks_selected_composed_sources(
+    monkeypatch, tmp_path
+) -> None:
+    """A caller-selected CI source cannot suppress the default CI source's install.
+
+    The selected source is read from each actual composed mount plan: the
+    module name alone is intentionally insufficient because normal composition
+    lets the caller replace the runner's default source.
+    """
+    caller_source = "git+https://example.invalid/caller-ci@selected"
+    caller = Bundle(
+        name="caller-source",
+        hooks=[
+            {
+                "module": "hook-context-intelligence",
+                "source": caller_source,
+                "config": {"workspace": "caller"},
+            }
+        ],
+    )
+    calls: list[tuple[bool, set[str]]] = []
+
+    async def fake_prepare(self, *, install_deps: bool):
+        sources = {
+            entry["source"]
+            for entry in self.to_mount_plan().get("hooks", [])
+            if "source" in entry
+        }
+        calls.append((install_deps, sources))
+        return object()
+
+    monkeypatch.setattr(Bundle, "prepare", fake_prepare)
+    monkeypatch.setattr(runner, "_PREPARED_SOURCE_IDENTITIES", set())
+
+    async def prepare_sequence() -> None:
+        await runner._build_prepared(
+            "digraph T { start [shape=Mdiamond]; end [shape=Msquare]; start -> end; }",
+            tmp_path,
+            params=None,
+            profiles=None,
+            base_bundle=caller,
+        )
+        await runner._build_prepared(
+            "digraph T { start [shape=Mdiamond]; end [shape=Msquare]; start -> end; }",
+            tmp_path,
+            params=None,
+            profiles=None,
+        )
+        await runner._build_prepared(
+            "digraph T { start [shape=Mdiamond]; end [shape=Msquare]; start -> end; }",
+            tmp_path,
+            params=None,
+            profiles=None,
+        )
+
+    asyncio.run(prepare_sequence())
+
+    assert calls == [
+        (True, {caller_source}),
+        (True, {runner._CONTEXT_INTELLIGENCE_HOOK_SOURCE}),
+        (False, {runner._CONTEXT_INTELLIGENCE_HOOK_SOURCE}),
+    ]
+
+
+def test_dependency_preparation_retries_failed_source_install(
+    monkeypatch, tmp_path
+) -> None:
+    """A failed install leaves its source eligible for the next preparation."""
+    attempts: list[bool] = []
+
+    async def fake_prepare(self, *, install_deps: bool):
+        del self
+        attempts.append(install_deps)
+        if len(attempts) == 1:
+            raise RuntimeError("dependency install failed")
+        return object()
+
+    monkeypatch.setattr(Bundle, "prepare", fake_prepare)
+    monkeypatch.setattr(runner, "_PREPARED_SOURCE_IDENTITIES", set())
+
+    async def prepare_twice() -> None:
+        try:
+            await runner._build_prepared(
+                "digraph T { start [shape=Mdiamond]; end [shape=Msquare]; start -> end; }",
+                tmp_path,
+                params=None,
+                profiles=None,
+            )
+        except RuntimeError:
+            pass
+        await runner._build_prepared(
+            "digraph T { start [shape=Mdiamond]; end [shape=Msquare]; start -> end; }",
+            tmp_path,
+            params=None,
+            profiles=None,
+        )
+
+    asyncio.run(prepare_twice())
+
+    assert attempts == [True, True]
+
+
+def test_explicit_dependency_install_overrides_do_not_poison_source_cache(
+    monkeypatch, tmp_path
+) -> None:
+    """Explicit 0 stays disabled; later automatic and explicit 1 stay enabled."""
+    calls: list[bool] = []
+
+    async def fake_prepare(self, *, install_deps: bool):
+        del self
+        calls.append(install_deps)
+        return object()
+
+    monkeypatch.setattr(Bundle, "prepare", fake_prepare)
+    monkeypatch.setattr(runner, "_PREPARED_SOURCE_IDENTITIES", set())
+    monkeypatch.setenv("ATTRACTOR_INSTALL_DEPS", "0")
+
+    async def prepare_sequence() -> None:
+        await runner._build_prepared(
+            "digraph T { start [shape=Mdiamond]; end [shape=Msquare]; start -> end; }",
+            tmp_path,
+            params=None,
+            profiles=None,
+        )
+        monkeypatch.delenv("ATTRACTOR_INSTALL_DEPS")
+        await runner._build_prepared(
+            "digraph T { start [shape=Mdiamond]; end [shape=Msquare]; start -> end; }",
+            tmp_path,
+            params=None,
+            profiles=None,
+        )
+        monkeypatch.setenv("ATTRACTOR_INSTALL_DEPS", "1")
+        await runner._build_prepared(
+            "digraph T { start [shape=Mdiamond]; end [shape=Msquare]; start -> end; }",
+            tmp_path,
+            params=None,
+            profiles=None,
+        )
+
+    asyncio.run(prepare_sequence())
+
+    assert calls == [False, True, True]
+
+
 def test_public_prepared_session_lifecycle_runs_hook_ready_callback(tmp_path) -> None:
     """A normal ``create_session`` dispatches a mounted hook's ready callback.
 
@@ -205,6 +349,37 @@ async def on_session_ready(coordinator):
 """,
         encoding="utf-8",
     )
+    context_root = tmp_path / "context"
+    context_package = context_root / "amplifier_module_context_lifecycle_probe"
+    context_package.mkdir(parents=True)
+    (context_package / "__init__.py").write_text(
+        """
+__amplifier_module_type__ = "context"
+
+class Context:
+    def __init__(self):
+        self.messages = []
+
+    async def add_message(self, message):
+        self.messages.append(message)
+
+    async def get_messages_for_request(self, token_budget, provider=None):
+        return self.messages.copy()
+
+    async def get_messages(self):
+        return self.messages.copy()
+
+    async def set_messages(self, messages):
+        self.messages = messages.copy()
+
+    async def clear(self):
+        self.messages.clear()
+
+async def mount(coordinator, config):
+    await coordinator.mount("context", Context())
+""",
+        encoding="utf-8",
+    )
 
     bundle = Bundle(name="lifecycle-probe")
     prepared = PreparedBundle(
@@ -212,12 +387,18 @@ async def on_session_ready(coordinator):
         mount_plan={
             "session": {
                 "orchestrator": {"module": "loop-pipeline"},
-                "context": {"module": "context-simple"},
+                "context": {
+                    "module": "context-lifecycle-probe",
+                    "source": str(context_root),
+                },
             },
             "hooks": [{"module": "hook-lifecycle-probe", "source": str(hook_root)}],
         },
         resolver=BundleModuleResolver(
-            module_paths={"hook-lifecycle-probe": Path(hook_root)}
+            module_paths={
+                "context-lifecycle-probe": Path(context_root),
+                "hook-lifecycle-probe": Path(hook_root),
+            }
         ),
     )
 
