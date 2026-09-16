@@ -1,6 +1,6 @@
 """A checkpoint must carry the source directory its graph was resolved from.
 
-The bug (dot_runner-4ws): a v2 checkpoint embeds the DOT *source* so a resume
+The regression: a v2 checkpoint embeds the DOT *source* so a resume
 is self-contained, but not the directory that source came from.  On resume the
 engine reparses those bytes into a graph whose ``source_dir`` is empty, so
 ``resolve_dot_path`` (EXTENSIONS.md 10 / engine-surface C9 tier 2) skips the

@@ -1,11 +1,11 @@
 """Resume must keep resolving a relative ``dot_file=`` beside its root DOT.
 
-The bug (dot_runner-4ws).  ``attractor run <file>`` seeds the root graph's
+The regression.  ``dot-runner run <file>`` seeds the root graph's
 ``source_dir`` from that file's directory, so a ``shape=folder`` node's
 relative ``dot_file=`` resolves at tier 2 of the EXTENSIONS.md 10 /
 engine-surface C9 precedence chain (absolute -> graph.source_dir ->
 context.target_dir -> cwd).  A checkpoint embeds the DOT *bytes* but not that
-directory, so ``attractor resume`` reparsed the graph with ``source_dir``
+directory, so ``dot-runner resume`` reparsed the graph with ``source_dir``
 empty: tier 2 vanished and resolution silently slid down to
 ``context.target_dir`` -- i.e. ``--cwd``, a different directory entirely on any
 resume run from its own workdir.
@@ -87,13 +87,50 @@ def _cli(*args, timeout=300):
     )
 
 
-def _wait_for(path: Path, timeout: float = 120.0, poll: float = 0.2) -> bool:
+def _wait_for(
+    path: Path,
+    proc: subprocess.Popen,
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout: float = 120.0,
+    poll: float = 0.2,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            pytest.fail(
+                f"CLI exited before gate_started (exit={proc.returncode}).\n"
+                f"stdout:\n{stdout_path.read_text(errors='replace')[-4000:]}\n"
+                f"stderr:\n{stderr_path.read_text(errors='replace')[-4000:]}"
+            )
         if path.exists():
-            return True
+            return
         time.sleep(poll)
-    return False
+    pytest.fail(
+        f"gate_started not reached within {timeout}s; CLI is still running.\n"
+        f"stdout:\n{stdout_path.read_text(errors='replace')[-4000:]}\n"
+        f"stderr:\n{stderr_path.read_text(errors='replace')[-4000:]}"
+    )
+
+
+def test_gate_wait_reports_early_cli_exit(tmp_path):
+    """A startup failure must be visible immediately, not hidden by a timeout."""
+    stdout_path = tmp_path / "stdout"
+    stderr_path = tmp_path / "stderr"
+    with stdout_path.open("w") as out, stderr_path.open("w") as err:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('startup failed', file=sys.stderr); sys.exit(3)",
+            ],
+            stdout=out,
+            stderr=err,
+        )
+        proc.wait(timeout=10)
+        with pytest.raises(pytest.fail.Exception, match=r"exit=3.*") as caught:
+            _wait_for(tmp_path / "gate_started", proc, stdout_path, stderr_path)
+        assert "startup failed" in str(caught.value)
 
 
 @pytest.fixture
@@ -126,28 +163,29 @@ def interrupted(tmp_path):
         root.write_text(_ROOT_DOT.format(child=child_name), encoding="utf-8")
         (work / "BLOCK").write_text("")
 
-        proc = subprocess.Popen(
-            [
-                *CLI,
-                "run",
-                str(root),
-                "--logs-root",
-                str(logs),
-                "--cwd",
-                str(work),
-                "--worker",
-                "llm-direct",
-            ],
-            env=_env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            assert _wait_for(work / "gate_started"), (
-                "gate never started; the run did not reach the interruption point"
+        stdout_path = logs / "start.stdout"
+        stderr_path = logs / "start.stderr"
+        with stdout_path.open("w") as out, stderr_path.open("w") as err:
+            proc = subprocess.Popen(
+                [
+                    *CLI,
+                    "run",
+                    str(root),
+                    "--logs-root",
+                    str(logs),
+                    "--cwd",
+                    str(work),
+                    "--worker",
+                    "llm-direct",
+                ],
+                env=_env(),
+                stdout=out,
+                stderr=err,
+                text=True,
+                start_new_session=True,
             )
+        try:
+            _wait_for(work / "gate_started", proc, stdout_path, stderr_path)
             checkpoint = json.loads((logs / "checkpoint.json").read_text())
             assert checkpoint["current_node"] == "a", checkpoint["current_node"]
             assert checkpoint["run_state"] == "in_flight"
