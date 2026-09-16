@@ -53,6 +53,15 @@ docs) lives in the repos that consume this one.
 | `docs/SPEC_CONFORMANCE_HISTORY.md` | The retired `SPEC_CONFORMANCE.md`, frozen: the dated decision record for every `ATX-*`/`ULM-*`/`CAL-*` id. |
 | `.github/capsule-pipeline/` | Issue -> attractor -> PR pipeline (ported from `amplifier-bundle-attractor`): label an issue `ready:spec`/`ready:feature-spec` and an autonomous pipeline proposes a work capsule, then (on merge) a fix PR. Needs repo secrets `ANTHROPIC_API_KEY` + `OPENAI_API_KEY`; `OPENAI_BASE_URL` is an OPTIONAL Actions **variable** (unset -> the provider module's own default endpoint). See `.github/capsule-pipeline/README.md` and [docs/ISSUE_PIPELINE.md](docs/ISSUE_PIPELINE.md). |
 
+`dot-runner run` and `dot-runner resume` mount Context Intelligence on their
+runner-created session. Standalone runs have no settings-to-hook-config
+resolver, so the default declaration has no destinations and records locally.
+Library callers may supply a resolved CI hook declaration in a base bundle or
+`extra_overlays`; normal module-identity composition preserves its
+include/exclude/auth routing. Named workers inherit the same single hook
+through normal bundle composition; the engine itself has no Context
+Intelligence dependency.
+
 Python distribution and import names are unchanged from their original
 home (`amplifier-module-loop-pipeline`, `import amplifier_module_loop_pipeline`,
 etc.) — only the git URL that serves them moved. The one exception: the

@@ -172,6 +172,12 @@ def _patch_load_named_bundle_capturing_ref(monkeypatch) -> dict:
         )
 
     monkeypatch.setattr(runner_mod, "_load_named_bundle", fake_load_named_bundle)
+    # Named-worker tests use FakeBundle to avoid activation. Keep the CI
+    # overlay in that same fake composition domain; its real module-identity
+    # behavior is covered in test_context_intelligence_composition.py.
+    monkeypatch.setattr(
+        runner_mod, "_context_intelligence_overlay", lambda: FakeBundle()
+    )
     return captured
 
 

@@ -11,8 +11,10 @@ These drive the real argv front door (``cli.main``), not the library.
 import json
 
 import pytest
+from amplifier_foundation import Bundle
 
 from amplifier_module_pipeline_runner import cli
+from amplifier_module_pipeline_runner import runner as runner_mod
 from amplifier_module_loop_pipeline.checkpoint import (
     SCHEMA_VERSION,
     fingerprint_dot_source,
@@ -32,6 +34,21 @@ digraph cli_resume {
 @pytest.fixture(autouse=True)
 def _api_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ci_hook_install(monkeypatch):
+    """Keep checkpoint validation tests hermetic.
+
+    Native CI composition is covered in test_context_intelligence_composition;
+    these cases exercise checkpoint failures and must not fetch or activate the
+    external hook on a path that should reject before pipeline execution.
+    """
+    monkeypatch.setattr(
+        runner_mod,
+        "_context_intelligence_overlay",
+        lambda: Bundle(name="test-no-context-intelligence"),
+    )
 
 
 def _checkpoint(**overrides):
@@ -140,7 +157,9 @@ def test_graph_mismatch_is_refused(tmp_path, capsys):
     run_dir = _run_dir(tmp_path, _checkpoint())
     other = tmp_path / "other.dot"
     other.write_text(DOT.replace("echo a", "echo CHANGED"))
-    rc = cli.main(["resume", str(run_dir), "--dot-file", str(other), "--worker", "llm-direct"])
+    rc = cli.main(
+        ["resume", str(run_dir), "--dot-file", str(other), "--worker", "llm-direct"]
+    )
     err = capsys.readouterr().err
     assert rc == 1
     assert "different graph" in err
@@ -161,7 +180,9 @@ def test_current_node_not_in_graph_is_refused(tmp_path, capsys):
 
 def test_param_colliding_with_restored_context_is_refused(tmp_path, capsys):
     run_dir = _run_dir(tmp_path, _checkpoint())
-    rc = cli.main(["resume", str(run_dir), "--param", "outcome=fail", "--worker", "llm-direct"])
+    rc = cli.main(
+        ["resume", str(run_dir), "--param", "outcome=fail", "--worker", "llm-direct"]
+    )
     err = capsys.readouterr().err
     assert rc == 1
     assert "collide with context restored from the checkpoint" in err

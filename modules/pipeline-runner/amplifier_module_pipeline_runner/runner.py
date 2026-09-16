@@ -916,6 +916,34 @@ _CONTEXT_SIMPLE_GIT = (
     "git+https://github.com/microsoft/amplifier-module-context-simple@main"
 )
 
+_CONTEXT_INTELLIGENCE_HOOK_SOURCE = (
+    "git+https://github.com/microsoft/amplifier-bundle-context-intelligence"
+    "@3e7d597f086e8c1462ddb132976f78a5bd0d6af7"
+    "#subdirectory=modules/hook-context-intelligence"
+)
+
+
+def _context_intelligence_overlay() -> Any:
+    """Return the runner's default local Context Intelligence hook mount.
+
+    No hook config belongs here, so standalone runs remain local-only. A
+    caller's resolved same-module declaration wins through normal Bundle
+    composition; ``_build_prepared`` orders an explicit base after this default
+    and caller ``extra_overlays`` after the runtime overlay.
+    """
+    from amplifier_foundation import Bundle
+
+    return Bundle(
+        name="pipeline-runner-context-intelligence",
+        version="1.0.0",
+        hooks=[
+            {
+                "module": "hook-context-intelligence",
+                "source": _CONTEXT_INTELLIGENCE_HOOK_SOURCE,
+            }
+        ],
+    )
+
 
 def _bare_base_bundle() -> Any:
     """Return the default bare base bundle -- no explicit --bundle given.
@@ -997,7 +1025,14 @@ async def _build_prepared(
     global _DEPS_INSTALLED
     from amplifier_foundation import Bundle
 
-    base = base_bundle if base_bundle is not None else _bare_base_bundle()
+    # A bare run receives the default CI hook after its bare base.  An
+    # explicitly supplied base is composed after the default so its same-module
+    # source/config wins under Bundle's normal module-identity merge semantics.
+    # In both cases, caller extra overlays below remain the final override.
+    if base_bundle is None:
+        composed = _bare_base_bundle().compose(_context_intelligence_overlay())
+    else:
+        composed = _context_intelligence_overlay().compose(base_bundle)
 
     orchestrator_config: dict[str, Any] = {
         "dot_source": dot_source,
@@ -1021,7 +1056,7 @@ async def _build_prepared(
         },
     )
 
-    composed = base.compose(overlay)
+    composed = composed.compose(overlay)
     for extra in extra_overlays or ():
         composed = composed.compose(extra)
 

@@ -79,14 +79,15 @@ def test_extra_overlay_reaches_prepared_bundle_and_is_genuinely_invoked(
         )
     )
 
-    # Runtime orchestrator overlay composed first, caller's overlay second.
-    assert len(prepared.applied) == 2
-    assert prepared.applied[1] is overlay
+    # Built-in CI overlay is first, then the runtime orchestrator; the caller
+    # still lands last, after both runner-owned layers.
+    assert len(prepared.applied) == 3
+    assert prepared.applied[2] is overlay
 
     # Prove it's genuinely wired in (not merely present in a list): the same
     # object that reached the prepared bundle is callable and produces the
     # real effect a consumer's overlay would rely on.
-    prepared.applied[1].mark()
+    prepared.applied[2].mark()
     assert invoked == ["observability-overlay-applied"]
 
 
@@ -107,13 +108,13 @@ def test_multiple_extra_overlays_composed_in_order(monkeypatch, tmp_path):
         )
     )
 
-    assert prepared.applied[1] is overlay_a
-    assert prepared.applied[2] is overlay_b
+    assert prepared.applied[2] is overlay_a
+    assert prepared.applied[3] is overlay_b
 
 
 def test_no_extra_overlays_leaves_only_runtime_overlay(monkeypatch, tmp_path):
-    """Without ``extra_overlays``, only the runtime orchestrator overlay is
-    composed -- the seam is a strict addition, not a required parameter."""
+    """Without ``extra_overlays``, runner-owned CI and runtime overlays remain;
+    caller overlays are still a strict, optional addition."""
     _patch_base_bundle(monkeypatch)
 
     prepared = asyncio.run(
@@ -125,4 +126,4 @@ def test_no_extra_overlays_leaves_only_runtime_overlay(monkeypatch, tmp_path):
         )
     )
 
-    assert len(prepared.applied) == 1
+    assert len(prepared.applied) == 2
