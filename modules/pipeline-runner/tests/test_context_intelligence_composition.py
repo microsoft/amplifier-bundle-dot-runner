@@ -20,6 +20,36 @@ from amplifier_foundation import Bundle
 from amplifier_foundation.bundle._prepared import BundleModuleResolver, PreparedBundle
 
 from amplifier_module_pipeline_runner import runner
+from amplifier_module_pipeline_runner.default_worker import _HOOK_MODULE_SOURCES
+
+
+def test_default_capture_includes_pipeline_event_discovery_once() -> None:
+    """CI needs the existing discovery producer even on the bare direct path."""
+    base = Bundle(
+        name="named-base",
+        hooks=[
+            {
+                "module": "hooks-pipeline-observability",
+                "source": _HOOK_MODULE_SOURCES["hooks-pipeline-observability"],
+                "config": {"caller": True},
+            }
+        ],
+    )
+    for composed in (
+        runner._context_intelligence_overlay(),
+        runner._context_intelligence_overlay().compose(base),
+    ):
+        observers = [
+            hook
+            for hook in composed.to_mount_plan()["hooks"]
+            if hook["module"] == "hooks-pipeline-observability"
+        ]
+        assert len(observers) == 1
+        assert (
+            observers[0]["source"]
+            == _HOOK_MODULE_SOURCES["hooks-pipeline-observability"]
+        )
+    assert observers[0]["config"] == {"caller": True}
 
 
 def _ci_hook(bundle: Bundle) -> dict:
@@ -68,6 +98,7 @@ def test_explicit_base_ci_source_and_config_override_the_default() -> None:
     assert hook["config"] == {"workspace": "caller-base"}
     assert {entry["module"] for entry in composed.to_mount_plan()["hooks"]} == {
         "hook-context-intelligence",
+        "hooks-pipeline-observability",
         "hooks-unrelated",
     }
 
@@ -240,10 +271,11 @@ def test_dependency_preparation_tracks_selected_composed_sources(
 
     asyncio.run(prepare_sequence())
 
+    observer_source = _HOOK_MODULE_SOURCES["hooks-pipeline-observability"]
     assert calls == [
-        (True, {caller_source}),
-        (True, {runner._CONTEXT_INTELLIGENCE_HOOK_SOURCE}),
-        (False, {runner._CONTEXT_INTELLIGENCE_HOOK_SOURCE}),
+        (True, {caller_source, observer_source}),
+        (True, {runner._CONTEXT_INTELLIGENCE_HOOK_SOURCE, observer_source}),
+        (False, {runner._CONTEXT_INTELLIGENCE_HOOK_SOURCE, observer_source}),
     ]
 
 

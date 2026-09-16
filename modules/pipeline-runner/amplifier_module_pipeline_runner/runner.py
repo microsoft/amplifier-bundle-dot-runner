@@ -925,7 +925,7 @@ _CONTEXT_INTELLIGENCE_HOOK_SOURCE = (
 
 
 def _context_intelligence_overlay() -> Any:
-    """Return the runner's default local Context Intelligence hook mount.
+    """Return native CI capture and its existing pipeline-event discovery source.
 
     No hook config belongs here, so standalone runs remain local-only. A
     caller's resolved same-module declaration wins through normal Bundle
@@ -933,6 +933,7 @@ def _context_intelligence_overlay() -> Any:
     and caller ``extra_overlays`` after the runtime overlay.
     """
     from amplifier_foundation import Bundle
+    from .default_worker import _HOOK_MODULE_SOURCES
 
     return Bundle(
         name="pipeline-runner-context-intelligence",
@@ -941,7 +942,11 @@ def _context_intelligence_overlay() -> Any:
             {
                 "module": "hook-context-intelligence",
                 "source": _CONTEXT_INTELLIGENCE_HOOK_SOURCE,
-            }
+            },
+            {
+                "module": "hooks-pipeline-observability",
+                "source": _HOOK_MODULE_SOURCES["hooks-pipeline-observability"],
+            },
         ],
     )
 

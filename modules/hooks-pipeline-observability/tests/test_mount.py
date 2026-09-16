@@ -9,6 +9,22 @@ import pytest
 from amplifier_module_hooks_pipeline_observability import mount
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_advertises_existing_resume_and_nested_events_for_capture():
+    """Observers must be able to subscribe to facts the engine already emits."""
+    coordinator = MagicMock()
+    coordinator.get_capability.return_value = ["caller:event"]
+    await mount(coordinator)
+    events = coordinator.register_capability.call_args.args[1]
+    assert {
+        "caller:event",
+        "pipeline:resume",
+        "pipeline:resume_fidelity_degrade",
+        "pipeline:subgraph_start",
+        "pipeline:subgraph_complete",
+    }.issubset(events)
+
+
 def test_mount_is_callable():
     """mount() should be importable and callable."""
     assert callable(mount)
