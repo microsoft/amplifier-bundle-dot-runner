@@ -464,7 +464,9 @@ def test_issue_289_a_serialized_env_dump_loses_only_the_secret():
     tail = secrets.token_hex(8)
     name = "MY" + "_PASSWORD"
     line = json.dumps(
-        {"result": f"{name}={tail}\nPATH=/usr/bin\nHOME=/root\n{_PLURAL_ENV_NAME}=41892"}
+        {
+            "result": f"{name}={tail}\nPATH=/usr/bin\nHOME=/root\n{_PLURAL_ENV_NAME}=41892"
+        }
     )
     cleaned, findings = redaction.redact_text(line)
     assert tail not in cleaned
@@ -582,7 +584,8 @@ def test_a_secret_ending_in_a_backslash_does_not_eat_the_next_line():
     name = "MY" + "_PASSWORD"
     for k in (1, 2, 3, 5):
         dump = (
-            f"{name}={tail}" + "\\" * k
+            f"{name}={tail}"
+            + "\\" * k
             + f"\nPATH=/usr/bin\nHOME=/root\n{_PLURAL_ENV_NAME}=41892"
         )
         cleaned, findings = _redact_within_budget(

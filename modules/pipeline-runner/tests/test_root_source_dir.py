@@ -126,7 +126,14 @@ def test_cmd_run_resolves_a_relative_dot_path(monkeypatch, tmp_path):
 
     monkeypatch.chdir(tmp_path)
     args = cli.build_parser().parse_args(
-        ["run", "package/pipeline.dot", "--cwd", str(tmp_path), "--worker", "llm-direct"]
+        [
+            "run",
+            "package/pipeline.dot",
+            "--cwd",
+            str(tmp_path),
+            "--worker",
+            "llm-direct",
+        ]
     )
     assert cli.cmd_run(args) == 0
 

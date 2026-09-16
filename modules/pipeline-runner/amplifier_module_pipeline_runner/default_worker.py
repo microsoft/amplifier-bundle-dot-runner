@@ -490,7 +490,9 @@ def selected_provider_instances(
     if not requested:
         return {}
     available = (
-        instances if instances is not None else provider_instances.load_provider_instances()
+        instances
+        if instances is not None
+        else provider_instances.load_provider_instances()
     )
     return {name: available[name] for name in sorted(requested) if name in available}
 
@@ -895,10 +897,10 @@ def _resolve_or_raise(
     if _worker_available(AMPLIFIER_AGENT_NAME):
         return worker, str(
             write_agent_bundle(
-                    AMPLIFIER_AGENT_NAME,
-                    dot_source=dot_source,
-                    run_provider=run_provider,
-                )
+                AMPLIFIER_AGENT_NAME,
+                dot_source=dot_source,
+                run_provider=run_provider,
+            )
         )
 
     # WAVE 7 (feat/fail-loud-worker-names): FAIL LOUD, never degrade. A

@@ -62,6 +62,11 @@ include/exclude/auth routing. Named workers inherit the same single hook
 through normal bundle composition; the engine itself has no Context
 Intelligence dependency.
 
+The hosted `amplifier-agent` runtime keeps its detailed CI records in its own
+configured state root, separately from the outer pipeline session. Its existing
+session reference links the work result to that capture; this is partial history,
+not a guarantee that every nested or resumed relationship can be reconstructed.
+
 Python distribution and import names are unchanged from their original
 home (`amplifier-module-loop-pipeline`, `import amplifier_module_loop_pipeline`,
 etc.) — only the git URL that serves them moved. The one exception: the

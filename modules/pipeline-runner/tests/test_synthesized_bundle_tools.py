@@ -91,9 +91,7 @@ def test_synthesized_bundle_mounts_a_real_tool_surface(monkeypatch, worker_name)
 
 
 @pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
-def test_every_mounted_tool_entry_carries_a_resolvable_source(
-    monkeypatch, worker_name
-):
+def test_every_mounted_tool_entry_carries_a_resolvable_source(monkeypatch, worker_name):
     """Module activation only activates providers/tools/hooks entries that
     carry a ``source`` (``amplifier_foundation.bundle.Bundle.prepare``). A
     ``tools:`` section whose entries lack one would parse fine, mount

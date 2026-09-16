@@ -61,7 +61,15 @@ def _install_patches(monkeypatch, captor: _Captor) -> None:
             pass
 
     class FakeEngine:
-        def __init__(self, *, graph=None, context=None, handler_registry=None, logs_root=None, hooks=None) -> None:
+        def __init__(
+            self,
+            *,
+            graph=None,
+            context=None,
+            handler_registry=None,
+            logs_root=None,
+            hooks=None,
+        ) -> None:
             captor.engine_hooks = hooks
 
         async def run(self):
