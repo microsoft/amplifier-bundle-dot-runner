@@ -1,10 +1,22 @@
 # Migration Guide
 
-## Unreleased — completion-event identity correction (2026-09-16)
+## Completion-event identity — available on `main` (2026-09-16)
 
-This unreleased correction implements ratified candidate C15.5
+This correction implements ratified candidate C15.5
 (`contracts/engine-surface.v2-candidate.md`; receipt:
 `contracts/engine-surface.ratification-20260916.md`).
+
+**Breaking event-field change:** [PR #108](https://github.com/microsoft/amplifier-bundle-dot-runner/pull/108)
+made the correction available on `main` on September 16, 2026. The first runtime
+correction in `main`'s history is
+[`28dff6a9c6e489f676deabdf5cc7be5f52608981`](https://github.com/microsoft/amplifier-bundle-dot-runner/commit/28dff6a9c6e489f676deabdf5cc7be5f52608981);
+the completed PR, including its additional regression tests, landed at
+[`2d137d7ac06829c5de45d1ac08993117f22e72bd`](https://github.com/microsoft/amplifier-bundle-dot-runner/commit/2d137d7ac06829c5de45d1ac08993117f22e72bd).
+
+**No package-version bump accompanied this change.** The root
+`amplifier-dot-runner` remained `0.4.1`, and `amplifier-module-loop-pipeline`
+remained `0.4.0`; both version numbers also occur before the correction.
+This identifies availability from Git, not a new versioned package release.
 
 - **New `pipeline:node_complete` events:** `session_id`, when present, is the
   emitter/coordinator identity supplied by the normal HookRegistry default
@@ -14,12 +26,12 @@ This unreleased correction implements ratified candidate C15.5
   remains the worker reference where that path supplies one.
 - **Mixed history:** never treat `worker_session_id ?? session_id` as a worker
   lookup. A corrected no-worker completion can have only the emitter id.
-  Classify records only from positive engine version and commit provenance;
-  records without it remain unclassified. Do not rewrite old captures.
-- **Release boundary:** the release note must name the first corrective version
-  and commit. This is still unreleased, so neither is assigned here; the
-  eventual first corrective commit is the boundary, not an event-schema or
-  version-field change.
+  Use verified provenance for the actual loop-pipeline engine, such as a known
+  `manifest.json` `engine_commit`, and establish whether that revision includes
+  the correction. A package version, timestamp, node name, or CLI root-package
+  revision alone is not sufficient: the root can resolve its modules separately.
+  If engine provenance is missing or the revision's behavior is unverified,
+  leave the record unclassified. Do not rewrite old captures.
 
 ## 0.3.0 -- extensions-rip-3 (2026-08-30)
 
