@@ -28,8 +28,15 @@ PIPELINE_NODE_START: str = "pipeline:node_start"
 #:   duration_ms      — wall-clock milliseconds for the handler
 #:   notes            — optional human-readable notes from the handler
 #:   failure_reason   — optional short failure description string
-#:   session_id       — optional child Amplifier session ID (backend nodes)
 #:   execution_index  — graph-level visit count for this node
+#:
+#: Optional identity fields:
+#:   session_id        — emitting coordinator/host session identity, supplied
+#:                       by normal HookRegistry default fields when available;
+#:                       engine completion emitters never set it explicitly
+#:   worker_session_id — supplied worker reference from Outcome.session_id;
+#:                       omitted when the outcome has no reference and otherwise
+#:                       preserved without validation or coercion
 #:
 #: Issue 10 / analog of WS-4 Sub-fix C — field added for tool-node failures:
 #:   failed_step      — structured tool-invocation payload (None for success

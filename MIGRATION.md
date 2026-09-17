@@ -1,5 +1,26 @@
 # Migration Guide
 
+## Unreleased — completion-event identity correction (2026-09-16)
+
+This unreleased correction implements ratified candidate C15.5
+(`contracts/engine-surface.v2-candidate.md`; receipt:
+`contracts/engine-surface.ratification-20260916.md`).
+
+- **New `pipeline:node_complete` events:** `session_id`, when present, is the
+  emitter/coordinator identity supplied by the normal HookRegistry default
+  fields. `worker_session_id` is the optional worker reference supplied by
+  `Outcome.session_id`.
+- **`status.json` callers are unchanged.** Its existing `session_id` value
+  remains the worker reference where that path supplies one.
+- **Mixed history:** never treat `worker_session_id ?? session_id` as a worker
+  lookup. A corrected no-worker completion can have only the emitter id.
+  Classify records only from positive engine version and commit provenance;
+  records without it remain unclassified. Do not rewrite old captures.
+- **Release boundary:** the release note must name the first corrective version
+  and commit. This is still unreleased, so neither is assigned here; the
+  eventual first corrective commit is the boundary, not an event-schema or
+  version-field change.
+
 ## 0.3.0 -- extensions-rip-3 (2026-08-30)
 
 Three demoted extensions are DELETED (mechanism removed, not merely discouraged).

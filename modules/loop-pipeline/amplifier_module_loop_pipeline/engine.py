@@ -1012,7 +1012,7 @@ class PipelineEngine:
                                 "execution_index": execution_index,  # NEW
                             }
                             if outcome.session_id is not None:
-                                timeout_event["session_id"] = outcome.session_id
+                                timeout_event["worker_session_id"] = outcome.session_id
                             await self._emit(
                                 PIPELINE_NODE_COMPLETE,
                                 timeout_event,
@@ -1166,7 +1166,7 @@ class PipelineEngine:
                     "attempt": outcome.attempt_count or 1,
                 }
                 if outcome.session_id is not None:
-                    node_complete_event["session_id"] = outcome.session_id
+                    node_complete_event["worker_session_id"] = outcome.session_id
                 await self._emit(
                     PIPELINE_NODE_COMPLETE,
                     node_complete_event,
@@ -1515,7 +1515,7 @@ class PipelineEngine:
                         "attempt": outcome.attempt_count or 1,
                     }
                     if outcome.session_id is not None:
-                        node_complete_event["session_id"] = outcome.session_id
+                        node_complete_event["worker_session_id"] = outcome.session_id
                     await self._emit(
                         PIPELINE_NODE_COMPLETE,
                         node_complete_event,
