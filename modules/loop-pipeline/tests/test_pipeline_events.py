@@ -5,6 +5,9 @@ Spec coverage: EVT-001–008, Section 9.6.
 
 from __future__ import annotations
 
+import ast
+import hashlib
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -513,9 +516,11 @@ class TestNodeEvents:
 
 
 class SessionBackend:
-    """Backend that returns an Outcome with a session_id for a specific node."""
+    """Backend that returns an Outcome with a worker reference for one node."""
 
-    def __init__(self, session_node: str, session_id: str = "child-sess-abc") -> None:
+    def __init__(
+        self, session_node: str, session_id: str | None = "child-sess-abc"
+    ) -> None:
         self._session_node = session_node
         self._session_id = session_id
 
@@ -532,8 +537,23 @@ class SessionBackend:
         return "ok"
 
 
-class TestNodeCompleteSessionId:
-    """Engine preserves worker session IDs without suppressing hook defaults."""
+C15_5_TEXT = (
+    "5. **Completion-event identity:** On an outer-engine-produced "
+    "`pipeline:node_complete`, generic `session_id`, when normal `HookRegistry` "
+    "default fields provide it, identifies the emitting coordinator/host session. "
+    "An `Outcome.session_id` that is a worker reference is instead emitted as "
+    "`worker_session_id`. Engine-owned completion emitters never explicitly set "
+    "generic `session_id`; no emitter fabricates either identity. A worker "
+    "reference is emitted only where that path already receives one, and preserves "
+    "the supplied value without new validation or coercion. No reference, or a "
+    "value unusable for correlation, is unknown rather than a reason to infer a "
+    "worker."
+)
+_CANDIDATE_SHA256 = "1d2d90ae022e285208dc109cce8a8faafe02d1bc76187447b890a0f48f219b19"
+
+
+class TestNodeCompleteIdentity:
+    """C15.5 keeps completion ownership and worker reference distinct."""
 
     @pytest.mark.asyncio
     async def test_node_complete_event_omits_session_id_without_worker(self, tmp_path):
@@ -583,8 +603,8 @@ class TestNodeCompleteSessionId:
         assert "session_id" not in work_events[0]
 
     @pytest.mark.asyncio
-    async def test_node_complete_session_id_populated_when_set(self, tmp_path):
-        """pipeline:node_complete carries session_id when outcome has one."""
+    async def test_node_complete_worker_session_id_populated_when_set(self, tmp_path):
+        """A hookless registry receives the supplied worker reference only."""
         hooks = MockHooks()
         engine = _make_engine(
             dot_source="""
@@ -603,15 +623,29 @@ class TestNodeCompleteSessionId:
         node_completes = hooks.get(PIPELINE_NODE_COMPLETE)
         work_events = [e for e in node_completes if e["node_id"] == "work"]
         assert len(work_events) == 1
-        assert work_events[0]["session_id"] == "child-sess-xyz"
+        assert work_events[0]["worker_session_id"] == "child-sess-xyz"
+        assert "session_id" not in work_events[0]
 
     @pytest.mark.asyncio
-    async def test_node_complete_inherits_parent_hook_session_without_worker(
+    async def test_ratified_c15_5_keeps_parent_hook_session_and_worker_reference(
         self, tmp_path
     ):
-        """The real core registry supplies its parent default only when the
-        engine omits session_id; a worker session still overrides that default.
+        """Candidate-bound C15.5 acceptance check using the real HookRegistry.
+
+        The exact rule above is ratified by
+        ``contracts/engine-surface.ratification-20260916.md``. This test is not
+        an engine-surface.v1 conformance claim: it binds the approved candidate
+        bytes to the observed event semantics while v1 remains frozen.
         """
+        repo_root = Path(__file__).parent.parent.parent.parent
+        candidate = repo_root / "contracts" / "engine-surface.v2-candidate.md"
+        receipt = repo_root / "contracts" / "engine-surface.ratification-20260916.md"
+        assert candidate.read_bytes()
+        assert C15_5_TEXT in candidate.read_text(encoding="utf-8")
+        assert hashlib.sha256(candidate.read_bytes()).hexdigest() == _CANDIDATE_SHA256
+        assert "**Exact steward response:** `ratified`" in receipt.read_text(
+            encoding="utf-8"
+        )
         captured: list[dict[str, Any]] = []
 
         def capture(_event: str, data: dict[str, Any]) -> None:
@@ -638,7 +672,326 @@ class TestNodeCompleteSessionId:
 
         by_node = {event["node_id"]: event for event in captured}
         assert by_node["start"]["session_id"] == "parent-session-1"
-        assert by_node["work"]["session_id"] == "worker-session-1"
+        assert by_node["work"]["session_id"] == "parent-session-1"
+        assert by_node["work"]["worker_session_id"] == "worker-session-1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("worker_session_id", "is_emitted"),
+        [("", True), (None, False)],
+    )
+    async def test_hookless_completion_preserves_or_omits_worker_reference(
+        self, tmp_path, worker_session_id, is_emitted
+    ):
+        """C15.5 preserves a supplied value without validating it; None omits it."""
+        hooks = MockHooks()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=SessionBackend("work", worker_session_id),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        await engine.run()
+
+        [work_event] = [
+            event
+            for event in hooks.get(PIPELINE_NODE_COMPLETE)
+            if event["node_id"] == "work"
+        ]
+        assert "session_id" not in work_event
+        if is_emitted:
+            assert work_event["worker_session_id"] == worker_session_id
+        else:
+            assert "worker_session_id" not in work_event
+
+    @pytest.mark.asyncio
+    async def test_final_retry_failure_keeps_parent_and_worker_identities(
+        self, tmp_path
+    ):
+        """Only the final attempt is emitted; it retains both distinct identities."""
+
+        class RetryingFailureBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def run(
+                self,
+                node: Node,
+                prompt: str,
+                context: PipelineContext,
+                incoming_edge=None,
+                graph=None,
+            ) -> Outcome | str:
+                if node.id != "work":
+                    return "ok"
+                self.calls += 1
+                if self.calls == 1:
+                    return Outcome(
+                        status=StageStatus.RETRY,
+                        notes="try again",
+                        session_id="worker-final-attempt",
+                    )
+                return Outcome(
+                    status=StageStatus.FAIL,
+                    failure_reason="final failure",
+                    session_id="worker-final-attempt",
+                )
+
+        captured: list[dict[str, Any]] = []
+        hooks = HookRegistry()
+        hooks.set_default_fields(session_id="coordinator-retry")
+        hooks.register(
+            PIPELINE_NODE_COMPLETE,
+            lambda _event, data: captured.append(dict(data)),
+            name="capture-completion",
+        )
+        backend = RetryingFailureBackend()
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work", max_retries=1]
+                exit [shape=Msquare]
+                start -> work
+                work -> exit [condition="outcome=fail"]
+            }
+            """,
+            backend=backend,
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        await engine.run()
+
+        assert backend.calls == 2
+        [work_event] = [event for event in captured if event["node_id"] == "work"]
+        assert work_event["status"] == "fail"
+        assert work_event["attempt"] == 2
+        assert work_event["session_id"] == "coordinator-retry"
+        assert work_event["worker_session_id"] == "worker-final-attempt"
+
+    @pytest.mark.asyncio
+    async def test_worker_failure_keeps_parent_and_worker_identities(self, tmp_path):
+        """A first-attempt worker failure retains both identities unchanged."""
+
+        class FailingSessionBackend:
+            async def run(
+                self,
+                node: Node,
+                prompt: str,
+                context: PipelineContext,
+                incoming_edge=None,
+                graph=None,
+            ) -> Outcome | str:
+                if node.id == "work":
+                    return Outcome(
+                        status=StageStatus.FAIL,
+                        failure_reason="worker failure",
+                        session_id="worker-failure",
+                    )
+                return "ok"
+
+        captured: list[dict[str, Any]] = []
+        hooks = HookRegistry()
+        hooks.set_default_fields(session_id="coordinator-failure")
+        hooks.register(
+            PIPELINE_NODE_COMPLETE,
+            lambda _event, data: captured.append(dict(data)),
+            name="capture-completion",
+        )
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work
+                work -> exit [condition="outcome=fail"]
+            }
+            """,
+            backend=FailingSessionBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        await engine.run()
+
+        [work_event] = [event for event in captured if event["node_id"] == "work"]
+        assert work_event["attempt"] == 1
+        assert work_event["session_id"] == "coordinator-failure"
+        assert work_event["worker_session_id"] == "worker-failure"
+
+    @pytest.mark.asyncio
+    async def test_subgraph_completion_keeps_parent_and_worker_identities(
+        self, tmp_path
+    ):
+        """The run_subgraph completion path preserves the same separation."""
+
+        class WorkerHandler:
+            async def execute(self, node, context, graph, logs_root, *, engine=None):
+                return Outcome(
+                    status=StageStatus.SUCCESS,
+                    session_id="subgraph-worker",
+                )
+
+        captured: list[dict[str, Any]] = []
+        hooks = HookRegistry()
+        hooks.set_default_fields(session_id="subgraph-coordinator")
+        hooks.register(
+            PIPELINE_NODE_COMPLETE,
+            lambda _event, data: captured.append(dict(data)),
+            name="capture-completion",
+        )
+        graph = Graph(
+            name="subgraph-identity",
+            nodes={"work": Node(id="work", shape="box", prompt="Do work")},
+            edges=[],
+        )
+        registry = HandlerRegistry(HandlerContext())
+        registry.register("codergen", WorkerHandler())
+        engine = PipelineEngine(
+            graph=graph,
+            context=PipelineContext(),
+            handler_registry=registry,
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        engine._initialize_context(goal="test")
+
+        await engine.run_subgraph("work")
+
+        [work_event] = [event for event in captured if event["node_id"] == "work"]
+        assert work_event["session_id"] == "subgraph-coordinator"
+        assert work_event["worker_session_id"] == "subgraph-worker"
+
+    @pytest.mark.asyncio
+    async def test_identical_node_names_do_not_infer_worker_correlation(self, tmp_path):
+        """Two coordinator registries keep supplied unknown refs independent."""
+
+        async def run_once(parent_id: str, worker_id: str) -> dict[str, Any]:
+            captured: list[dict[str, Any]] = []
+            hooks = HookRegistry()
+            hooks.set_default_fields(session_id=parent_id)
+            hooks.register(
+                PIPELINE_NODE_COMPLETE,
+                lambda _event, data: captured.append(dict(data)),
+                name=f"capture-{parent_id}",
+            )
+            engine = _make_engine(
+                dot_source="""
+                digraph {
+                    start [shape=Mdiamond]
+                    work [prompt="Do work"]
+                    exit [shape=Msquare]
+                    start -> work -> exit
+                }
+                """,
+                backend=SessionBackend("work", worker_id),
+                logs_root=str(tmp_path / parent_id),
+                hooks=hooks,
+            )
+            await engine.run()
+            return next(event for event in captured if event["node_id"] == "work")
+
+        first, second = (
+            await run_once("coordinator-one", "unknown-capture-one"),
+            await run_once("coordinator-two", "unknown-capture-two"),
+        )
+
+        assert first["session_id"] == "coordinator-one"
+        assert first["worker_session_id"] == "unknown-capture-one"
+        assert second["session_id"] == "coordinator-two"
+        assert second["worker_session_id"] == "unknown-capture-two"
+
+    def test_no_completion_emitter_explicitly_supplies_generic_session_id(self):
+        """Every one of the nine census emitters leaves emitter identity to hooks."""
+        package_root = Path(__file__).parent.parent
+        sources = [
+            package_root / "amplifier_module_loop_pipeline" / "engine.py",
+            package_root
+            / "amplifier_module_loop_pipeline"
+            / "handlers"
+            / "parallel.py",
+        ]
+        completion_calls = 0
+
+        def body_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef):
+            """Walk a function without double-counting a nested function."""
+
+            class Visitor(ast.NodeVisitor):
+                def __init__(self) -> None:
+                    self.nodes: list[ast.AST] = []
+
+                def generic_visit(self, node: ast.AST) -> None:
+                    self.nodes.append(node)
+                    super().generic_visit(node)
+
+                def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                    return
+
+                def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                    return
+
+            visitor = Visitor()
+            for statement in function.body:
+                visitor.visit(statement)
+            return visitor.nodes
+
+        for source_path in sources:
+            tree = ast.parse(source_path.read_text(encoding="utf-8"))
+            for function in ast.walk(tree):
+                if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                nodes = body_nodes(function)
+                calls = [
+                    call
+                    for call in nodes
+                    if isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "_emit"
+                    and call.args
+                    and isinstance(call.args[0], ast.Name)
+                    and call.args[0].id == "PIPELINE_NODE_COMPLETE"
+                ]
+                if not calls:
+                    continue
+                completion_calls += len(calls)
+
+                for payload in (node for node in nodes if isinstance(node, ast.Dict)):
+                    keys = [
+                        key.value
+                        for key in payload.keys
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    ]
+                    assert "session_id" not in keys, (
+                        f"{source_path}:{function.name} explicitly supplies "
+                        "generic session_id in a completion-emitter payload"
+                    )
+
+                for assignment in (
+                    node for node in nodes if isinstance(node, ast.Assign)
+                ):
+                    for target in assignment.targets:
+                        if not (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.slice, ast.Constant)
+                            and target.slice.value == "session_id"
+                        ):
+                            continue
+                        raise AssertionError(
+                            f"{source_path}:{function.name} explicitly assigns "
+                            "generic session_id in a completion-emitter payload"
+                        )
+
+        assert completion_calls == 9
 
     @pytest.mark.asyncio
     async def test_timeout_event_omits_session_id(self, tmp_path):

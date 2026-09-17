@@ -1693,6 +1693,25 @@ usage equal to the provider's own block, exactly one request per call, nothing b
 FAILED call, and the reported id equal to the directory name — on the exception path too) and
 `modules/loop-pipeline/tests/test_worker_session_observability.py` section 6.*
 
+### Addendum 3 (2026-09-16, ratified completion-event identity disposition)
+
+The exact C15.5 rule is preserved in `contracts/engine-surface.v2-candidate.md`
+(SHA-256 `1d2d90ae022e285208dc109cce8a8faafe02d1bc76187447b890a0f48f219b19`) and
+its `ratified` receipt is `contracts/engine-surface.ratification-20260916.md`.
+Canonical Attractor §9.6 requires stage observation but assigns no coordinator or
+worker identity fields; its surrounding §§4.5, 5.3, and 5.4 remain unchanged.
+This is an owned, ratified amendment on that spec-silent observability surface, not
+a claim that frozen `contracts/engine-surface.v1.md` already contains the rule.
+
+**§26 compatibility disposition:** the worker reference remains
+`Outcome.session_id` and both existing `status.json` writers remain unchanged.
+On an outer-engine-produced `pipeline:node_complete`, however, normal
+HookRegistry default `session_id` remains the emitting coordinator/host identity;
+the `Outcome.session_id` worker reference is emitted only as optional
+`worker_session_id`. No completion emitter fabricates either value. `None` omits
+the optional worker field, and every other supplied value is preserved without
+validation or coercion.
+
 ---
 
 ## 27. `must_write=` Node Attribute — Fail-Closed Artifact Contract
@@ -2383,6 +2402,40 @@ engines.
   `modules/loop-pipeline/tests/test_retry.py`, `test_subgraph_runner.py`,
   `test_manager_loop.py`, `test_parallel_branch_observability.py`,
   `test_p8_continue_on_fail.py`.
+
+### Dated compatibility disposition (2026-09-16, ratified completion-event identity)
+
+This corrects the public meaning of `session_id` on the `pipeline:node_complete`
+signal §30 added; it is consumer-breaking for readers that interpreted that event
+field as a worker id. The exact C15.5 rule and ratification are preserved in
+`contracts/engine-surface.v2-candidate.md` (SHA-256
+`1d2d90ae022e285208dc109cce8a8faafe02d1bc76187447b890a0f48f219b19`) and
+`contracts/engine-surface.ratification-20260916.md`.
+
+**§30 compatibility disposition:** outer-engine completion emitters leave generic
+`session_id` to normal HookRegistry defaults, where it identifies the emitting
+coordinator/host. A supplied `Outcome.session_id` is emitted as
+`worker_session_id`, never as a generic override. The change preserves attempt
+counts, execution indexes, branch scope, event names, worker-result parsing,
+checkpoint/fidelity/routing/retries, and pipeline behavior; it adds neither a new
+event nor a synthetic identity.
+
+Readers must never interpret `worker_session_id ?? session_id` as a worker
+lookup: a corrected no-worker completion can contain only an emitter id. Classify
+historical records only from positive producer version and commit provenance.
+Unknown provenance and dangling worker references remain unclassified; captures
+are never rewritten. `MIGRATION.md` carries the same release guidance. This branch
+is unreleased: a published release must name its eventual first corrective version
+and commit, which is the boundary rather than a new event schema/version field.
+
+The candidate-bound acceptance test
+`tests/test_pipeline_events.py::TestNodeCompleteIdentity::
+test_ratified_c15_5_keeps_parent_hook_session_and_worker_reference` checks the
+exact candidate bytes and receipt against a real HookRegistry run. Companion cases
+cover worker success, failure on final retry attempt 2, empty/`None` references,
+unknown references across independent same-node registries, and all nine completion
+emitters; existing controls retain skip, timeout, child-resolution, subgraph
+exception, fuse, and parallel behavior.
 
 ---
 
