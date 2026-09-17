@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -555,6 +556,48 @@ _CANDIDATE_SHA256 = "1d2d90ae022e285208dc109cce8a8faafe02d1bc76187447b890a0f48f2
 class TestNodeCompleteIdentity:
     """C15.5 keeps completion ownership and worker reference distinct."""
 
+    @staticmethod
+    def _owned_completion_capture(
+        owner: str,
+    ) -> tuple[HookRegistry, list[dict[str, Any]]]:
+        """Capture real-registry completions under one coordinator identity."""
+        captured: list[dict[str, Any]] = []
+        hooks = HookRegistry()
+        hooks.set_default_fields(session_id=owner)
+        hooks.register(
+            PIPELINE_NODE_COMPLETE,
+            lambda _event, data: captured.append(dict(data)),
+            name=f"capture-completion-{owner}",
+        )
+        return hooks, captured
+
+    @staticmethod
+    def _assert_owned_no_worker_completions(
+        captured: list[dict[str, Any]],
+        *,
+        owner: str,
+        expected_node_ids: set[str],
+    ) -> None:
+        """Assert no-worker completion paths keep registry ownership exactly once."""
+        assert captured
+        assert {event["session_id"] for event in captured} == {owner}
+        assert all("worker_session_id" not in event for event in captured)
+        assert {event["node_id"] for event in captured} == expected_node_ids
+        completion_keys = {
+            (
+                event["node_id"],
+                event["status"],
+                event.get("attempt"),
+                event.get("execution_index"),
+                event.get("via_parallel"),
+            )
+            for event in captured
+        }
+        assert len(completion_keys) == len(captured), (
+            "completion events must not be duplicated: "
+            f"{[(event['node_id'], event.get('status')) for event in captured]}"
+        )
+
     @pytest.mark.asyncio
     async def test_node_complete_event_omits_session_id_without_worker(self, tmp_path):
         """No worker session means no explicit session_id override."""
@@ -643,9 +686,15 @@ class TestNodeCompleteIdentity:
         assert candidate.read_bytes()
         assert C15_5_TEXT in candidate.read_text(encoding="utf-8")
         assert hashlib.sha256(candidate.read_bytes()).hexdigest() == _CANDIDATE_SHA256
-        assert "**Exact steward response:** `ratified`" in receipt.read_text(
-            encoding="utf-8"
+        receipt_text = receipt.read_text(encoding="utf-8")
+        assert "**Exact steward response:** `ratified`" in receipt_text
+        receipt_candidate_hash = re.search(
+            r"^\s*-\s+\*\*Candidate SHA-256:\*\*\s+`([0-9a-f]{64})`\s*$",
+            receipt_text,
+            flags=re.MULTILINE,
         )
+        assert receipt_candidate_hash is not None
+        assert receipt_candidate_hash.group(1) == _CANDIDATE_SHA256
         captured: list[dict[str, Any]] = []
 
         def capture(_event: str, data: dict[str, Any]) -> None:
@@ -1156,6 +1205,281 @@ class TestNodeCompleteIdentity:
         assert len(completion_events) == 1
         assert completion_events[0]["node_id"] == "child"
         assert "session_id" not in completion_events[0]
+
+    @pytest.mark.asyncio
+    async def test_timeout_completion_keeps_real_registry_owner(self, tmp_path):
+        """Fresh timeout Outcomes have no worker reference to override ownership."""
+        import asyncio
+
+        class SlowBackend:
+            async def run(self, node, prompt, context, incoming_edge=None, graph=None):
+                await asyncio.sleep(10)
+                return "done"
+
+        owner = "coordinator-timeout"
+        hooks, captured = self._owned_completion_capture(owner)
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                work [prompt="Do work", timeout=0.01]
+                exit [shape=Msquare]
+                start -> work [label="*"]
+                work -> exit [label="*"]
+            }
+            """,
+            backend=SlowBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        await engine.run()
+
+        self._assert_owned_no_worker_completions(
+            captured, owner=owner, expected_node_ids={"start", "work"}
+        )
+        assert [
+            event["status"] for event in captured if event["node_id"] == "work"
+        ] == ["timeout", "fail"]
+
+    @pytest.mark.asyncio
+    async def test_skip_completion_keeps_real_registry_owner(self, tmp_path):
+        """Skip completes before worker execution and remains coordinator-owned."""
+        owner = "coordinator-skip"
+        hooks, captured = self._owned_completion_capture(owner)
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                skipped [prompt="Do not run"]
+                exit [shape=Msquare]
+                start -> skipped -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        async def force_skip(_node: Node) -> Outcome:
+            return Outcome(status=StageStatus.SKIPPED, notes="test skip")
+
+        engine._check_node_skip = force_skip
+        await engine.run()
+
+        self._assert_owned_no_worker_completions(
+            captured, owner=owner, expected_node_ids={"start", "skipped"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_main_child_resolution_completion_keeps_real_registry_owner(
+        self, tmp_path
+    ):
+        """Main-loop child resolution fails before a worker can exist."""
+        from amplifier_module_loop_pipeline.handlers.pipeline import (
+            ChildDotResolutionError,
+            DotPathCandidate,
+        )
+
+        owner = "coordinator-main-child-resolution"
+        hooks, captured = self._owned_completion_capture(owner)
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                start [shape=Mdiamond]
+                child [shape=folder, dot_file="missing.dot"]
+                exit [shape=Msquare]
+                start -> child -> exit
+            }
+            """,
+            backend=MockBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        error = ChildDotResolutionError(
+            node_id="child",
+            dot_file="missing.dot",
+            expanded="missing.dot",
+            resolved_path=str(tmp_path / "missing.dot"),
+            candidates=[
+                DotPathCandidate(
+                    tier="graph.source_dir",
+                    path=str(tmp_path / "missing.dot"),
+                    chosen=True,
+                )
+            ],
+        )
+
+        await engine._terminate_child_dot_resolution(
+            node_id="child",
+            exc=error,
+            node_start_time=0.0,
+            pipeline_start_time=0.0,
+            execution_index=1,
+        )
+
+        self._assert_owned_no_worker_completions(
+            captured, owner=owner, expected_node_ids={"child"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_subgraph_child_resolution_completion_keeps_real_registry_owner(
+        self, tmp_path
+    ):
+        """Subgraph child resolution also fails before worker execution."""
+        from amplifier_module_loop_pipeline.handlers.pipeline import (
+            ChildDotResolutionError,
+        )
+
+        class ChildResolutionHandler:
+            async def execute(self, node, context, graph, logs_root, *, engine=None):
+                raise ChildDotResolutionError(
+                    node_id=node.id,
+                    dot_file="missing.dot",
+                    expanded="missing.dot",
+                    resolved_path=str(tmp_path / "missing.dot"),
+                    candidates=[],
+                )
+
+        owner = "coordinator-subgraph-child-resolution"
+        hooks, captured = self._owned_completion_capture(owner)
+        graph = Graph(
+            name="subgraph-child-resolution",
+            nodes={"child": Node(id="child", shape="box", prompt="Run child")},
+            edges=[],
+        )
+        registry = HandlerRegistry(HandlerContext())
+        registry.register("codergen", ChildResolutionHandler())
+        engine = PipelineEngine(
+            graph=graph,
+            context=PipelineContext(),
+            handler_registry=registry,
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        engine._initialize_context(goal="test")
+
+        outcome = await engine.run_subgraph("child")
+
+        assert outcome.status == StageStatus.FAIL
+        self._assert_owned_no_worker_completions(
+            captured, owner=owner, expected_node_ids={"child"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_subgraph_exception_completion_keeps_real_registry_owner(
+        self, tmp_path
+    ):
+        """A subgraph exception carries no invented worker identity."""
+
+        class RaisingHandler:
+            async def execute(self, node, context, graph, logs_root, *, engine=None):
+                raise RuntimeError(f"{node.id} exploded")
+
+        owner = "coordinator-subgraph-exception"
+        hooks, captured = self._owned_completion_capture(owner)
+        graph = Graph(
+            name="subgraph-exception",
+            nodes={"work": Node(id="work", shape="box", prompt="Do work")},
+            edges=[],
+        )
+        registry = HandlerRegistry(HandlerContext())
+        registry.register("codergen", RaisingHandler())
+        engine = PipelineEngine(
+            graph=graph,
+            context=PipelineContext(),
+            handler_registry=registry,
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+        engine._initialize_context(goal="test")
+
+        outcome = await engine.run_subgraph("work")
+
+        assert outcome.status == StageStatus.FAIL
+        self._assert_owned_no_worker_completions(
+            captured, owner=owner, expected_node_ids={"work"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_fuse_completion_keeps_real_registry_owner(self, tmp_path):
+        """Fuse interruption has no worker reference and keeps registry ownership."""
+        import asyncio
+
+        class SlowBackend:
+            async def run(self, node, prompt, context, incoming_edge=None, graph=None):
+                await asyncio.sleep(1)
+                return "done"
+
+        owner = "coordinator-fuse"
+        hooks, captured = self._owned_completion_capture(owner)
+        engine = _make_engine(
+            dot_source="""
+            digraph {
+                max_pipeline_duration="10ms"
+                start [shape=Mdiamond]
+                work [prompt="Do work"]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            """,
+            backend=SlowBackend(),
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        await engine.run()
+
+        self._assert_owned_no_worker_completions(
+            captured, owner=owner, expected_node_ids={"start", "work"}
+        )
+        assert (
+            next(event for event in captured if event["node_id"] == "work")["status"]
+            == "fuse_exceeded"
+        )
+
+    @pytest.mark.asyncio
+    async def test_parallel_completion_keeps_real_registry_owner(self, tmp_path):
+        """Parallel branch completions use HookRegistry defaults exactly once."""
+        from amplifier_module_loop_pipeline.handlers.parallel import ParallelHandler
+
+        class SuccessHandler:
+            async def execute(self, node, context, graph, logs_root, *, engine=None):
+                return Outcome(status=StageStatus.SUCCESS)
+
+        owner = "coordinator-parallel"
+        hooks, captured = self._owned_completion_capture(owner)
+        fork = Node(id="fork", shape="component")
+        graph = Graph(
+            name="parallel-identity",
+            nodes={
+                "fork": fork,
+                "left": Node(id="left", shape="parallelogram", prompt="Left"),
+                "right": Node(id="right", shape="parallelogram", prompt="Right"),
+            },
+            edges=[
+                Edge(from_node="fork", to_node="left"),
+                Edge(from_node="fork", to_node="right"),
+            ],
+        )
+        registry = HandlerRegistry(HandlerContext())
+        registry.register("parallelogram", SuccessHandler())
+        engine = PipelineEngine(
+            graph=graph,
+            context=PipelineContext(),
+            handler_registry=registry,
+            logs_root=str(tmp_path),
+            hooks=hooks,
+        )
+
+        outcome = await ParallelHandler(hooks=hooks).execute(
+            fork, PipelineContext(), graph, str(tmp_path), engine=engine
+        )
+
+        assert outcome.is_success
+        self._assert_owned_no_worker_completions(
+            captured, owner=owner, expected_node_ids={"left", "right"}
+        )
 
 
 # ---------------------------------------------------------------------------
