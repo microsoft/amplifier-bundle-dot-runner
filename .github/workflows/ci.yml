@@ -254,13 +254,10 @@ jobs:
 
   validate-bundle:
     # This repo is a proper thin Amplifier bundle (bundle.md + behaviors/),
-    # not just a bag of pip-installable modules. Runs the foundation
-    # validate-bundle-repo recipe against the repo root with amplifier-core
-    # + amplifier-foundation installed, so BundleRegistry-backed checks run
-    # in FULL mode (not the degraded hygiene_only/structural_only mode the
-    # recipe falls back to when foundation isn't importable). PASS threshold:
-    # both bundle.md (root, namespace dot-runner) and
-    # behaviors/dot-runner.yaml (dot-runner-core) must load with zero errors.
+    # not just a bag of pip-installable modules. Use Foundation's loader and
+    # validator directly: every local bundle manifest must load and validate.
+    # The isolated interpreter avoids the root project's older lockfile.
+    # No CLI session, model-backed recipe report, or error-as-success fallback.
     name: Validate Bundle Repo (bundle.md + behaviors/)
     runs-on: ubuntu-latest
     steps:
@@ -281,18 +278,13 @@ jobs:
             "amplifier-core @ git+https://github.com/microsoft/amplifier-core@main" \
             "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main"
 
-      - name: Run validate-bundle-repo recipe against the repo root
+      - name: Test bundle validation failure paths
         run: |
-          source .venv-validate/bin/activate
-          # The `amplifier` CLI is published from microsoft/amplifier-app-cli
-          # (package name amplifier-app-cli, console script `amplifier`) --
-          # it is NOT on PyPI, so --with needs the git URL.
-          uv run --python .venv-validate \
-            --with "git+https://github.com/microsoft/amplifier-app-cli@main" \
-            amplifier tool invoke recipes \
-            operation=execute \
-            recipe_path=foundation:recipes/validate-bundle-repo.yaml \
-            context="{\"repo_path\": \"${GITHUB_WORKSPACE}\"}"
+          .venv-validate/bin/python -m unittest discover \
+            -s .github/bundle-validation -p 'test_*.py' -v
+
+      - name: Validate the root bundle and behavior manifests
+        run: .venv-validate/bin/python .github/bundle-validation/validate_bundle.py "$GITHUB_WORKSPACE"
 
   capsule-pipeline-scripts:
     # The CI-run home for `.github/capsule-pipeline/`'s own unit tests.
