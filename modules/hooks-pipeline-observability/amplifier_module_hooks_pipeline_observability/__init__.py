@@ -12,7 +12,7 @@ from .status_bar import StatusBarContributor
 logger = logging.getLogger(__name__)
 
 # Amplifier module metadata
-__amplifier_module_type__ = "hooks"
+__amplifier_module_type__ = "hook"
 
 # Existing events advertised to capture hooks. Only events that update the
 # aggregator also need a handler in _AGGREGATOR_HANDLER_MAP below.

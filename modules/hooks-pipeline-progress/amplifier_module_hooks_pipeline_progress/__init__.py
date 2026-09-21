@@ -15,7 +15,7 @@ from amplifier_core import HookResult
 logger = logging.getLogger(__name__)
 
 # Amplifier module metadata
-__amplifier_module_type__ = "hooks"
+__amplifier_module_type__ = "hook"
 
 # Map event names to handler method names
 _HANDLER_MAP: dict[str, str] = {
