@@ -78,6 +78,11 @@ from typing import Any
 
 from amplifier_core.events import LLM_RESPONSE, ORCHESTRATOR_COMPLETE, PROVIDER_RESPONSE
 
+from .host_canonical_resolver import (
+    install_host_canonical_resolver,
+    log_runtime_identity_once,
+)
+
 logger = logging.getLogger(__name__)
 
 #: Sanitizes a `.dot` graph's free-form thread_id/node-id (fidelity.py's
@@ -296,6 +301,16 @@ class AmplifierAgentOrchestrator:
     def __init__(self, coordinator: Any, config: dict[str, Any]) -> None:
         self._coordinator = coordinator
         self._config = config
+
+    def _host_module_resolver(self) -> Any:
+        """The parent session's mounted module resolver, if any (public get)."""
+        get = getattr(self._coordinator, "get", None)  # some callers pass bare stubs
+        if get is None:
+            return None
+        try:
+            return get("module-source-resolver")
+        except ValueError:  # same guard as core's loader: not mounted
+            return None
 
     async def execute(
         self,
@@ -653,6 +668,14 @@ class AmplifierAgentOrchestrator:
             # passes a real sessionId (below), so both sides agree; when it
             # somehow does not, they still agree.
             hosted_session_id = ctx.session_id or engine_session_id
+
+            # amplifier-core >= 2.0.1 refuses a second copy of an already-
+            # imported module package; the hosted child shares this process's
+            # sys.modules, so resolve host-canonical copies first (agent
+            # resolver stays the fallback). Installed immediately before
+            # session creation, after prepare_bundle_for_session.
+            install_host_canonical_resolver(prepared, self._host_module_resolver())
+            log_runtime_identity_once()
 
             session = await prepared.create_session(
                 session_id=hosted_session_id,
