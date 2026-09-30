@@ -191,6 +191,64 @@ def test_host_resolver_step_without_prior_import(env: Env):
     )
 
 
+@pytest.mark.parametrize("failure", ["failed", "unprepared"])
+@pytest.mark.asyncio
+async def test_explicit_provider_source_failure_is_not_replaced_by_host(
+    env: Env, failure: str
+):
+    """A valid but unimported host copy must not mask source B's refusal."""
+
+    class SourceAwareAgent:
+        def __init__(self):
+            self.prepared = {"provider-A"}
+            self.failed = {"provider-B"} if failure == "failed" else set()
+
+        def resolve(self, module_id, source_hint=None, profile_hint=None):
+            assert module_id == env.ctx
+            assert source_hint == "provider-B"
+            if source_hint in self.failed:
+                raise ValueError("provider-B failed")
+            if source_hint not in self.prepared:
+                raise ValueError("provider-B unprepared")
+            return env.resolver("agent").resolve(module_id)
+
+        async def async_resolve(self, module_id, source_hint=None, profile_hint=None):
+            return self.resolve(module_id, source_hint, profile_hint)
+
+    agent = SourceAwareAgent()
+    host = env.resolver("host")
+    w = HostCanonicalModuleResolver(agent, host)
+    assert w._host_root(env.ctx) is not None  # source A is available on disk
+    assert w._loaded_root(env.ctx) is None
+    with pytest.raises(ValueError, match=f"provider-B {failure}"):
+        agent.resolve(env.ctx, source_hint="provider-B")
+    with pytest.raises(ValueError, match=f"provider-B {failure}"):
+        w.resolve(env.ctx, source_hint="provider-B")
+    with pytest.raises(ValueError, match=f"provider-B {failure}"):
+        await w.async_resolve(env.ctx, source_hint="provider-B")
+    assert not w.reroutes
+    assert not w.fallbacks
+
+
+@pytest.mark.asyncio
+async def test_explicit_source_selects_agent_even_if_host_copy_exists(env: Env):
+    class SourceAwareAgent:
+        def resolve(self, module_id, source_hint=None, profile_hint=None):
+            assert source_hint == "provider-B"
+            return env.resolver("agent").resolve(module_id)
+
+        async def async_resolve(self, module_id, source_hint=None, profile_hint=None):
+            return self.resolve(module_id, source_hint, profile_hint)
+
+    w = HostCanonicalModuleResolver(SourceAwareAgent(), env.resolver("host"))
+    expected = env.resolver("agent").resolve(env.ctx).resolve()
+    assert w.resolve(env.ctx, source_hint="provider-B").resolve() == expected
+    assert (
+        await w.async_resolve(env.ctx, source_hint="provider-B")
+    ).resolve() == expected
+    assert not w.reroutes
+
+
 def test_install_never_double_wraps_and_skips_resolverless_prepared(env: Env):
     class P:
         resolver = env.resolver("agent")

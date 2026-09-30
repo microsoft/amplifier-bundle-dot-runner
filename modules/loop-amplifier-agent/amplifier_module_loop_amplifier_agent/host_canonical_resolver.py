@@ -29,8 +29,9 @@ Relation to app-cli: step 2 is the same principle (the child gets the parent's
 module copy). Step 1 goes beyond app-cli -- it also covers modules imported
 outside the host resolver (entry-point / editable installs) -- and step 3 keeps
 the agent's own pinned sources instead of activating them lazily into the host.
-Step 2 deliberately ignores the agent's ``source_hint``: like app-cli's child,
-the host's copy wins even before a conflict exists.
+Explicit source hints are different: they remain the agent resolver's decision.
+If the requested source is failed, unprepared, or conflicts with an already
+loaded package, fail closed rather than silently substitute the host's copy.
 
 Only public resolver APIs (``resolve`` / ``async_resolve`` /
 ``get_module_source``) are used; no resolver private attribute is read or
@@ -168,6 +169,10 @@ class HostCanonicalModuleResolver:
     def resolve(
         self, module_id: str, source_hint: Any = None, profile_hint: Any = None
     ) -> Any:
+        if source_hint is not None or profile_hint is not None:
+            return self._agent.resolve(
+                module_id, source_hint=source_hint, profile_hint=profile_hint
+            )
         picked = self._pick(module_id)
         if picked is not None:
             return picked
@@ -178,6 +183,15 @@ class HostCanonicalModuleResolver:
     async def async_resolve(
         self, module_id: str, source_hint: Any = None, profile_hint: Any = None
     ) -> Any:
+        if source_hint is not None or profile_hint is not None:
+            fn = getattr(self._agent, "async_resolve", None)
+            if fn is not None:
+                return await fn(
+                    module_id, source_hint=source_hint, profile_hint=profile_hint
+                )
+            return self._agent.resolve(
+                module_id, source_hint=source_hint, profile_hint=profile_hint
+            )
         picked = self._pick(module_id)
         if picked is not None:
             return picked
