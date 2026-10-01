@@ -8,20 +8,22 @@ one ``sys.modules`` -- exactly the in-process amplifier-agent hosting shape.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import logging
+import py_compile
+import subprocess
 import sys
 import types
 import uuid
 from pathlib import Path
 from typing import Any
 
+import amplifier_module_loop_amplifier_agent as laa
+import amplifier_module_loop_amplifier_agent.host_canonical_resolver as hcr
 import pytest
 from amplifier_core import AmplifierSession
 from amplifier_foundation.bundle._prepared import BundleModuleResolver
-
-import amplifier_module_loop_amplifier_agent as laa
-import amplifier_module_loop_amplifier_agent.host_canonical_resolver as hcr
 from amplifier_module_loop_amplifier_agent.host_canonical_resolver import (
     HOST,
     LOADED,
@@ -380,3 +382,180 @@ def test_loaded_package_without_file_is_ignored(
         env.resolver("agent").resolve(env.ctx).resolve()
     )
     assert env.ctx in w.fallbacks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_hinted_identical_checkout_reuses_surviving_submodule(
+    env: Env, wrapped: bool
+):
+    """Real Core guard, with the exact surviving-descendant shape from ACA."""
+    import importlib
+
+    body = "from . import estimate\n" + CTX.format(copy="same")
+    for copy in ("host", "agent"):
+        _write(env.root, copy, env.ctx, body)
+        package = (
+            env.root / copy / f"amplifier-module-{env.ctx}" / hcr._package_name(env.ctx)
+        )
+        (package / "estimate.py").write_text("VALUE = 1\n")
+        # Same source bytes, but Foundation's ref/timestamp bookkeeping differs
+        # between the parent floating clone and the Agent SHA-pinned clone.
+        (package.parent / ".amplifier_cache_meta.json").write_text(copy)
+    await env.host_session()
+    package_name = hcr._package_name(env.ctx)
+    assert importlib.import_module(package_name + ".estimate")
+    del sys.modules[package_name]
+    plan = {
+        **env.plan,
+        "session": {
+            **env.plan["session"],
+            "context": {"module": env.ctx, "source": "explicit-same-source"},
+        },
+    }
+    negative = BundleModuleResolver(
+        {
+            env.ctx: env.root / "agent" / f"amplifier-module-{env.ctx}",
+            env.loop: env.root / "host" / f"amplifier-module-{env.loop}",
+        }
+    )
+    if not wrapped:
+        with pytest.raises(Exception) as ei:
+            await env.child(negative, plan)
+        assert "cached submodule" in _chain(ei.value)
+        return
+    wrapper = HostCanonicalModuleResolver(env.resolver("agent"), env.resolver("host"))
+    child = await env.child(wrapper, plan)
+    assert await child.execute("go") == "same"
+    assert wrapper.reroutes[env.ctx].reason == LOADED
+
+
+@pytest.mark.asyncio
+async def test_hinted_different_loaded_checkout_is_still_refused(env: Env):
+    await env.host_session()
+    wrapper = HostCanonicalModuleResolver(env.resolver("agent"), env.resolver("host"))
+    plan = {
+        **env.plan,
+        "session": {
+            **env.plan["session"],
+            "context": {"module": env.ctx, "source": "different-source"},
+        },
+    }
+    with pytest.raises(Exception) as ei:
+        await env.child(wrapper, plan)
+    assert "Refusing to import" in _chain(ei.value)
+    assert env.ctx not in wrapper.reroutes
+
+
+@pytest.mark.asyncio
+async def test_hinted_different_sourceless_bytecode_is_still_refused(env: Env):
+    """Equal Python source must not hide a different executable .pyc file."""
+    for copy in ("host", "agent"):
+        _write(
+            env.root,
+            copy,
+            env.ctx,
+            "from .estimate import COPY\n"
+            + CTX.format(copy="unused").replace("COPY = 'unused'\n", ""),
+        )
+        package = (
+            env.root / copy / f"amplifier-module-{env.ctx}" / hcr._package_name(env.ctx)
+        )
+        source = package / "estimate.py"
+        source.write_text(f"COPY = {copy!r}\n")
+        py_compile.compile(
+            str(source), cfile=str(package / "estimate.pyc"), doraise=True
+        )
+        source.unlink()
+    host_root = env.root / "host" / f"amplifier-module-{env.ctx}"
+    agent_root = env.root / "agent" / f"amplifier-module-{env.ctx}"
+    assert HostCanonicalModuleResolver._tree_identity(
+        host_root
+    ) != HostCanonicalModuleResolver._tree_identity(agent_root)
+    await env.host_session()
+    wrapper = HostCanonicalModuleResolver(env.resolver("agent"), env.resolver("host"))
+    plan = {
+        **env.plan,
+        "session": {
+            **env.plan["session"],
+            "context": {"module": env.ctx, "source": "different-bytecode"},
+        },
+    }
+    with pytest.raises(Exception) as ei:
+        await env.child(wrapper, plan)
+    assert "Refusing to import" in _chain(ei.value)
+    assert env.ctx not in wrapper.reroutes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_mode", [False, True])
+async def test_hinted_helper_executable_mode_is_preserved(env: Env, same_mode: bool):
+    body = CTX.format(copy="unused").replace(
+        "COPY = 'unused'",
+        'import subprocess\nfrom pathlib import Path\nCOPY = subprocess.check_output([str(Path(__file__).with_name("helper.sh"))], text=True).strip()',
+    )
+    for copy in ("host", "agent"):
+        _write(env.root, copy, env.ctx, body)
+        helper = (
+            env.root
+            / copy
+            / f"amplifier-module-{env.ctx}"
+            / hcr._package_name(env.ctx)
+            / "helper.sh"
+        )
+        helper.write_text("#!/bin/sh\nprintf 'helper executed'\n")
+        helper.chmod(0o755 if copy == "host" or same_mode else 0o644)
+        if copy == "agent" and not same_mode:
+            with pytest.raises(PermissionError):
+                await asyncio.to_thread(
+                    subprocess.run, [str(helper)], check=True, capture_output=True
+                )
+    await env.host_session()
+    wrapper = HostCanonicalModuleResolver(env.resolver("agent"), env.resolver("host"))
+    plan = {
+        **env.plan,
+        "session": {
+            **env.plan["session"],
+            "context": {"module": env.ctx, "source": "explicit-helper-source"},
+        },
+    }
+    if same_mode:
+        child = await env.child(wrapper, plan)
+        assert await child.execute("go") == "helper executed"
+        assert wrapper.reroutes[env.ctx].reason == LOADED
+    else:
+        with pytest.raises(Exception) as ei:
+            await env.child(wrapper, plan)
+        assert "Refusing to import" in _chain(ei.value)
+        assert env.ctx not in wrapper.reroutes
+
+
+def test_conflicting_loaded_descendant_roots_fail_closed(env: Env, monkeypatch):
+    pkg = hcr._package_name(env.ctx)
+    for copy in ("host", "agent"):
+        mod = types.ModuleType(pkg + "." + copy)
+        mod.__file__ = str(
+            env.root / copy / f"amplifier-module-{env.ctx}" / pkg / "child.py"
+        )
+        monkeypatch.setitem(sys.modules, mod.__name__, mod)
+    wrapper = HostCanonicalModuleResolver(env.resolver("agent"), env.resolver("host"))
+    with pytest.raises(RuntimeError, match="multiple roots"):
+        wrapper.resolve(env.ctx)
+
+
+def test_source_identity_fails_closed_on_walk_error(env: Env, monkeypatch):
+    def unreadable(root, *, onerror):
+        onerror(PermissionError("unreadable subtree"))
+        yield  # keep the same lazy walk interface
+
+    monkeypatch.setattr(hcr.os, "walk", unreadable)
+    assert HostCanonicalModuleResolver._tree_identity(env.root) is None
+
+
+def test_source_identity_bounds_empty_directories(env: Env, monkeypatch):
+    def too_many(root, *, onerror):
+        for _ in range(2049):
+            yield str(root), [], []
+
+    monkeypatch.setattr(hcr.os, "walk", too_many)
+    assert HostCanonicalModuleResolver._tree_identity(env.root) is None

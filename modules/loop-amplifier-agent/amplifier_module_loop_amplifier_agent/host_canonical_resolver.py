@@ -29,7 +29,8 @@ Relation to app-cli: step 2 is the same principle (the child gets the parent's
 module copy). Step 1 goes beyond app-cli -- it also covers modules imported
 outside the host resolver (entry-point / editable installs) -- and step 3 keeps
 the agent's own pinned sources instead of activating them lazily into the host.
-Explicit source hints are different: they remain the agent resolver's decision.
+Explicit source hints are resolved by the agent first. Identical checkouts may
+reuse an already loaded copy (including surviving package descendants).
 If the requested source is failed, unprepared, or conflicts with an already
 loaded package, fail closed rather than silently substitute the host's copy.
 
@@ -44,7 +45,9 @@ intentionally not forwarded by :meth:`HostCanonicalModuleResolver.__getattr__`.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -120,14 +123,85 @@ class HostCanonicalModuleResolver:
 
     def _loaded_root(self, module_id: str) -> Path | None:
         pkg = _package_name(module_id)
-        mod = sys.modules.get(pkg)
-        file = getattr(mod, "__file__", None)
-        if not file:
+        roots: set[Path] = set()
+        # Core validation may remove the package while leaving its imported
+        # descendants. Those descendants still fix the process's module identity.
+        for name, mod in list(sys.modules.items()):
+            if name != pkg and not name.startswith(pkg + "."):
+                continue
+            file = getattr(mod, "__file__", None)
+            if not file:
+                continue
+            for parent in Path(file).resolve().parents:
+                if parent.name == pkg:
+                    roots.add(parent.parent)
+                    break
+        if len(roots) > 1:
+            raise RuntimeError(
+                f"Module {module_id!r} is loaded from multiple roots: {sorted(map(str, roots))}"
+            )
+        return next(iter(roots), None)
+
+    @staticmethod
+    def _tree_identity(root: Path) -> str | None:
+        """Bounded content identity, including source metadata and resources.
+
+        An explicit hint is first resolved by the agent, so failed or unprepared
+        sources still fail. Only an identical checkout can reuse a loaded copy.
+        Different code, missing trees, symlinks and oversized trees fail closed.
+        """
+        digest = hashlib.sha256()
+        total = count = directories = 0
+
+        def fail_walk(error: OSError) -> None:
+            raise error
+
+        try:
+            if not root.is_dir():
+                return None
+            for base, dirs, files in os.walk(root, onerror=fail_walk):
+                directories += 1
+                if directories > 2048:
+                    return None
+                dirs[:] = sorted(d for d in dirs if d not in {".git", "__pycache__"})
+                if any((Path(base) / d).is_symlink() for d in dirs):
+                    return None
+                for name in sorted(files):
+                    # Bytecode outside __pycache__ may be the only executable
+                    # source of a module; include it in checkout identity.
+                    path = Path(base) / name
+                    # Foundation writes checkout bookkeeping here (timestamp,
+                    # floating ref vs resolved commit), not module content.
+                    if Path(base) == root and name == ".amplifier_cache_meta.json":
+                        continue
+                    if path.is_symlink() or not path.is_file():
+                        return None
+                    file_stat = path.stat()
+                    count += 1
+                    total += file_stat.st_size
+                    if count > 2048 or total > 16 * 1024 * 1024:
+                        return None
+                    digest.update(str(path.relative_to(root)).encode())
+                    digest.update(b"\0")
+                    # Git preserves executability; equal resource bytes alone
+                    # do not imply a packaged helper can execute in both copies.
+                    digest.update((file_stat.st_mode & 0o111).to_bytes(2, "big"))
+                    digest.update(hashlib.sha256(path.read_bytes()).digest())
+            return digest.hexdigest() if count else None
+        except OSError:
             return None
-        pkg_dir = Path(file).resolve().parent
-        # Resolver convention: the path handed to core is the directory that
-        # CONTAINS the ``amplifier_module_*`` package.
-        return pkg_dir.parent if pkg_dir.name == pkg else None
+
+    def _canonical_for_hint(self, module_id: str, source: Any) -> Any:
+        root = self._loaded_root(module_id)
+        if root is None:
+            return source
+        agent_root = Path(source.resolve()).resolve()
+        if agent_root == root:
+            return source
+        identity = self._tree_identity(agent_root)
+        if identity is not None and identity == self._tree_identity(root):
+            return self._pick(module_id)
+        return source
 
     def _host_root(self, module_id: str) -> Path | None:
         # Memoized: the host may be app-cli's resolver, whose misses fall
@@ -170,9 +244,10 @@ class HostCanonicalModuleResolver:
         self, module_id: str, source_hint: Any = None, profile_hint: Any = None
     ) -> Any:
         if source_hint is not None or profile_hint is not None:
-            return self._agent.resolve(
+            source = self._agent.resolve(
                 module_id, source_hint=source_hint, profile_hint=profile_hint
             )
+            return self._canonical_for_hint(module_id, source)
         picked = self._pick(module_id)
         if picked is not None:
             return picked
@@ -186,12 +261,14 @@ class HostCanonicalModuleResolver:
         if source_hint is not None or profile_hint is not None:
             fn = getattr(self._agent, "async_resolve", None)
             if fn is not None:
-                return await fn(
+                source = await fn(
                     module_id, source_hint=source_hint, profile_hint=profile_hint
                 )
-            return self._agent.resolve(
-                module_id, source_hint=source_hint, profile_hint=profile_hint
-            )
+            else:
+                source = self._agent.resolve(
+                    module_id, source_hint=source_hint, profile_hint=profile_hint
+                )
+            return self._canonical_for_hint(module_id, source)
         picked = self._pick(module_id)
         if picked is not None:
             return picked
