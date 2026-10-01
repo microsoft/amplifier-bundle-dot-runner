@@ -170,6 +170,10 @@ class HostCanonicalModuleResolver:
                     if name.endswith((".pyc", ".pyo")):
                         continue
                     path = Path(base) / name
+                    # Foundation writes checkout bookkeeping here (timestamp,
+                    # floating ref vs resolved commit), not module content.
+                    if Path(base) == root and name == ".amplifier_cache_meta.json":
+                        continue
                     if path.is_symlink() or not path.is_file():
                         return None
                     count += 1

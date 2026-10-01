@@ -396,6 +396,9 @@ async def test_hinted_identical_checkout_reuses_surviving_submodule(
             env.root / copy / f"amplifier-module-{env.ctx}" / hcr._package_name(env.ctx)
         )
         (package / "estimate.py").write_text("VALUE = 1\n")
+        # Same source bytes, but Foundation's ref/timestamp bookkeeping differs
+        # between the parent floating clone and the Agent SHA-pinned clone.
+        (package.parent / ".amplifier_cache_meta.json").write_text(copy)
     await env.host_session()
     package_name = hcr._package_name(env.ctx)
     assert importlib.import_module(package_name + ".estimate")
