@@ -8,8 +8,11 @@ one ``sys.modules`` -- exactly the in-process amplifier-agent hosting shape.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import logging
+import py_compile
+import subprocess
 import sys
 import types
 import uuid
@@ -442,6 +445,89 @@ async def test_hinted_different_loaded_checkout_is_still_refused(env: Env):
         await env.child(wrapper, plan)
     assert "Refusing to import" in _chain(ei.value)
     assert env.ctx not in wrapper.reroutes
+
+
+@pytest.mark.asyncio
+async def test_hinted_different_sourceless_bytecode_is_still_refused(env: Env):
+    """Equal Python source must not hide a different executable .pyc file."""
+    for copy in ("host", "agent"):
+        _write(
+            env.root,
+            copy,
+            env.ctx,
+            "from .estimate import COPY\n"
+            + CTX.format(copy="unused").replace("COPY = 'unused'\n", ""),
+        )
+        package = (
+            env.root / copy / f"amplifier-module-{env.ctx}" / hcr._package_name(env.ctx)
+        )
+        source = package / "estimate.py"
+        source.write_text(f"COPY = {copy!r}\n")
+        py_compile.compile(
+            str(source), cfile=str(package / "estimate.pyc"), doraise=True
+        )
+        source.unlink()
+    host_root = env.root / "host" / f"amplifier-module-{env.ctx}"
+    agent_root = env.root / "agent" / f"amplifier-module-{env.ctx}"
+    assert HostCanonicalModuleResolver._tree_identity(
+        host_root
+    ) != HostCanonicalModuleResolver._tree_identity(agent_root)
+    await env.host_session()
+    wrapper = HostCanonicalModuleResolver(env.resolver("agent"), env.resolver("host"))
+    plan = {
+        **env.plan,
+        "session": {
+            **env.plan["session"],
+            "context": {"module": env.ctx, "source": "different-bytecode"},
+        },
+    }
+    with pytest.raises(Exception) as ei:
+        await env.child(wrapper, plan)
+    assert "Refusing to import" in _chain(ei.value)
+    assert env.ctx not in wrapper.reroutes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_mode", [False, True])
+async def test_hinted_helper_executable_mode_is_preserved(env: Env, same_mode: bool):
+    body = CTX.format(copy="unused").replace(
+        "COPY = 'unused'",
+        'import subprocess\nfrom pathlib import Path\nCOPY = subprocess.check_output([str(Path(__file__).with_name("helper.sh"))], text=True).strip()',
+    )
+    for copy in ("host", "agent"):
+        _write(env.root, copy, env.ctx, body)
+        helper = (
+            env.root
+            / copy
+            / f"amplifier-module-{env.ctx}"
+            / hcr._package_name(env.ctx)
+            / "helper.sh"
+        )
+        helper.write_text("#!/bin/sh\nprintf 'helper executed'\n")
+        helper.chmod(0o755 if copy == "host" or same_mode else 0o644)
+        if copy == "agent" and not same_mode:
+            with pytest.raises(PermissionError):
+                await asyncio.to_thread(
+                    subprocess.run, [str(helper)], check=True, capture_output=True
+                )
+    await env.host_session()
+    wrapper = HostCanonicalModuleResolver(env.resolver("agent"), env.resolver("host"))
+    plan = {
+        **env.plan,
+        "session": {
+            **env.plan["session"],
+            "context": {"module": env.ctx, "source": "explicit-helper-source"},
+        },
+    }
+    if same_mode:
+        child = await env.child(wrapper, plan)
+        assert await child.execute("go") == "helper executed"
+        assert wrapper.reroutes[env.ctx].reason == LOADED
+    else:
+        with pytest.raises(Exception) as ei:
+            await env.child(wrapper, plan)
+        assert "Refusing to import" in _chain(ei.value)
+        assert env.ctx not in wrapper.reroutes
 
 
 def test_conflicting_loaded_descendant_roots_fail_closed(env: Env, monkeypatch):

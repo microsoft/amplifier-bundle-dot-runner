@@ -167,8 +167,8 @@ class HostCanonicalModuleResolver:
                 if any((Path(base) / d).is_symlink() for d in dirs):
                     return None
                 for name in sorted(files):
-                    if name.endswith((".pyc", ".pyo")):
-                        continue
+                    # Bytecode outside __pycache__ may be the only executable
+                    # source of a module; include it in checkout identity.
                     path = Path(base) / name
                     # Foundation writes checkout bookkeeping here (timestamp,
                     # floating ref vs resolved commit), not module content.
@@ -176,12 +176,16 @@ class HostCanonicalModuleResolver:
                         continue
                     if path.is_symlink() or not path.is_file():
                         return None
+                    file_stat = path.stat()
                     count += 1
-                    total += path.stat().st_size
+                    total += file_stat.st_size
                     if count > 2048 or total > 16 * 1024 * 1024:
                         return None
                     digest.update(str(path.relative_to(root)).encode())
                     digest.update(b"\0")
+                    # Git preserves executability; equal resource bytes alone
+                    # do not imply a packaged helper can execute in both copies.
+                    digest.update((file_stat.st_mode & 0o111).to_bytes(2, "big"))
                     digest.update(hashlib.sha256(path.read_bytes()).digest())
             return digest.hexdigest() if count else None
         except OSError:
