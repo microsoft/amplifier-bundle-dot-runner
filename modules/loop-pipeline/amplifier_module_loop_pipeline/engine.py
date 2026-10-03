@@ -146,6 +146,9 @@ class PipelineEngine:
         cancel_event: threading.Event | None = None,
     ) -> None:
         self.graph = graph
+        self.max_steps = int(graph.graph_attrs.get("max_steps", 0))
+        if self.max_steps < 0:
+            raise ValueError("max_steps must be non-negative (0 means unlimited)")
         self.context = context
         self.handler_registry = handler_registry
         self.logs_root = logs_root
@@ -605,20 +608,17 @@ class PipelineEngine:
         Returns:
             The final Outcome of the pipeline run.
         """
-        # Bound total pipeline steps to prevent infinite loops caused by
-        # condition-routing bugs or missing edge guards. Matches the safety
-        # bound used in the subgraph runner (run_subgraph).
-        max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
+        # Optional step cap shared with the subgraph runner (run_subgraph).
+        max_steps = self.max_steps
         while True:
             # Safety step counter — checked first so every loop iteration
             # (including resume-path continues) is counted.
             steps += 1
-            if steps > max_steps:
+            if max_steps > 0 and steps > max_steps:
                 exceeded_outcome = Outcome(
                     status=StageStatus.FAIL,
                     failure_reason=(
-                        f"Pipeline exceeded {max_steps} steps (safety bound): "
-                        f"{len(self.graph.nodes)} nodes × {self._MAX_GOAL_GATE_RETRIES}"
+                        f"Pipeline exceeded {max_steps} steps (safety bound)"
                     ),
                 )
                 logger.error(
@@ -1410,9 +1410,11 @@ class PipelineEngine:
         last_outcome: Outcome | None = None
 
         # Safety bound to prevent infinite loops
-        max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
+        max_steps = self.max_steps
 
-        for _step in range(max_steps):
+        steps = 0
+        while max_steps == 0 or steps < max_steps:
+            steps += 1
             # Check cancellation in subgraph runner too
             if self._check_cancelled():
                 return Outcome(

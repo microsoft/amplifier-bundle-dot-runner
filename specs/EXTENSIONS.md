@@ -506,7 +506,7 @@ elapsed time exceeds `max_pipeline_duration` (between steps) or the remaining bu
 exhausted DURING a node's own execution, the pipeline terminates immediately with `status=FAIL`
 and `failure_reason="max_pipeline_duration_exceeded"`.
 
-**Why:** The upstream spec's step-count ceiling (`max_steps`) guards against infinite loops but
+**Why:** An explicitly configured step-count ceiling (`max_steps`) guards against infinite loops but
 does not bound wall-clock time. Long-running nodes (network calls, LLM invocations) can stall
 a pipeline for an unbounded duration even within the step ceiling. `max_pipeline_duration`
 provides an independent wall-clock safety bound that is orthogonal to step count and useful
@@ -5289,3 +5289,30 @@ checkpoint-proven `write_green_finding` precedence over a stray
 gate's synthetic no-Interviewer probe left the generic artifact behind, and
 the old existence-only classifier misreported that test residue as an
 escalation.*
+
+---
+
+## Optional `max_steps` Traversal Budget (2026-10-02)
+
+**Classification:** Additive, spec-silent operator extension. Removing the implicit
+`node_count * 50` ceiling restores the unbounded walk in
+`contracts/external/attractor-spec-canonical.md` §3.2: execution continues until an
+exit, a routing failure or cancellation. The surrounding §3.3 edge selection,
+§3.4 goal-gate checks and §§3.5–3.6 node retries retain their existing semantics.
+
+**What:** `graph [max_steps=N]` opts into a total traversal budget. Missing or zero
+means unlimited; a positive integer bounds main/resumed and subgraph walks, and
+negative or non-integer values are rejected. Exhaustion reports `FAIL`, never
+success. Cancellation is still checked on each iteration.
+
+**Why here:** A host-side runtime wrapper cannot count graph transitions or apply
+the same budget to the subgraph execution entry point. Counting visits belongs
+to the graph walker, not to the Resolve host or a resolver-specific adapter.
+
+**Compatibility and evidence:** Spec-conformant graphs without this extension
+retain their declared termination/routing semantics instead of being cut off by
+an unrelated node-count-derived ceiling. Tests drive real parsed DOT through
+the main and subgraph engines for 600 successful loop visits, beyond the former
+550-step customer ceiling, and test explicit finite budgets. An unguarded cycle
+can run forever by design; this is the customer's requested uncapped policy,
+not evidence that every cycle is safe.

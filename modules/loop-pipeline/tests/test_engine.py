@@ -4,6 +4,7 @@ Spec coverage: EXEC-001–018, Section 3.2.
 """
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -1079,9 +1080,24 @@ async def test_multi_edge_single_match_selects_highest_weight(tmp_path):
         edges=[
             Edge(from_node="start", to_node="check"),
             # All three conditions match; weight=3 makes branch_c the winner.
-            Edge(from_node="check", to_node="branch_a", condition="outcome=success", weight=1),
-            Edge(from_node="check", to_node="branch_b", condition="outcome=success", weight=2),
-            Edge(from_node="check", to_node="branch_c", condition="outcome=success", weight=3),
+            Edge(
+                from_node="check",
+                to_node="branch_a",
+                condition="outcome=success",
+                weight=1,
+            ),
+            Edge(
+                from_node="check",
+                to_node="branch_b",
+                condition="outcome=success",
+                weight=2,
+            ),
+            Edge(
+                from_node="check",
+                to_node="branch_c",
+                condition="outcome=success",
+                weight=3,
+            ),
             Edge(from_node="branch_a", to_node="exit"),
             Edge(from_node="branch_b", to_node="exit"),
             Edge(from_node="branch_c", to_node="exit"),
@@ -1318,24 +1334,133 @@ async def test_parallel_fan_out_clones_registry_per_branch(tmp_path):
 # --- main loop max_steps safety bound ---
 
 
+@pytest.mark.parametrize("cap", ["-1", "1.5", "many"])
+def test_invalid_explicit_step_caps_are_rejected(tmp_path, cap):
+    with pytest.raises(ValueError):
+        _make_engine(
+            dot_source=f"""
+            digraph {{
+                graph [max_steps="{cap}"]
+                start [shape=Mdiamond]
+                exit [shape=Msquare]
+                start -> exit
+            }}
+            """,
+            logs_root=str(tmp_path),
+        )
+
+
 @pytest.mark.asyncio
-async def test_main_loop_safety_bound_terminates_infinite_cycle(tmp_path):
+@pytest.mark.parametrize("subgraph", [False, True])
+@pytest.mark.parametrize("cap", ["", "graph [max_steps=0]"])
+async def test_default_and_zero_step_caps_allow_more_than_550_steps(
+    tmp_path, subgraph, cap
+):
+    class CountingBackend:
+        visits = 0
+
+        async def run(self, node, prompt, context, **kwargs):
+            self.visits += 1
+            return Outcome(
+                status=StageStatus.SUCCESS,
+                context_updates={"finished": "yes" if self.visits >= 600 else "no"},
+            )
+
+    backend = CountingBackend()
+    engine = _make_engine(
+        dot_source=f"""
+        digraph {{
+            {cap}
+            start [shape=Mdiamond]
+            work [shape=box, prompt="Keep working"]
+            exit [shape=Msquare]
+            start -> work
+            work -> exit [condition="context.finished=yes"]
+            work -> work
+        }}
+        """,
+        backend=backend,
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run_subgraph("start") if subgraph else await engine.run()
+    assert outcome.status == StageStatus.SUCCESS
+    assert backend.visits == 600
+
+
+@pytest.mark.asyncio
+async def test_subgraph_explicit_step_cap_is_enforced(tmp_path):
+    engine = _make_engine(
+        dot_source="""
+        digraph {
+            graph [max_steps=6]
+            start [shape=Mdiamond]
+            work [shape=box, prompt="Keep working"]
+            exit [shape=Msquare]
+            start -> work
+            work -> exit [condition="outcome=never_true"]
+            work -> work
+        }
+        """,
+        backend=MockBackend(),
+        logs_root=str(tmp_path),
+    )
+    outcome = await engine.run_subgraph("start")
+    assert outcome.status == StageStatus.FAIL
+    assert "exceeded 6 steps" in outcome.failure_reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subgraph", [False, True])
+async def test_uncapped_walk_can_be_cancelled_after_550_steps(tmp_path, subgraph):
+    cancelled = threading.Event()
+
+    class CancellingBackend:
+        visits = 0
+
+        async def run(self, node, prompt, context, **kwargs):
+            self.visits += 1
+            if self.visits == 600:
+                cancelled.set()
+            return Outcome(status=StageStatus.SUCCESS)
+
+    backend = CancellingBackend()
+    engine = _make_engine(
+        dot_source="""
+        digraph {
+            start [shape=Mdiamond]
+            work [shape=box, prompt="Keep working"]
+            exit [shape=Msquare]
+            start -> work
+            work -> exit [condition="outcome=never_true"]
+            work -> work
+        }
+        """,
+        backend=backend,
+        logs_root=str(tmp_path),
+    )
+    engine._cancel_event = cancelled
+    outcome = await engine.run_subgraph("start") if subgraph else await engine.run()
+    assert backend.visits == 600
+    assert outcome.status == StageStatus.FAIL
+    assert "cancelled" in outcome.notes.lower()
+
+
+@pytest.mark.asyncio
+async def test_main_loop_explicit_safety_bound_terminates_infinite_cycle(tmp_path):
     """Main run() loop terminates with FAIL when the step limit is exceeded.
 
     Regression test: before the fix, a condition-routing bug (always-false
     conditions) could cause the engine to cycle indefinitely.  The safety
     bound must catch this and return a FAIL outcome rather than hang.
 
-    We patch _MAX_GOAL_GATE_RETRIES to 2 so max_steps = nodes × 2 = 6,
-    making the test complete quickly while still exercising the bound.
+    An explicit max_steps=6 makes the test finish quickly.
     """
-    from unittest.mock import patch
-
     # A graph where the only exit edge has a condition that is never satisfied.
     # The unconditional edge back to 'work' is always preferred, so the engine
     # cycles: start → work → work → work → ... forever without the bound.
     dot_source = """
     digraph {
+        graph [max_steps=6]
         start  [shape=Mdiamond]
         work   [shape=parallelogram, tool_command="echo always_loops"]
         exit   [shape=Msquare]
@@ -1348,9 +1473,7 @@ async def test_main_loop_safety_bound_terminates_infinite_cycle(tmp_path):
         dot_source=dot_source, backend=MockBackend(), logs_root=str(tmp_path)
     )
 
-    # Patch the class constant so max_steps = 3 nodes × 2 = 6 steps
-    with patch.object(type(engine), "_MAX_GOAL_GATE_RETRIES", new=2):
-        outcome = await engine.run()
+    outcome = await engine.run()
 
     assert outcome.status == StageStatus.FAIL, (
         f"Expected FAIL when step bound exceeded, got {outcome.status!r}"
