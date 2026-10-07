@@ -495,6 +495,49 @@ previously terminated the run — moving observable behavior toward the author's
 No spec-conformant `.dot` file can depend on the prior "single timeout kills the graph despite
 `allow_partial`" behavior, since that was the defect this corrects.
 
+### Proposed cleanup-pending exception — maintainer decision required (2026-10-07)
+
+**Status: PROPOSED, NOT APPROVED.** PR #117 remains draft. This subsection does not
+ratify a divergence or supersede the existing rule above. A maintainer must explicitly
+decide the safety exception, its compatibility treatment and upstream-action disposition
+before this behavior can merge. No upstream filing or approval is claimed.
+
+The proposal is to terminate a timed-out pipeline when the handler task still has not
+finished cancellation cleanup after the existing bounded grace. In this case, do not
+follow a failure edge, `retry_target`, `fallback_retry_target` or the `allow_partial`
+continuation. This is an observable exception to canonical §3.7 failure routing and
+to this section's timeout extension, not merely a diagnostic change. Canonical §2.6
+bounds node execution and §3.8 describes sequential top-level execution; neither
+explicitly decides the cleanup-pending routing exception. Spec silence is not approval.
+
+Ordinary returned failures and timed-out tasks whose cleanup has finished retain their
+existing routing. Pipeline-fuse expiry retains §15's existing hard stop. The public
+failure reasons remain `timeout` for node timeout and `max_pipeline_duration_exceeded`
+for a binding pipeline fuse. Cleanup uncertainty belongs in human-readable notes;
+private typed wait-result fields, not a reserved public string, control the barrier.
+
+**Safety evidence and limits:** the October 7 local DTU observed a baseline grace wait
+still blocked at 5.80 s with two cancellations, versus the proposed barrier returning
+failure at 5.21 s with one cancellation and no Verify invocation. A real subprocess
+continued writing before experiment cleanup killed/reaped it. This supports refusing
+dependent work while handler cleanup is pending, not a claim of worker termination.
+The full model-agent boundary remains unqualified; support #534 stays open. The initial
+record used an earlier draft failure label. A revised DTU run repeated the barrier at
+5.21 s with public `timeout`, one cancellation and no Verify; its cooperative control
+still reaped the process before proceeding. Neither record claims agent termination.
+
+**Alternatives:** enforce termination/ownership at the worker boundary and retain
+canonical routing only after cleanup is confirmed; or reject this exception and revise
+the mitigation. Merely composing another graph node cannot prevent dispatch of that
+node while its predecessor's task is still active. This explains the proposed engine
+location without claiming that the exception has been accepted.
+
+**Ledger:** ATX-M-117 is OPEN-PINNED for this explicit decision, not DIVERGED or silently
+CONFORMS. Its ordinary routing checks are retained and cleanup-pending regressions
+added. If approved, the same change must record the decided disposition and upstream
+action under the Entry Format; if rejected, remove the proposed exception and restore
+the appropriate conformance assertion. See `docs/2026-10-07-timeout-cleanup-barrier.md`.
+
 ---
 
 ## 15. `max_pipeline_duration` Graph-Level Wall-Clock Timeout

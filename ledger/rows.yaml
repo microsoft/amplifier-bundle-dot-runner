@@ -874,12 +874,22 @@
       3. **Fallback retry target:** Node attribute `fallback_retry_target`. Jump to that node.
       4. **Pipeline termination:** No failure route found. The pipeline fails with the stage's failure reason.
     line: 568
-  disposition: CONFORMS
+  disposition: OPEN-PINNED
+  decision:
+    extensions: 14
+  justification: >
+    PR #117 proposes terminating when timed-out handler cleanup remains pending,
+    bypassing failure edges and retry targets. That exception to section 3.7
+    has not been approved. The proposal is recorded in EXTENSIONS section 14;
+    pinning draft behavior is not ratifying it as a decided divergence.
+    Maintainer approval and the required disposition/upstream-action record
+    are merge gates. Ordinary returned failures retain canonical routing.
   assertion:
     kind: indexed
     indexed:
       - modules/loop-pipeline/tests/test_failure_routing.py
       - modules/loop-pipeline/tests/test_folder_node_failure_routing.py
+      - modules/loop-pipeline/tests/test_timeout_cleanup_barrier.py
 
 - id: ATX-M-118
   title: the nine-shape to handler-type mapping table

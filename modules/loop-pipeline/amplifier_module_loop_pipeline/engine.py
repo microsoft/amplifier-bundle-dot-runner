@@ -17,6 +17,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -55,6 +56,13 @@ from .retry import RetryPolicy, execute_with_retry
 from .substitution import extract_refs
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _BoundedNodeResult:
+    outcome: Outcome | None = None
+    timed_out: bool = False
+    cleanup_pending: bool = False
 
 
 def _get_engine_provenance() -> dict:
@@ -956,7 +964,7 @@ class PipelineEngine:
 
                     if effective_timeout_s is not None:
                         try:
-                            outcome, _fuse_timed_out = await self._await_node_bounded(
+                            node_result = await self._await_node_bounded(
                                 execute_with_retry(
                                     handler,
                                     current_node,
@@ -978,15 +986,23 @@ class PipelineEngine:
                                 pipeline_start_time=pipeline_start_time,
                                 execution_index=execution_index,
                             )
-                        if _fuse_timed_out:
+                        outcome = node_result.outcome
+                        if node_result.timed_out:
                             node_duration_ms = (
                                 time.monotonic() - node_start_time
                             ) * 1000
-                            if (
-                                outcome is not None
-                                and outcome.failure_reason
-                                == "node_cancellation_unconfirmed"
-                            ):
+                            if node_result.cleanup_pending:
+                                outcome = Outcome(
+                                    status=StageStatus.FAIL,
+                                    failure_reason="timeout",
+                                    notes=(
+                                        f"Node '{current_node.id}' timed out after "
+                                        f"{effective_timeout_s}s; cancellation cleanup "
+                                        f"did not finish within {self._FUSE_CANCEL_GRACE_S}s. "
+                                        "Dependent work was not started; "
+                                        "worker cleanup is unconfirmed."
+                                    ),
+                                )
                                 if fuse_is_binding:
                                     outcome.failure_reason = (
                                         "max_pipeline_duration_exceeded"
@@ -2146,20 +2162,20 @@ class PipelineEngine:
         coro: Any,
         *,
         timeout_s: float,
-    ) -> tuple[Outcome | None, bool]:
+    ) -> _BoundedNodeResult:
         """Await a node's handler execution bounded by ``timeout_s``.
 
-        Returns ``(outcome, False)`` on ordinary completion and
-        ``(None, True)`` when a timed-out handler finishes cancellation.
-        Unconfirmed cancellation instead returns a failed outcome with
-        ``timed_out=True``; the caller must terminate without advancing.
+        Returns the handler outcome on ordinary completion. On timeout,
+        reports whether cancellation cleanup is still pending separately
+        from any public failure reason; the caller must not advance while
+        cleanup remains pending.
         Waiting for cleanup must not send another cancellation that can
         interrupt the handler's own descendant/process teardown.
         """
         task: asyncio.Task[Outcome] = asyncio.ensure_future(coro)
         try:
             outcome = await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
-            return outcome, False
+            return _BoundedNodeResult(outcome=outcome)
         except asyncio.TimeoutError:
             task.cancel()
             completed, _ = await asyncio.wait({task}, timeout=self._FUSE_CANCEL_GRACE_S)
@@ -2169,21 +2185,10 @@ class PipelineEngine:
                         None if finished.cancelled() else finished.exception()
                     )
                 )
-                return (
-                    Outcome(
-                        status=StageStatus.FAIL,
-                        notes=(
-                            f"Node timed out after {timeout_s}s; cancellation did not "
-                            f"finish within {self._FUSE_CANCEL_GRACE_S}s. "
-                            "Dependent work was not started; worker cleanup is unconfirmed."
-                        ),
-                        failure_reason="node_cancellation_unconfirmed",
-                    ),
-                    True,
-                )
+                return _BoundedNodeResult(timed_out=True, cleanup_pending=True)
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 task.result()
-            return None, True
+            return _BoundedNodeResult(timed_out=True)
         except asyncio.CancelledError:
             task.cancel()
             task.add_done_callback(
