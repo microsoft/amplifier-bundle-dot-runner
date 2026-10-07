@@ -136,7 +136,9 @@ def test_the_nodes_model_reaches_the_instance(isolated_host: Path) -> None:
     )
 
 
-def test_pinned_foundation_recognizes_instance_id_without_id(isolated_host: Path) -> None:
+def test_pinned_foundation_recognizes_instance_id_without_id(
+    isolated_host: Path,
+) -> None:
     """The public engine's Foundation pin also indexes instance_id.
 
     The old negative-control assertion expected Foundation's historical bug.

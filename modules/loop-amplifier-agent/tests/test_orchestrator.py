@@ -153,6 +153,138 @@ async def test_cancellation_timeout_is_bounded_and_honest(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_late_and_repeated_cancellation_does_not_interrupt_finalization(
+    monkeypatch,
+):
+    handles = Handles()
+    closing, release = asyncio.Event(), asyncio.Event()
+
+    async def close_session():
+        handles.closes.append("session")
+        closing.set()
+        await release.wait()
+
+    handles.session.close = close_session
+    orch, _, hooks = install(monkeypatch, handles)
+    task = asyncio.create_task(run(orch, hooks))
+    await closing.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1)
+    assert handles.closes == ["session", "agent"]
+    assert hooks.completion["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_ack_failure_still_drains_terminal(monkeypatch):
+    handles = Handles(TurnResult("cancelled"), wait=True)
+
+    async def cancel():
+        handles.cancelled.set()
+        raise RuntimeError("ack lost")
+
+    handles.turn.cancel = cancel
+    orch, _, hooks = install(monkeypatch, handles)
+    task = asyncio.create_task(run(orch, hooks))
+    await handles.ready.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    assert any("ack lost" in note for note in caught.value.__notes__)
+    assert any(name == "amplifier-agent:terminal" for name, _ in hooks.events)
+    assert handles.consumers == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_hook_stall_is_bounded(monkeypatch):
+    monkeypatch.setattr(adapter, "CLEANUP_TIMEOUT", 0.01)
+    handles = Handles(TurnResult("cancelled"), wait=True)
+    orch, _, hooks = install(monkeypatch, handles)
+    original = hooks.emit
+
+    async def stalled(name, data):
+        if name == "orchestrator:complete":
+            await asyncio.Event().wait()
+        else:
+            await original(name, data)
+
+    hooks.emit = stalled
+    task = asyncio.create_task(run(orch, hooks))
+    await handles.ready.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await asyncio.wait_for(task, 1)
+    assert any("completion delivery" in note for note in caught.value.__notes__)
+    assert handles.closes == ["session", "agent"]
+
+
+@pytest.mark.asyncio
+async def test_operation_cancelled_close_never_masks_primary(monkeypatch):
+    error = AgentError("boom", "internal", "primary", "inspect")
+    handles = Handles(TurnResult("failure", error=error))
+    handles.close_errors["session"] = asyncio.CancelledError()
+    orch, _, hooks = install(monkeypatch, handles)
+    with pytest.raises(AgentError) as caught:
+        await run(orch, hooks)
+    assert caught.value is error
+    assert handles.closes == ["session", "agent"]
+    assert hooks.completion["status"] == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_operation_cancelled_ack_still_drains_and_closes(monkeypatch):
+    handles = Handles(TurnResult("cancelled"), wait=True)
+
+    async def cancelled_ack():
+        handles.cancelled.set()
+        raise asyncio.CancelledError()
+
+    handles.turn.cancel = cancelled_ack
+    orch, _, hooks = install(monkeypatch, handles)
+    task = asyncio.create_task(run(orch, hooks))
+    await handles.ready.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert handles.closes == ["session", "agent"]
+    assert hooks.completion["status"] == "cancelled"
+    assert any(name == "amplifier-agent:terminal" for name, _ in hooks.events)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_completion_delivery_keeps_cancelled_envelope(
+    monkeypatch,
+):
+    """Acceptance red-proof: a late cancellation must not publish success."""
+    handles = Handles()
+    orch, _, hooks = install(monkeypatch, handles)
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = hooks.emit
+
+    async def delayed_completion(name, data):
+        if name == "orchestrator:complete":
+            captured = dict(data)
+            entered.set()
+            await release.wait()
+            await original(name, captured)
+        else:
+            await original(name, data)
+
+    hooks.emit = delayed_completion
+    task = asyncio.create_task(run(orch, hooks))
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert hooks.completion["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("cap", [None, 0])
 async def test_unlimited_legacy_cap(monkeypatch, cap):
     orch, _, hooks = install(monkeypatch, config={"max_turns": cap})
@@ -238,6 +370,34 @@ async def test_unknown_model_and_unsupported_settings_fail(monkeypatch):
     }
     with pytest.raises(ValueError, match="temperature"):
         await run(orch, hooks)
+
+
+@pytest.mark.asyncio
+async def test_instance_id_mount_defaults_and_explicit_effort(monkeypatch):
+    from types import SimpleNamespace
+
+    parent = coordinator()
+    parent.config["providers"] = [
+        {
+            "instance_id": "terra",
+            "module": "provider-openai",
+            "config": {"reasoning_effort": "none"},
+        }
+    ]
+    orch, handles, hooks = install(
+        monkeypatch, config={"llm_provider": "terra"}, parent=parent
+    )
+    mounted = {
+        "terra": SimpleNamespace(get_info=lambda: {"defaults": {"model": "gpt-5"}})
+    }
+    await orch.execute("prompt", None, mounted, {}, hooks)
+    assert handles.options.model == "gpt-5"
+    assert handles.options.provider == "openai"
+    assert handles.options.reasoning_effort is None
+    handles.consumers = 0
+    orch._config["reasoning_effort"] = "none"
+    await orch.execute("prompt", None, mounted, {}, hooks)
+    assert handles.options.reasoning_effort == "none"
 
 
 @pytest.mark.asyncio

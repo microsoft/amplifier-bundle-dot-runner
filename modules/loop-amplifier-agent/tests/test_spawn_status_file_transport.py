@@ -130,6 +130,9 @@ async def test_two_node_graph_actual_selection_recall_and_external_status(tmp_pa
             str(run_logs),
         )
         await engine.run()
+        assert (run_logs / "recall" / "response.md").is_file(), (
+            f"Real recall worker did not produce a response: {engine.node_outcomes}"
+        )
         reply = (run_logs / "recall" / "response.md").read_text()
         assert (fact in reply.splitlines()[0]) == (name == "continuity")
         assert fact not in (run_logs / "recall" / "prompt.md").read_text()

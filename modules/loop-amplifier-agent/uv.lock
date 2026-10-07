@@ -7,6 +7,9 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+overrides = [{ name = "amplifier-agent-engine", extras = ["github-copilot"], git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fengine&rev=v0.22.0" }]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -176,7 +179,7 @@ name = "amplifier-agent"
 version = "0.22.0"
 source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fpython&rev=main#53e3e3c34d615a99568b08232c5d0c6abfadf8b2" }
 dependencies = [
-    { name = "amplifier-agent-engine" },
+    { name = "amplifier-agent-engine", extra = ["github-copilot"] },
 ]
 
 [package.optional-dependencies]
@@ -187,7 +190,7 @@ github-copilot = [
 [[package]]
 name = "amplifier-agent-engine"
 version = "0.22.0"
-source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fengine&rev=main#53e3e3c34d615a99568b08232c5d0c6abfadf8b2" }
+source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fengine&rev=v0.22.0#915edf9372312d4c8244df4b2b16b094cf455cff" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "amplifier-foundation" },

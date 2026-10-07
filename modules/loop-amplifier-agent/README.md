@@ -103,6 +103,14 @@ and source to that exact pin as a narrow consumer exception. There is no root
 Foundation override hiding qualification failures. Other ecosystem consumers
 still naming Foundation main may conflict and need independent qualification.
 
+Upstream's `workspace=true` engine source can leak the binding-main revision
+into a consumer uv lock despite the binding's published engine tag. Root and
+adapter lock roots therefore carry a narrow engine-only override to the exact
+published v0.22.0 tag. This corrects development locks, not runtime authority.
+Fresh `uv --no-config pip install --no-sources` checks run independently of
+that override. When binding main changes its engine requirement, requalify and
+update this correction rather than silently holding an obsolete tag.
+
 ```bash
 cd modules/loop-amplifier-agent
 uv sync

@@ -183,7 +183,13 @@ class AmplifierAgentOrchestrator:
         model = self._config.get("llm_model") or settings.get("default_model")
         model = model or settings.get("model")
         mounted = providers.get(
-            selected.get("id", selected.get("module")) if selected else family
+            (
+                selected.get("instance_id")
+                or selected.get("id")
+                or selected.get("module")
+            )
+            if selected
+            else family
         )
         mounted = mounted or providers.get(family)
         if not model and mounted is not None:
@@ -200,6 +206,16 @@ class AmplifierAgentOrchestrator:
                 "default_model on the matching default provider."
             )
         effort = self._config.get("reasoning_effort", settings.get("reasoning_effort"))
+        # OpenAI provisioning historically stores "none" as unspecified; it
+        # is not an explicit node request for the public binding's named effort.
+        if "reasoning_effort" not in self._config and family in {
+            "openai",
+            "openai-chatgpt",
+        }:
+            if isinstance(effort, str):
+                effort = effort.strip().lower()
+                if effort in {"", "none"}:
+                    effort = None
         environment = dict(self._config.get("environment") or {})
         for key, value in settings.items():
             if key in _SELECTION_KEYS:
@@ -368,46 +384,84 @@ class AmplifierAgentOrchestrator:
         except asyncio.CancelledError as exc:
             primary = exc
             status = "cancelled"
-            if turn is not None:
-                try:
-                    await _bounded(turn.cancel(), CLEANUP_TIMEOUT, "turn.cancel")
-                    if consumer is not None:
-                        await _bounded(
-                            asyncio.shield(consumer),
-                            CANCEL_DRAIN_TIMEOUT,
-                            "cancelled event drain",
-                        )
-                except Exception as drain_error:
-                    exc.add_note(f"Cancellation drain failed: {drain_error}")
-                    logger.warning("Cancellation drain failed", exc_info=True)
             raise
         except BaseException as exc:
             primary = exc
             raise
         finally:
             cleanup_errors = []
-            for name, handle in (("session.close", session), ("agent.close", agent)):
-                if handle is not None:
+
+            def cleanup_failure(operation: str, exc: BaseException) -> None:
+                # An operation's cancellation is cleanup uncertainty, not
+                # another caller cancellation allowed to abort finalization.
+                if isinstance(exc, asyncio.CancelledError):
+                    exc = _error(
+                        "adapter_cleanup_cancelled",
+                        f"{operation} itself was cancelled; cleanup is unverified.",
+                        "Inspect retained worker evidence before retrying.",
+                    )
+                cleanup_errors.append(exc)
+                logger.warning("%s failed", operation, exc_info=True)
+
+            async def finalize() -> None:
+                nonlocal status
+                if status == "cancelled" and turn is not None:
                     try:
-                        await _bounded(handle.close(), CLEANUP_TIMEOUT, name)
-                    except Exception as exc:
-                        cleanup_errors.append(exc)
-                        logger.warning("%s failed", name, exc_info=True)
-            if consumer is not None and not consumer.done():
-                consumer.cancel()
-            if cleanup_errors and primary is None:
-                status = "incomplete"
-            try:
-                await self._emit_completion(hooks, status, session_id)
-            except Exception:
-                if primary is None and not cleanup_errors:
-                    raise
-                logger.warning("Completion delivery failed", exc_info=True)
+                        await _bounded(turn.cancel(), CLEANUP_TIMEOUT, "turn.cancel")
+                    except (Exception, asyncio.CancelledError) as exc:
+                        cleanup_failure("turn.cancel", exc)
+                    # A failed cancellation acknowledgement is not permission
+                    # to abandon the single stream's available terminal evidence.
+                    if consumer is not None:
+                        try:
+                            await _bounded(
+                                asyncio.shield(consumer),
+                                CANCEL_DRAIN_TIMEOUT,
+                                "cancelled event drain",
+                            )
+                        except (Exception, asyncio.CancelledError) as exc:
+                            cleanup_failure("cancelled event drain", exc)
+                for name, handle in (
+                    ("session.close", session),
+                    ("agent.close", agent),
+                ):
+                    if handle is not None:
+                        try:
+                            await _bounded(handle.close(), CLEANUP_TIMEOUT, name)
+                        except (Exception, asyncio.CancelledError) as exc:
+                            cleanup_failure(name, exc)
+                if consumer is not None and not consumer.done():
+                    consumer.cancel()
+                if cleanup_errors and primary is None:
+                    status = "incomplete"
+                try:
+                    await _bounded(
+                        self._emit_completion(hooks, status, session_id),
+                        CLEANUP_TIMEOUT,
+                        "completion delivery",
+                    )
+                except (Exception, asyncio.CancelledError) as exc:
+                    cleanup_failure("completion delivery", exc)
+
+            # All finalization lives in one shielded task. Late or repeated
+            # caller cancellation cannot skip agent.close or completion. Each
+            # operation inside has its own finite budget, including delivery.
+            finalizer = asyncio.create_task(finalize())
+            while not finalizer.done():
+                try:
+                    await asyncio.shield(finalizer)
+                except asyncio.CancelledError as exc:
+                    status = "cancelled"
+                    if primary is None:
+                        primary = exc
+            finalizer.result()
             if cleanup_errors:
                 if primary is None:
                     raise cleanup_errors[0]
                 for exc in cleanup_errors:
-                    primary.add_note(f"Cleanup failed: {exc}")
+                    primary.add_note(f"Cleanup/drain failed: {exc}")
+            if isinstance(primary, asyncio.CancelledError):
+                raise primary
 
     @staticmethod
     async def _emit_completion(hooks: Any, status: str, session_id: str | None) -> None:

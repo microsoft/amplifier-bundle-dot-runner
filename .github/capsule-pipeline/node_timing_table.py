@@ -143,12 +143,20 @@ class SessionStats:
                 payload = data.get("payload") or {}
                 if event == "amplifier-agent:tool_call":
                     call = payload.get("call") or {}
-                    key = (data.get("session_id"), data.get("turn_id"), call.get("call_id"))
+                    key = (
+                        data.get("session_id"),
+                        data.get("turn_id"),
+                        call.get("call_id"),
+                    )
                     self.tool_calls += 1
                     public_tools[key] = (ts, str(call.get("name") or "tool"))
                 elif event == "amplifier-agent:tool_result":
                     resolution = payload.get("resolution") or {}
-                    key = (data.get("session_id"), data.get("turn_id"), resolution.get("call_id"))
+                    key = (
+                        data.get("session_id"),
+                        data.get("turn_id"),
+                        resolution.get("call_id"),
+                    )
                     opened = public_tools.pop(key, None)
                     if opened:
                         self._close(opened[0], ts, f"tool ({opened[1]})")
@@ -253,8 +261,12 @@ def build_report(logs_root: Path) -> tuple[str, dict]:
             f"No `trace.jsonl` under `{logs_root}` -- the pipeline did not get "
             "far enough to write one. Nothing to report; this is not itself a "
             "failure.\n",
-            {"iterations_completed": 0, "mean_iteration_seconds": None,
-             "total_seconds": 0.0, "nodes": 0},
+            {
+                "iterations_completed": 0,
+                "mean_iteration_seconds": None,
+                "total_seconds": 0.0,
+                "nodes": 0,
+            },
         )
 
     rows, skipped_trace = _read_trace(trace_path)
@@ -276,7 +288,11 @@ def build_report(logs_root: Path) -> tuple[str, dict]:
         iteration = record.get("iteration")
         iteration_i = iteration if isinstance(iteration, int) else 0
         duration_ms = record.get("duration_ms")
-        seconds = float(duration_ms) / 1000.0 if isinstance(duration_ms, (int, float)) else 0.0
+        seconds = (
+            float(duration_ms) / 1000.0
+            if isinstance(duration_ms, (int, float))
+            else 0.0
+        )
         status = str(record.get("status", "?"))
 
         total_seconds += seconds

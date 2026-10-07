@@ -35,6 +35,11 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 package = true
+# Lock-only correction for upstream workspace=true source leakage. This is
+# exactly the binding's published engine tag, never a Foundation override.
+override-dependencies = [
+    "amplifier-agent-engine[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@v0.22.0#subdirectory=packages/engine",
+]
 
 [tool.uv.sources]
 # Test-only, same-repo path source (dev dependency-group member below). The

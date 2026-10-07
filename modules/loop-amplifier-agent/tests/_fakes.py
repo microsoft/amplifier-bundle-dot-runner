@@ -3,7 +3,14 @@
 import asyncio
 from types import SimpleNamespace
 
-from amplifier_agent import Event, Selection, TextPart, TurnResult, TurnStarted
+from amplifier_agent import (
+    Event,
+    Selection,
+    SessionRecord,
+    TextPart,
+    TurnResult,
+    TurnStarted,
+)
 
 
 class CapturingHooks:
@@ -53,7 +60,9 @@ class Handles:
         self.start_error = self.session_error = self.stream_error = None
         self.session_options = self.options = self.input = None
         self.session = SimpleNamespace(
-            info=SimpleNamespace(session_id="actual-session"),
+            info=SessionRecord(
+                "actual-session", "ephemeral", "actual-provider", "actual-model"
+            ),
             start_turn=self.start_turn,
             close=lambda: self.close("session"),
         )

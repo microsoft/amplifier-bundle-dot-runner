@@ -24,6 +24,15 @@ Repository = "https://github.com/microsoft/amplifier-bundle-dot-runner"
 [project.scripts]
 dot-runner = "amplifier_dot_runner:main"
 
+[tool.uv]
+# Lock-only correction: upstream's workspace=true engine source otherwise
+# leaks the binding-main checkout into our lock, bypassing its published tag.
+# Fresh --no-config --no-sources installations qualify the real metadata
+# independently; Foundation is deliberately NOT overridden.
+override-dependencies = [
+    "amplifier-agent-engine[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@v0.22.0#subdirectory=packages/engine",
+]
+
 [tool.uv.sources]
 amplifier-module-pipeline-runner = { path = "modules/pipeline-runner" }
 amplifier-module-loop-amplifier-agent = { path = "modules/loop-amplifier-agent" }
