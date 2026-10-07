@@ -119,6 +119,17 @@ def test_probe_false_when_agent_lib_absent(monkeypatch):
     assert default_worker._worker_available("amplifier-agent") is False
 
 
+def test_agent_probe_is_public_binding_not_deleted_library(monkeypatch):
+    seen = []
+    def find_spec(name):
+        seen.append(name)
+        return object() if name != "amplifier_agent" else None
+    monkeypatch.setattr(default_worker.importlib.util, "find_spec", find_spec)
+    assert not default_worker._worker_available("amplifier-agent")
+    assert "amplifier_agent" in seen
+    assert "amplifier_agent_lib" not in seen
+
+
 def test_probe_true_when_adapter_doubles_as_its_own_probe(monkeypatch):
     """loop-agent has no heavy peer library distinct from its adapter -- the
     adapter module doubles as its own probe (registry: probe_module ==

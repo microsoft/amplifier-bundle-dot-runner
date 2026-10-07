@@ -1,7 +1,7 @@
 [project]
 name = "amplifier-module-loop-amplifier-agent"
 version = "0.1.0"
-description = "Adapter orchestrator: hosts microsoft/amplifier-agent's Engine as a dot-pipeline node's worker"
+description = "Adapter orchestrator using the public Amplifier Agent Python binding"
 license = "MIT"
 # amplifier-agent (the peer library this adapter hosts) declares
 # `requires-python = ">=3.12"` (verified against its own pyproject.toml on
@@ -17,13 +17,13 @@ authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
 dependencies = [
-    "amplifier-core>=0.1.0",
+    "amplifier-core>=2.0.1",
     # The peer library this adapter hosts. Direct git reference (not a bare
     # PyPI name): amplifier-agent is not published to PyPI. Floats on @main
     # deliberately, mirroring every other `@main` git dependency in this
     # repo's modules (see pipeline-runner/pyproject.toml's own comment on
     # why a SHA pin here would collide with other consumers' `@main` refs).
-    "amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@main",
+    "amplifier-agent[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@main#subdirectory=packages/python",
 ]
 
 [project.entry-points."amplifier.modules"]

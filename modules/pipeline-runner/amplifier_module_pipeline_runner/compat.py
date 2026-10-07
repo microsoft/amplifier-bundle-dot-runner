@@ -1,5 +1,15 @@
 """Runner-engine compatibility assertion.
 
+Current public-agent consumer exception (0.22.0)
+----------------------------------------------
+The runner's published Foundation requirement and uv source both now name
+21ad50fa40f7acff913cbf6615228ac359f7dedd, matching the binding's engine pin.
+An unoverridden consumer solve with Foundation main fails on conflicting URLs.
+No root Foundation override masks that conflict. The binding itself continues
+to float on main#subdirectory=packages/python. Other Foundation-main consumers
+need independent qualification. The Foundation floating-policy discussion below
+is historical, superseded by this narrowly scoped exception.
+
 Chosen shape: startup compatibility assertion (compat-assert).
 
 Tradeoff rationale

@@ -1,5 +1,32 @@
 # amplifier-bundle-dot-runner
 
+## Public agent binding migration
+
+The mandatory root adapter now uses `amplifier_agent` public handles, not the
+private Engine/CLI integration described in historical sections below.
+Binding `main#subdirectory=packages/python` deliberately floats, with the
+`github-copilot` extra. Binding 0.22.0 pins engine v0.22.0, Core 2.0.1 and
+Foundation `21ad50fa40f7acff913cbf6615228ac359f7dedd`.
+
+The former Foundation-main policy conflicts with that engine SHA in an
+unoverridden consumer solve. Runner's published Foundation requirement/source
+now align to the engine SHA as a narrow consumer exception; the root override
+is removed. The historical shape-only fix below no longer governs this install.
+Consumers requiring Foundation main still need independent qualification.
+
+Canonical §§1.4/4.5 allow this backend replacement without altering graph
+traversal, String|Outcome or the worker-written status-file channel.
+Fresh ephemeral public sessions receive full-fidelity history as typed records.
+Set a matching provider **and** model. Positive `max_turns`, named roster
+injection, legacy workspace/host_config and caller tools are unsupported; use
+`coding-agent` for those controls.
+
+Curated `turn-events/1` telemetry has actual selections and cumulative snapshots,
+not internal call boundaries. Unknown remains unknown; terminal usage does not
+double-count. The timing table shows `-` for unavailable LLM-call counts.
+See [adapter README](modules/loop-amplifier-agent/README.md) for the current
+supported contract. Local green is not manager DTU/consumer acceptance.
+
 The engine that runs `.dot` pipelines: a DOT-graph-driven multi-stage AI
 workflow orchestrator, plus the CLI and provider client it depends on —
 packaged as a proper, composable **Amplifier bundle**.

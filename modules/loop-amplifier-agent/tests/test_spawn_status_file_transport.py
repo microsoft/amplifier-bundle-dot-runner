@@ -1,153 +1,172 @@
-"""The child->parent verdict transport, amplifier-agent-backed.
+"""Two real public workers under the real graph engine and status-file parent.
 
-The PRODUCER is this module's ``AmplifierAgentOrchestrator`` (hosting a REAL
-amplifier-agent Engine) rather than
-``amplifier_module_loop_agent.AgentOrchestrator``.
-
-WAVE 4 (maintainer ruling 2026-08-29, ruling 5) retired this module's
-reach-in tool mount onto the hosted agent's coordinator; WAVE 5 (2026-08-30)
-removed that channel repo-wide. The channel this test proves end-to-end,
-with all REAL parties, is the spec's own status-file contract (canonical
-Sec 4.5 / Appendix C):
-
-  * PRODUCER -- ``amplifier_module_loop_amplifier_agent.AmplifierAgentOrchestrator``,
-    running a REAL ``amplifier_agent_lib.engine.Engine`` turn;
-  * CONTRACT -- ``amplifier_module_loop_pipeline.status_contract.
-    build_status_file_contract`` renders the exact same contract block
-    ``backend.py`` injects into a real spawn's instruction;
-  * VERDICT CHANNEL -- the hosted amplifier-agent's OWN file-editing tools
-    (no mounting required -- writing a file is not a foreign capability);
-  * CONSUMER -- plain ``os.path`` + ``json`` reads of the real file the
-    turn actually wrote, standing in for
-    ``handlers/codergen.py``'s ``read_status_override`` (which runs in the
-    PARENT process, outside this adapter, and is proven separately by
-    pipeline-runner's spawn e2e fixture).
-
-Unlike loop-agent (whose ``AgentSession`` accepts an injected ``provider``
-object -- a clean seam for a scripted, no-network double), amplifier-agent's
-Engine boots its OWN bundle and mounts its OWN credentialed provider module.
-There is no clean dependency-injection seam for a fake LLM here, so this test
-is a genuine, network-calling, real-provider smoke test rather than a fully
-offline one:
-
-  * ``pytest.importorskip("amplifier_agent_lib")`` -- skips (not fails) when
-    the peer library isn't installed (e.g. this module's own hermetic unit
-    tests run fine without it; this file additionally requires it).
-  * skip-if-no-provider-key -- skips (not fails) in CI, which carries no
-    secrets, so this test never blocks the pipeline.
-
-The hermetic equivalent of this same "never fabricate a verdict" claim
-(real orchestrator, DOUBLED amplifier-agent Engine/bundle machinery) lives
-in ``tests/test_orchestrator.py::
-test_envelope_shape_never_fabricates_a_verdict`` and runs unconditionally,
-in CI, on every push.
+The outer spawn carrier is doubled, not Foundation qualification. Hosted turns,
+selection, tools, graph traversal, history bookkeeping, and status reader are real.
+Manager DTU must additionally qualify the installed Foundation spawn path.
 """
 
-from __future__ import annotations
-
-import asyncio
 import json
 import os
-import tempfile
-from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock
+import secrets
+from types import SimpleNamespace
 
 import pytest
+from amplifier_agent import AgentOptions  # noqa: F401 -- never skip a missing binding
 from amplifier_module_loop_amplifier_agent import AmplifierAgentOrchestrator
-from amplifier_module_loop_pipeline.status_contract import build_status_file_contract
+from amplifier_module_loop_pipeline.backend import AmplifierBackend
+from amplifier_module_loop_pipeline.context import PipelineContext
+from amplifier_module_loop_pipeline.engine import PipelineEngine
+from amplifier_module_loop_pipeline.graph import Edge, Graph, Node
+from amplifier_module_loop_pipeline.handlers import HandlerRegistry
+from amplifier_module_loop_pipeline.handlers.context import HandlerContext
+from amplifier_module_loop_pipeline.outcome import StageStatus
 
-from ._fakes import FakeContextManager, assert_no_fabricated_verdict
-
-pytest.importorskip(
-    "amplifier_agent_lib",
-    reason="amplifier-agent is a heavy, Python>=3.12-only peer dependency",
-)
-
-_HAS_PROVIDER_KEY = bool(
-    os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY")
-)
+from ._fakes import CapturingHooks, FakeContextManager
 
 pytestmark = pytest.mark.skipif(
-    not _HAS_PROVIDER_KEY,
-    reason="no ANTHROPIC_API_KEY/OPENAI_API_KEY in the environment -- "
-    "CI carries no secrets and must skip this live test honestly",
+    not os.getenv("ANTHROPIC_API_KEY"), reason="live Anthropic credentials absent"
 )
-
-
-class _CapturingHooks:
-    """Mirrors what foundation's `PreparedBundle.spawn` does at the real
-    spawn boundary: registers a temporary `orchestrator:complete` subscriber
-    and keeps the last payload.
-    """
-
-    def __init__(self) -> None:
-        self.completion: dict[str, Any] = {}
-
-    async def emit(self, event: str, data: dict) -> Any:
-        from amplifier_core.events import ORCHESTRATOR_COMPLETE
-
-        if event == ORCHESTRATOR_COMPLETE:
-            self.completion.update(data)
-        return None
-
-
-async def _run_child(prompt: str) -> dict[str, Any]:
-    """Run one REAL amplifier-agent invocation, foundation-spawn-shaped."""
-    hooks = _CapturingHooks()
-    orch = AmplifierAgentOrchestrator(coordinator=MagicMock(), config={})
-    # Adopted-PR fix: the original PR swapped an unused MagicMock() for
-    # context=None here (correct direction -- execute() now READS context,
-    # so an unused MagicMock would be awaited as get_messages() and fail).
-    # But the kernel never actually passes context=None in a real spawn --
-    # foundation's PreparedBundle.spawn always seeds a REAL, live
-    # ContextManager instance (possibly empty, never bare None) before
-    # execute() runs. An empty FakeContextManager() is the faithful "no
-    # prior-turn history" value for a first turn: it exercises the real
-    # read-path shape (``context.get_messages()`` returns ``[]`` ->
-    # ``_history_from_context`` treats that as "nothing to replay") instead
-    # of short-circuiting on ``context is None``.
-    output = await orch.execute(
-        prompt, FakeContextManager(), {}, {}, hooks, coordinator=None
-    )
-
-    return {
-        "output": output,
-        "session_id": "child-session-1",
-        "status": hooks.completion.get("status", "success"),
-        "turn_count": hooks.completion.get("turn_count", 1),
-        "metadata": hooks.completion.get("metadata", {}),
-    }
 
 
 @pytest.mark.asyncio
-async def test_real_amplifier_agent_writes_status_file_via_its_own_tools():
-    """The hosted amplifier-agent's explicit verdict travels via the
-    status-file contract (canonical Sec 4.5 / Appendix C), written with the
-    agent's OWN file-editing tools -- NOT a mounted reach-in tool (retired
-    WAVE 4, removed repo-wide WAVE 5). This is the amplifier-agent-backed,
-    real-network analogue of pipeline-runner's #285 regression test, ported
-    to the new channel: a real turn, given the exact contract block
-    ``backend.py`` injects for every spawn worker, actually writes the file.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        status_path = os.path.join(tmpdir, "status.json")
-        prompt = (
-            "Do a trivial task: just confirm you are ready.\n"
-            + build_status_file_contract(status_path)
+async def test_two_node_graph_actual_selection_recall_and_external_status(tmp_path):
+    fact = secrets.token_hex(12)
+    work, logs = tmp_path / "work", tmp_path / "logs"
+    work.mkdir()
+    models = [
+        os.getenv("AA_LIVE_MODEL_A", "claude-sonnet-5-5"),
+        os.getenv("AA_LIVE_MODEL_B", "claude-haiku-4-5"),
+    ]
+    assert models[0] != models[1]
+    assert not logs.resolve().is_relative_to(work.resolve())
+
+    class Parent:
+        def __init__(self):
+            self.session = SimpleNamespace(config={})
+            self.config = {
+                "agents": {
+                    "public": {
+                        "session": {"orchestrator": {"module": "loop-amplifier-agent"}}
+                    }
+                }
+            }
+
+        def get_capability(self, name):
+            return self.spawn if name == "session.spawn" else None
+
+        async def spawn(self, **kwargs):
+            # Mirrors outer preference promotion; ordinary agent_configs stays
+            # outer bookkeeping and is NOT injected into the hosted runtime.
+            preference = kwargs["provider_preferences"][0]
+            child = SimpleNamespace(
+                config={
+                    "providers": [
+                        {
+                            "module": "provider-anthropic",
+                            "config": {"default_model": preference.model},
+                        }
+                    ]
+                },
+                get_capability=lambda _: str(work),
+            )
+            config = dict(kwargs["orchestrator_config"])
+            hooks = CapturingHooks()
+            output = await AmplifierAgentOrchestrator(child, config).execute(
+                kwargs["instruction"],
+                FakeContextManager(kwargs.get("parent_messages")),
+                {},
+                {},
+                hooks,
+            )
+            return {"output": output, "session_id": "outer-adapter", **hooks.completion}
+
+    for name, thread in (("continuity", "same"), ("control", "different")):
+        run_logs = logs / name
+        nodes = {
+            "start": Node("start", shape="Mdiamond"),
+            "seed": Node(
+                "seed",
+                prompt=f"Remember code {fact}. Reply OK. Write success status.",
+                attrs={
+                    "llm_provider": "anthropic",
+                    "llm_model": models[0],
+                    "fidelity": "full",
+                    "thread_id": "same",
+                },
+            ),
+            "recall": Node(
+                "recall",
+                prompt="From conversation alone, return the remembered code on the first line, "
+                "or UNKNOWN if absent. Do not read/search/list files or use bash. "
+                "Use write_file to write status with outcome fail and preferred_label Zulu.",
+                attrs={
+                    "llm_provider": "anthropic",
+                    "llm_model": models[1],
+                    "fidelity": "full",
+                    "thread_id": thread,
+                },
+            ),
+            "alpha": Node("alpha", shape="diamond"),
+            "zulu": Node("zulu", shape="diamond"),
+            "done": Node("done", shape="Msquare"),
+        }
+        graph = Graph(
+            name,
+            nodes=nodes,
+            edges=[
+                Edge("start", "seed"),
+                Edge("seed", "recall"),
+                Edge("recall", "alpha", label="Alpha"),
+                Edge("recall", "zulu", label="Zulu"),
+                Edge("alpha", "done"),
+                Edge("zulu", "done"),
+            ],
         )
-
-        result = await _run_child(prompt)
-
-        # metadata never carries a fabricated verdict -- this module mounts
-        # no reach-in tool (WAVE 4 ruling 5; channel removed WAVE 5).
-        assert_no_fabricated_verdict(result["metadata"])
-
-        assert os.path.exists(status_path), (
-            "the hosted amplifier-agent never wrote the status.json path "
-            "it was given in its own instructions -- the status-file "
-            "contract channel did not reach the model, or it has no "
-            "usable file-write tool"
+        backend = AmplifierBackend(Parent(), profiles={"anthropic": "public"})
+        engine = PipelineEngine(
+            graph,
+            PipelineContext(),
+            HandlerRegistry(HandlerContext(backend=backend)),
+            str(run_logs),
         )
-        data = json.loads(await asyncio.to_thread(Path(status_path).read_text))
-        assert data["outcome"] in {"success", "partial_success", "retry", "fail"}
+        await engine.run()
+        reply = (run_logs / "recall" / "response.md").read_text()
+        assert (fact in reply.splitlines()[0]) == (name == "continuity")
+        assert fact not in (run_logs / "recall" / "prompt.md").read_text()
+        assert engine.node_outcomes["recall"].status == StageStatus.FAIL
+        assert engine.node_outcomes["recall"].is_explicit
+        assert (
+            "zulu" in engine.completed_nodes and "alpha" not in engine.completed_nodes
+        )
+        ids = []
+        for node, expected_model in zip(("seed", "recall"), models):
+            stage = run_logs / node
+            status = json.loads((stage / "status.json").read_text())
+            ids.append(status["session_id"])
+            events = [
+                json.loads(line)
+                for line in (stage / "sessions" / ids[-1] / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            started = next(
+                e["data"]["payload"]
+                for e in events
+                if e["event"] == "amplifier-agent:turn_started"
+            )
+            assert started["primary_actual"]["model"].startswith(expected_model)
+            if node == "recall":
+                calls = [
+                    e["data"]["payload"]["call"]
+                    for e in events
+                    if e["event"] == "amplifier-agent:tool_call"
+                ]
+                assert not any(
+                    c["name"] in {"read_file", "glob", "grep", "bash"} for c in calls
+                )
+                writes = [c for c in calls if c["name"] in {"write_file", "edit_file"}]
+                assert any(
+                    str(stage / "status.json") in json.dumps(c["arguments"])
+                    for c in writes
+                )
+        assert ids[0] != ids[1]

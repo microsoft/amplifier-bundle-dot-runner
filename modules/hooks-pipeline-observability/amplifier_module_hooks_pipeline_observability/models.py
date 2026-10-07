@@ -159,6 +159,11 @@ class PipelineRunState:
     total_tokens_out: int = 0
     total_tokens_cached: int = 0
     total_tokens_reasoning: int = 0
+    # Public turn-events/1 snapshots are a separate accounting domain, not
+    # synthetic provider calls. Unknown counters/cost remain None. Currency
+    # values are decimal strings and every actual model entry is retained.
+    public_turn_usage: dict[str, dict[str, Any] | None] = field(default_factory=dict)
+    public_turn_selections: dict[str, dict[str, Any]] = field(default_factory=dict)
     nodes_completed: int = 0
     nodes_total: int = 0
 

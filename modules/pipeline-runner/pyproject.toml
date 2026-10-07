@@ -4,129 +4,42 @@ version = "0.2.1"
 description = "Reusable engine-driving library + CLI for standalone DOT pipeline runs"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [
-    { name = "Microsoft MADE:Explorations Team" },
-]
+authors = [{ name = "Microsoft MADE:Explorations Team" }]
 dependencies = [
-    "amplifier-core>=0.1.0",
-    # PUBLISHED requirement -- floats on @main deliberately, and must keep floating.
-    #
-    # WAVE 6 (feat/agent-always-installed) shape change: this used to be a direct
-    # reference (`amplifier-foundation @ git+...@main`). It is now a plain named
-    # requirement redirected via [tool.uv.sources] below -- SAME ref (`main`
-    # branch), DIFFERENT declaration shape, and the shape is now load-bearing.
-    #
-    # Why: amplifier-agent (microsoft/amplifier-agent, now embedded at this
-    # repo's root -- modules/loop-amplifier-agent's peer library) declares
-    # amplifier-foundation as a plain named requirement redirected via its OWN
-    # `[tool.uv.sources] amplifier-foundation = { git = ..., branch = "main" }`.
-    # uv identifies a git requirement by its REF-KIND representation, not just
-    # the commit it resolves to: a `@main`-suffixed direct URL and a
-    # `branch = "main"` sources-redirect are DIFFERENT representations of "the
-    # same ref" to uv's resolver, even though they print identically --
-    # confirmed empirically (`uv tool install`/`uv pip install` on this
-    # package plus amplifier-agent both declaring "@main" text still raised
-    # "Requirements contain conflicting URLs for package amplifier-foundation").
-    # Matching amplifier-agent's own declaration SHAPE (not just its ref) is
-    # what makes the two co-resolve -- root's own `[tool.uv] override-
-    # dependencies` (pyproject.toml) fixes this for `uv lock`/`uv sync`
-    # invoked FROM the root project, but does NOT reach `uv tool install
-    # git+<url>` (verified: override-dependencies is resolution-root-scoped
-    # and a git/tool install never treats the fetched project as that root),
-    # so the shape itself must match for the primary distribution path to work.
-    #
-    # A SHA pin (either shape) still collides with every other
-    # `amplifier-foundation` declaration in the ecosystem the moment the two
-    # name different commits:
-    #     Requirements contain conflicting URLs for package `amplifier-foundation`
-    # A SHA pin on this line did exactly that and blocked every wiki-weaver install (#213).
-    # The CI determinism that pin bought (microsoft-amplifier/amplifier-support#391) is
-    # preserved out-of-band by the [tool.uv] override-dependencies entry below, which uv
-    # applies ONLY when this project is the resolution root and never propagates to
-    # anyone who depends on us. That override matches by package NAME, so it is
-    # unaffected by this shape change -- it still fires, and still only for our own CI.
-    # Bump procedure: see compat.py's module docstring.
-    "amplifier-foundation>=1.0.0",
+    "amplifier-core>=2.0.1",
+    # Narrow consumer exception: the public binding's v0.22.0 engine requires
+    # this exact Foundation source. main conflicts in an unoverridden solve.
+    # Direct URL also survives Foundation activation with --no-sources.
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@21ad50fa40f7acff913cbf6615228ac359f7dedd",
     "amplifier-module-loop-pipeline[remote] @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-pipeline",
 ]
 
 [project.scripts]
-# The `attractor` console script has been removed entirely (band-aid rip,
-# CONTEXT_POISONING doctrine -- no alias, no shim, no deprecation window).
-# `dot-runner` is the only command; see cli.py's module docstring for the
-# `--bundle`/`DOT_RUNNER_BUNDLE` mechanism that preserves an opinionated
-# experience (e.g. the attractor pattern) by explicit declaration.
 dot-runner = "amplifier_module_pipeline_runner.cli:main"
 
 [build-system]
-requires = [
-    "hatchling",
-]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
 package = true
-# CI-side foundation pin (microsoft-amplifier/amplifier-support#391, PR #201), held here
-# rather than on the [project] dependency line above -- that line must stay `@main` or
-# nothing that also depends on foundation can co-install with us (#213).
-#
-# `override-dependencies` is the one uv mechanism with exactly the scope this needs: uv
-# applies it only to the project it is resolving as ROOT -- CI's `uv sync` with
-# working-directory modules/pipeline-runner -- and does NOT apply it when this package is
-# somebody else's dependency. So our CI resolves a fixed foundation commit while every
-# consumer resolves plain `@main`.
-#
-# `[tool.uv.sources]` with a `rev` was measured NOT to work here: uv reads a git
-# dependency's sources out of its checked-out pyproject.toml, so a `rev` there
-# reintroduces the exact conflict for every consumer. This is DIFFERENT from
-# the `branch = "main"` sources-redirect adopted above for the *published*
-# line: that one deliberately still floats (matches every other `@main`
-# consumer's ref), it just changed SHAPE, not ref. Only a fixed `rev`/SHA in
-# `[tool.uv.sources]` was ever the measured-broken case.
-# A `constraint-dependencies` entry does not work either -- a git URL in a constraint is
-# itself a second conflicting URL.
-#
-# BUMP: change the SHA below, then `uv run pytest -q` in this directory. Nothing about a
-# bump reaches installed users; see compat.py's module docstring.
-override-dependencies = [
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@4490bf5f3cf9e5a7829365e84c318a7fd9db7e3d",
-]
 
 [tool.uv.sources]
-# WAVE 6 (feat/agent-always-installed): matches microsoft/amplifier-agent's own
-# `[tool.uv.sources]` declaration shape for the exact same package+ref -- see
-# the long comment on the `amplifier-foundation` dependency line above for why
-# the shape (not just the ref) has to match for co-resolution. Still floats on
-# `main` deliberately (same "published requirement must float" reasoning).
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "21ad50fa40f7acff913cbf6615228ac359f7dedd" }
 amplifier-module-loop-pipeline = { path = "../loop-pipeline" }
 amplifier-module-remote-source = { path = "../remote-source" }
 
 [tool.hatch.build.targets.wheel]
-packages = [
-    "amplifier_module_pipeline_runner",
-]
+packages = ["amplifier_module_pipeline_runner"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [dependency-groups]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=1.0.0",
-]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=1.0.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
-# issue #338 fix: default_worker.py now imports
-# unified_llm.client.detect_configured_providers (single source of truth for
-# provider-env-key detection, shared with runner._bootstrap_direct_provider).
-# This module's own dependency edge to amplifier-unified-llm-client still
-# resolves via loop-pipeline's published git+https source (unaffected -- see
-# that dependency's own comment), so a test run against a not-yet-published
-# unified-llm-client change needs the LOCAL sibling checked out first, same
-# as modules/loop-agent/pyproject.toml's own established `pythonpath`
-# convention for the exact same cross-module-in-one-PR situation.
 pythonpath = ["../loop-pipeline", "../unified-llm-client"]

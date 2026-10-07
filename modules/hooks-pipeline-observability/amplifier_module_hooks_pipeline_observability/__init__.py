@@ -39,6 +39,9 @@ _PIPELINE_EVENTS = [
     "pipeline:subgraph_start",
     "pipeline:subgraph_complete",
     "provider:response",
+    "amplifier-agent:turn_started",
+    "amplifier-agent:usage",
+    "amplifier-agent:terminal",
     "model:resolved",
 ]
 
@@ -62,6 +65,9 @@ _AGGREGATOR_HANDLER_MAP: dict[str, str] = {
     "pipeline:stage_retrying": "handle_stage_retrying",
     "pipeline:stage_failed": "handle_stage_failed",
     "provider:response": "handle_provider_response",
+    "amplifier-agent:turn_started": "handle_public_turn_event",
+    "amplifier-agent:usage": "handle_public_turn_event",
+    "amplifier-agent:terminal": "handle_public_turn_event",
     "model:resolved": "handle_model_resolved",
 }
 

@@ -3,7 +3,7 @@ bundle:
   version: 0.1.0
   description: >
     OPT-IN engine partial -- wires an example pipeline child agent whose
-    worker is microsoft/amplifier-agent's own Engine (via the
+    worker uses microsoft/amplifier-agent's public Python binding (via the
     loop-amplifier-agent orchestrator adapter) instead of this ecosystem's
     native loop-agent.
 
@@ -27,7 +27,7 @@ bundle:
     partial is a second, opt-in option, not a replacement.
 
 # Example child agent -- one pipeline node worker backed by
-# microsoft/amplifier-agent's Engine instead of loop-agent.
+# microsoft/amplifier-agent's public binding instead of loop-agent.
 #
 # Inline session.orchestrator is REQUIRED here (not optional polish): the
 # spawn capability merges an agent's `session:` key onto the parent config,
@@ -49,7 +49,7 @@ bundle:
 agents:
   dot-runner-agent-amplifier-agent:
     description: >
-      Pipeline node worker backed by microsoft/amplifier-agent's own Engine
+      Pipeline node worker backed by microsoft/amplifier-agent's public binding
       (its own bundle, its own tools, its own provider mounting) rather than
       loop-agent. Useful for nodes that specifically want amplifier-agent's
       tool roster / skills / sub-delegation instead of this ecosystem's
@@ -59,15 +59,8 @@ agents:
         module: loop-amplifier-agent
         source: git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-amplifier-agent
         config:
-          # Forwarded, best-effort, into amplifier-agent's own Engine boot.
-          # See amplifier_module_loop_amplifier_agent's module docstring
-          # (`_run_turn`) for exactly where each key lands:
-          #   llm_provider      -> Engine provider injection (inject_provider)
-          #   reasoning_effort  -> same inject_provider call, effort_override
-          #   max_turns         -> best-effort forward into the session
-          #                        orchestrator's own config (loop-streaming
-          #                        by default)
-          #   user_instructions -> appended to the turn prompt (Layer-5)
+          # Public AgentOptions selection; set both provider and matching model.
+          # Positive max_turns requires worker=coding-agent instead.
           llm_provider: anthropic
+          llm_model: claude-sonnet-5-5
           reasoning_effort: medium
-          max_turns: 8
