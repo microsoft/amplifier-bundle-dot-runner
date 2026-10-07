@@ -1040,7 +1040,7 @@ class TestNodeCompleteIdentity:
                             "generic session_id in a completion-emitter payload"
                         )
 
-        assert completion_calls == 9
+        assert completion_calls == 10
 
     @pytest.mark.asyncio
     async def test_timeout_event_omits_session_id(self, tmp_path):

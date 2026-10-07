@@ -982,6 +982,37 @@ class PipelineEngine:
                             node_duration_ms = (
                                 time.monotonic() - node_start_time
                             ) * 1000
+                            if (
+                                outcome is not None
+                                and outcome.failure_reason
+                                == "node_cancellation_unconfirmed"
+                            ):
+                                if fuse_is_binding:
+                                    outcome.failure_reason = (
+                                        "max_pipeline_duration_exceeded"
+                                    )
+                                    outcome.notes = (
+                                        f"Pipeline exceeded max duration of "
+                                        f"{self.graph.max_pipeline_duration}ms. {outcome.notes}"
+                                    )
+                                self._write_node_status(
+                                    current_node.id, outcome, node_duration_ms
+                                )
+                                await self._emit(
+                                    PIPELINE_NODE_COMPLETE,
+                                    {
+                                        "node_id": current_node.id,
+                                        "status": "fuse_exceeded"
+                                        if fuse_is_binding
+                                        else "fail",
+                                        "duration_ms": node_duration_ms,
+                                        "notes": outcome.notes,
+                                        "failure_reason": outcome.failure_reason,
+                                        "execution_index": execution_index,
+                                    },
+                                )
+                                await self._emit_complete(outcome, pipeline_start_time)
+                                return outcome
                             if fuse_is_binding:
                                 return await self._terminate_fuse_mid_node(
                                     node_id=current_node.id,
@@ -2108,12 +2139,6 @@ class PipelineEngine:
 
     # -- Node-granularity max_pipeline_duration enforcement (attractor-674) -
 
-    # Bounded grace window for cancellation cleanup after the fuse cancels a
-    # node mid-execution. task.cancel() is never revoked by this timing out
-    # -- the cancelled task is left to keep unwinding (subprocess teardown,
-    # ``finally`` blocks, context-manager ``__aexit__``) on its own -- this
-    # constant only bounds how long the ENGINE's own forward progress waits
-    # on that unwind before moving on to honest bookkeeping and termination.
     _FUSE_CANCEL_GRACE_S: float = 5.0
 
     async def _await_node_bounded(
@@ -2124,18 +2149,12 @@ class PipelineEngine:
     ) -> tuple[Outcome | None, bool]:
         """Await a node's handler execution bounded by ``timeout_s``.
 
-        Returns ``(outcome, timed_out)``: ``(outcome, False)`` on ordinary
-        completion, ``(None, True)`` if ``timeout_s`` elapsed first.
-
-        Unlike a bare ``asyncio.wait_for(coro, timeout_s)`` (whose own wait
-        for the cancelled task to finish unwinding is itself unbounded), this
-        wraps the coroutine in its own ``Task`` and shields it from
-        ``wait_for``'s cancellation on timeout so cancellation can be driven
-        explicitly: request it once (``task.cancel()``), then wait up to
-        ``_FUSE_CANCEL_GRACE_S`` for the unwind to actually finish before
-        giving up on the wait.  A handler exception raised before the
-        deadline (e.g. ``ChildDotResolutionError``) propagates through
-        unchanged -- only expiry is translated into ``(None, True)``.
+        Returns ``(outcome, False)`` on ordinary completion and
+        ``(None, True)`` when a timed-out handler finishes cancellation.
+        Unconfirmed cancellation instead returns a failed outcome with
+        ``timed_out=True``; the caller must terminate without advancing.
+        Waiting for cleanup must not send another cancellation that can
+        interrupt the handler's own descendant/process teardown.
         """
         task: asyncio.Task[Outcome] = asyncio.ensure_future(coro)
         try:
@@ -2143,9 +2162,34 @@ class PipelineEngine:
             return outcome, False
         except asyncio.TimeoutError:
             task.cancel()
+            completed, _ = await asyncio.wait({task}, timeout=self._FUSE_CANCEL_GRACE_S)
+            if not completed:
+                task.add_done_callback(
+                    lambda finished: (
+                        None if finished.cancelled() else finished.exception()
+                    )
+                )
+                return (
+                    Outcome(
+                        status=StageStatus.FAIL,
+                        notes=(
+                            f"Node timed out after {timeout_s}s; cancellation did not "
+                            f"finish within {self._FUSE_CANCEL_GRACE_S}s. "
+                            "Dependent work was not started; worker cleanup is unconfirmed."
+                        ),
+                        failure_reason="node_cancellation_unconfirmed",
+                    ),
+                    True,
+                )
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                await asyncio.wait_for(task, timeout=self._FUSE_CANCEL_GRACE_S)
+                task.result()
             return None, True
+        except asyncio.CancelledError:
+            task.cancel()
+            task.add_done_callback(
+                lambda finished: None if finished.cancelled() else finished.exception()
+            )
+            raise
 
     async def _terminate_fuse_mid_node(
         self,
