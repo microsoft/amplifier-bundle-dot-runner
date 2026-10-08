@@ -418,6 +418,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "amplifier-module-remote-source", directory = "modules/remote-source" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
 ]

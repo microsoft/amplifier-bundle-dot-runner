@@ -36,7 +36,7 @@ packages = ["amplifier_module_pipeline_runner"]
 allow-direct-references = true
 
 [dependency-groups]
-dev = ["pytest>=8.0.0", "pytest-asyncio>=1.0.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=1.0.0", "amplifier-module-remote-source"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

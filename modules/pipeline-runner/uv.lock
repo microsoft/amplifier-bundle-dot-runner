@@ -80,6 +80,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "amplifier-module-remote-source" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -93,6 +94,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "amplifier-module-remote-source", directory = "../remote-source" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
 ]
