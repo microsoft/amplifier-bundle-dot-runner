@@ -38,11 +38,14 @@ These write directories are not a sandbox for bash.
 
 ## Continuity and unsupported legacy controls
 
-Each invocation creates a fresh ephemeral hosted session. Normal user/assistant
-pipeline history becomes real `ConversationMessage`/`TextPart` records in order,
-passed as first-turn history. Tool-call, malformed, or other-role history fails
-clearly. `thread_key` belongs to outer transcript bookkeeping; it is never a
-reusable hosted session ID.
+Each invocation creates a fresh ephemeral hosted session. Public
+system/developer/user/assistant text history becomes fresh
+`ConversationMessage`/`TextPart` records in order, passed as first-turn history.
+Only context-simple's bookkeeping `metadata._seq` and `metadata.timestamp` are
+discarded; semantic metadata, tool-call structures and non-text parts fail
+clearly. Translation never edits the context or imports its dynamic bundle
+prompt factory. `thread_key` belongs to outer transcript bookkeeping; it is never
+a reusable hosted session ID.
 
 - `max_turns` absent, `None`, or integer `0` means unrestricted. Positive caps
   (and other values) are refused before effects: use `worker=coding-agent`.
@@ -57,10 +60,18 @@ reusable hosted session ID.
 Terminal success returns concatenated text, including legitimate empty text.
 Failure/rejected turns emit incomplete completion and raise the full public
 `AgentError`, never partial success. Missing terminal means incomplete.
-Cancellation emits cancelled completion, requests `turn.cancel()`, drains the
-same shielded consumer through terminal, closes handles, and re-raises cancellation.
+Cancellation before completion dispatch emits cancelled completion, requests
+`turn.cancel()`, drains the same shielded consumer through terminal, closes
+handles, and re-raises cancellation.
 Cancellation drain (30s) and each close/cancel (10s) are bounded. A timed-out
 cleanup reports uncertainty; a cleanup failure never replaces a primary error.
+
+Completion linearizes when the adapter enters `hooks.emit` with its frozen
+envelope, not when delivery is scheduled or when all observers finish. Pending
+caller cancellation is checked at that boundary, even before its exception
+handler runs. Cancellation after dispatch still propagates, with a note naming
+the committed status; it cannot retract observer-owned copies or issue a second
+completion. Dispatch is not an acknowledgment that every observer received it.
 
 Completion carries actual `metadata.worker_session_id` for the parent log join.
 `turn_count=None`: one public turn does not expose internal model-call count.

@@ -255,10 +255,14 @@ async def test_operation_cancelled_ack_still_drains_and_closes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cancellation_during_completion_delivery_keeps_cancelled_envelope(
+async def test_cancellation_after_completion_dispatch_preserves_committed_envelope(
     monkeypatch,
 ):
-    """Acceptance red-proof: a late cancellation must not publish success."""
+    """An observer-owned copy cannot be retracted; cancellation still propagates.
+
+    The original red-proof is retained in lane evidence. Pre-dispatch lost
+    cancellation has separate red-first tests in test_completion_linearization.
+    """
     handles = Handles()
     orch, _, hooks = install(monkeypatch, handles)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -279,9 +283,12 @@ async def test_cancellation_during_completion_delivery_keeps_cancelled_envelope(
     task.cancel()
     await asyncio.sleep(0)
     release.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError) as caught:
         await task
-    assert hooks.completion["status"] == "cancelled"
+    assert hooks.completion["status"] == "success"
+    assert any("committed status=success" in note for note in caught.value.__notes__)
+    assert len([name for name, _ in hooks.events if name == "orchestrator:complete"]) == 1
+    assert handles.closes == ["session", "agent"]
 
 
 @pytest.mark.asyncio

@@ -75,9 +75,14 @@ dev = [
     "amplifier-module-loop-pipeline",
     "amplifier-worker-parity-kit",
     "amplifier-module-hooks-pipeline-observability",
+    # Real inherited-history discriminator, not a context dictionary double.
+    "amplifier-module-context-simple @ git+https://github.com/microsoft/amplifier-module-context-simple@c7ec55db96888200ba619adedc857278daf787c5",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "strict"
+# Same-repo public spawn/status consumers in the mounted-boundary regression.
+# Foundation already arrives through the binding; no duplicate dependency solve.
+pythonpath = ["../pipeline-runner", "../tool-pipeline-status"]

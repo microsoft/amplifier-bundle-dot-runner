@@ -35,7 +35,7 @@ async def test_two_node_graph_actual_selection_recall_and_external_status(tmp_pa
     work.mkdir()
     models = [
         os.getenv("AA_LIVE_MODEL_A", "claude-sonnet-5-5"),
-        os.getenv("AA_LIVE_MODEL_B", "claude-haiku-4-5"),
+        os.getenv("AA_LIVE_MODEL_B", "claude-haiku-4-5-20251001"),
     ]
     assert models[0] != models[1]
     assert not logs.resolve().is_relative_to(work.resolve())

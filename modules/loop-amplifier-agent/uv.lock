@@ -327,6 +327,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "amplifier-core" },
+    { name = "amplifier-module-context-simple" },
     { name = "amplifier-module-hooks-pipeline-observability" },
     { name = "amplifier-module-loop-pipeline" },
     { name = "amplifier-worker-parity-kit" },
@@ -343,6 +344,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "amplifier-core" },
+    { name = "amplifier-module-context-simple", git = "https://github.com/microsoft/amplifier-module-context-simple?rev=c7ec55db96888200ba619adedc857278daf787c5" },
     { name = "amplifier-module-hooks-pipeline-observability", editable = "../hooks-pipeline-observability" },
     { name = "amplifier-module-loop-pipeline", editable = "../loop-pipeline" },
     { name = "amplifier-worker-parity-kit", editable = "../worker-parity-kit" },

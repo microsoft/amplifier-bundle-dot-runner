@@ -237,19 +237,39 @@ class AmplifierAgentOrchestrator:
         messages = await context.get_messages()
         if not isinstance(messages, list):
             raise ValueError(
-                "Pipeline history must be a list of user/assistant messages"
+                "Pipeline history must be a list of public text messages"
             )
         history = []
         for index, message in enumerate(messages):
+            metadata = message.get("metadata") if isinstance(message, dict) else None
             if (
                 not isinstance(message, dict)
-                or message.get("role") not in ("user", "assistant")
-                or set(message) - {"role", "content"}
+                or message.get("role") not in ("system", "developer", "user", "assistant")
+                or set(message) - {"role", "content", "metadata"}
+                or (
+                    metadata is not None
+                    and (
+                        not isinstance(metadata, dict)
+                        or set(metadata) - {"_seq", "timestamp"}
+                        or (
+                            "_seq" in metadata
+                            and (
+                                type(metadata["_seq"]) is not int
+                                or metadata["_seq"] < 0
+                            )
+                        )
+                        or (
+                            "timestamp" in metadata
+                            and not isinstance(metadata["timestamp"], str)
+                        )
+                    )
+                )
             ):
                 raise ValueError(
                     f"Unsupported pipeline history at index {index}: "
-                    "only normal user/assistant text messages are supported; "
-                    "tool-call history requires worker=coding-agent."
+                    "only public text roles and context bookkeeping metadata "
+                    "(_seq/timestamp) are supported; semantic/tool history "
+                    "requires worker=coding-agent."
                 )
             content = message.get("content")
             if isinstance(content, str):
@@ -317,6 +337,9 @@ class AmplifierAgentOrchestrator:
         session_id = None
         status = "incomplete"
         primary: BaseException | None = None
+        caller = asyncio.current_task()
+        initial_cancels = caller.cancelling() if caller is not None else 0
+        committed_status: str | None = None
         try:
             self._validate_controls()
             history = await self._history_from_context(context)
@@ -390,6 +413,7 @@ class AmplifierAgentOrchestrator:
             raise
         finally:
             cleanup_errors = []
+            cancellation_drained = False
 
             def cleanup_failure(operation: str, exc: BaseException) -> None:
                 # An operation's cancellation is cleanup uncertainty, not
@@ -403,9 +427,10 @@ class AmplifierAgentOrchestrator:
                 cleanup_errors.append(exc)
                 logger.warning("%s failed", operation, exc_info=True)
 
-            async def finalize() -> None:
-                nonlocal status
-                if status == "cancelled" and turn is not None:
+            async def cancel_and_drain() -> None:
+                nonlocal cancellation_drained
+                if not cancellation_drained and turn is not None:
+                    cancellation_drained = True
                     try:
                         await _bounded(turn.cancel(), CLEANUP_TIMEOUT, "turn.cancel")
                     except (Exception, asyncio.CancelledError) as exc:
@@ -421,6 +446,30 @@ class AmplifierAgentOrchestrator:
                             )
                         except (Exception, asyncio.CancelledError) as exc:
                             cleanup_failure("cancelled event drain", exc)
+
+            def observe_pending_cancellation() -> None:
+                nonlocal status, primary
+                if caller is not None and caller.cancelling() > initial_cancels:
+                    status = "cancelled"
+                    if primary is None:
+                        primary = asyncio.CancelledError()
+
+            async def publish_completion() -> None:
+                nonlocal committed_status
+                # The completion linearizes at entry into hooks.emit, not when
+                # this coroutine is scheduled or when opaque observers finish.
+                # Check pending requests even if the caller's except has not run.
+                observe_pending_cancellation()
+                if status == "cancelled":
+                    await cancel_and_drain()
+                # No suspension between freezing status and entering emit.
+                committed_status = status
+                await self._emit_completion(hooks, committed_status, session_id)
+
+            async def finalize() -> None:
+                nonlocal status
+                if status == "cancelled":
+                    await cancel_and_drain()
                 for name, handle in (
                     ("session.close", session),
                     ("agent.close", agent),
@@ -432,11 +481,11 @@ class AmplifierAgentOrchestrator:
                             cleanup_failure(name, exc)
                 if consumer is not None and not consumer.done():
                     consumer.cancel()
-                if cleanup_errors and primary is None:
+                if cleanup_errors and primary is None and status != "cancelled":
                     status = "incomplete"
                 try:
                     await _bounded(
-                        self._emit_completion(hooks, status, session_id),
+                        publish_completion(),
                         CLEANUP_TIMEOUT,
                         "completion delivery",
                     )
@@ -451,10 +500,16 @@ class AmplifierAgentOrchestrator:
                 try:
                     await asyncio.shield(finalizer)
                 except asyncio.CancelledError as exc:
-                    status = "cancelled"
+                    if committed_status is None:
+                        status = "cancelled"
                     if primary is None:
                         primary = exc
             finalizer.result()
+            if isinstance(primary, asyncio.CancelledError) and committed_status != "cancelled":
+                primary.add_note(
+                    "Cancellation arrived after completion dispatch began; "
+                    f"committed status={committed_status}. Delivery is not retractable."
+                )
             if cleanup_errors:
                 if primary is None:
                     raise cleanup_errors[0]
