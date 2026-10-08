@@ -1,6 +1,11 @@
+from datetime import datetime, timezone
+
 import pytest
 from amplifier_module_hooks_pipeline_observability.aggregator import StateAggregator
-from amplifier_module_hooks_pipeline_observability.models import PipelineRunState
+from amplifier_module_hooks_pipeline_observability.models import (
+    NodeRun,
+    PipelineRunState,
+)
 from amplifier_module_hooks_pipeline_observability.status_bar import (
     StatusBarContributor,
 )
@@ -86,3 +91,20 @@ def test_legacy_serialization_and_status_remain_unchanged():
     assert rendered["total_llm_calls"] == 2
     assert rendered["total_tokens_in"] == 15
     assert "legacy_provider_metrics" not in rendered
+
+
+def test_public_full_status_labels_nested_node_counters_as_legacy_only():
+    state = PipelineRunState("mixed", "", "")
+    state.node_runs = {
+        "public": [NodeRun("success", 1, datetime.now(timezone.utc))],
+        "legacy": [NodeRun("success", 1, datetime.now(timezone.utc), llm_calls=2)],
+    }
+    legacy_render = state.to_dict()
+    assert "metrics_scope" not in legacy_render["node_runs"]["public"][0]
+    state.public_turn_usage["session/turn"] = {"entries": [{"tokens_in": 20}]}
+    rendered = state.to_dict()
+    for runs in rendered["node_runs"].values():
+        assert runs[0]["metrics_scope"] == "legacy_provider_response_only"
+    assert rendered["node_runs"]["public"][0]["llm_calls"] == 0
+    assert rendered["node_runs"]["legacy"][0]["llm_calls"] == 2
+    assert state.node_runs["public"][0].llm_calls == 0

@@ -193,6 +193,9 @@ class PipelineRunState:
             )
             result["legacy_provider_metrics"] = {key: result[key] for key in keys}
             result.update(dict.fromkeys(keys))
+            for runs in result["node_runs"].values():
+                for run in runs:
+                    run["metrics_scope"] = "legacy_provider_response_only"
         return result
 
 
