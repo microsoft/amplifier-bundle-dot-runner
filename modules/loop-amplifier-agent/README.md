@@ -66,6 +66,23 @@ handles, and re-raises cancellation.
 Cancellation drain (30s) and each close/cancel (10s) are bounded. A timed-out
 cleanup reports uncertainty; a cleanup failure never replaces a primary error.
 
+Both public handles are attempted in order: session, then agent, even when
+session close fails. A successful terminal is not sufficient to return its
+completed reply: an immediate close failure or close timeout emits incomplete
+completion and raises the first cleanup error instead. With an existing primary
+error, cleanup failures are attached as notes without replacing that error.
+Worker side effects and a worker-written `status.json` may already exist; neither
+an incomplete completion nor a raised error makes retry safe.
+
+An unexpected exception escaping a persistence handler stops the event consumer,
+emits incomplete completion and propagates unchanged. Unlike caller cancellation,
+this path relies on public `session.close()`/`agent.close()` rather than an explicit
+adapter `turn.cancel()`/consumer drain. The public lifecycle contract says close
+is idempotent and requests cancellation/drains paired events for an active turn.
+The focused tests model that contract with handle doubles and real public records;
+they do not prove real-provider drain or absence of orphaned work. A close deadline
+can expire before underlying cleanup settles; its effects remain unknown.
+
 Completion linearizes when the adapter enters `hooks.emit` with its frozen
 envelope, not when delivery is scheduled or when all observers finish. Pending
 caller cancellation is checked at that boundary, even before its exception
@@ -84,6 +101,15 @@ The shipped `SessionEventPersister.make_handler()` writes curated
 redaction. Curated types: `turn_started`, `tool_call`, `tool_result`,
 `approval_request`, `approval_decision`, `progress`, `usage`, `terminal`.
 Output/reasoning deltas and reasoning-final text are intentionally excluded.
+
+Ordinary write failures are different from an escaping handler error:
+`SessionEventPersister.make_handler()` catches ordinary `Exception` from its
+write seam and logs at debug level. Event observers and terminal processing
+continue, and a successful reply is allowed if cleanup succeeds. The failed
+record is not evidence of a successful write; the retained stream can have gaps.
+Separately, an ordinary event-observer exception is caught by the adapter and
+logged at warning level after persistence. This does not depend on the
+persister's write-failure catch and does not guarantee every observer saw the event.
 
 Each record retains `contract_version=turn-events/1`, actual session/turn IDs,
 sequence, type, optional `at`, and structurally serialized payload. Errors retain
