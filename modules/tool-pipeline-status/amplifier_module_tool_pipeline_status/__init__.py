@@ -38,6 +38,9 @@ _METRICS_KEYS = frozenset(
         "total_tokens_out",
         "total_tokens_cached",
         "total_tokens_reasoning",
+        "public_turn_usage",
+        "public_turn_selections",
+        "legacy_provider_metrics",
         "nodes_completed",
         "nodes_total",
     }

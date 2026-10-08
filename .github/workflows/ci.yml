@@ -141,14 +141,39 @@ jobs:
         run: |
           uv venv .venv-root-install
           uv pip install --python .venv-root-install \
-            "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main"
+            "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@21ad50fa40f7acff913cbf6615228ac359f7dedd"
 
       - name: Install root package without uv source mappings
         run: |
-          uv pip install --python .venv-root-install -e . --no-sources
+          # Only redirect same-repo packages to this candidate. Never override
+          # binding/engine/Foundation sources: their conflicts must remain visible.
+          python - <<'PY'
+          from pathlib import Path
+          import tomllib
+          lines = []
+          for path in Path("modules").glob("*/pyproject.toml"):
+              name = tomllib.loads(path.read_text())["project"]["name"]
+              lines.append(f"{name} @ {path.parent.resolve().as_uri()}")
+          Path("candidate-overrides.txt").write_text("\n".join(lines) + "\n")
+          PY
+          uv --no-config pip install --python .venv-root-install -e . \
+            --no-sources --overrides candidate-overrides.txt
 
       - name: Verify installed console entry point
         run: .venv-root-install/bin/dot-runner --help
+
+      - name: Mandatory public binding smoke
+        run: |
+          .venv-root-install/bin/python - <<'PY'
+          import asyncio
+          from amplifier_agent import AgentOptions, create_agent
+          async def smoke():
+              agent = await create_agent(AgentOptions(
+                  provider="ollama", model="smoke-model",
+                  environment={"OLLAMA_HOST": "http://127.0.0.1:11434"}))
+              await agent.close()
+          asyncio.run(smoke())
+          PY
 
   conformance-matrix:
     # Separate, distinctly-named job so a failure here reads as "the conformance

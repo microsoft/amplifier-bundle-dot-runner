@@ -159,6 +159,11 @@ class PipelineRunState:
     total_tokens_out: int = 0
     total_tokens_cached: int = 0
     total_tokens_reasoning: int = 0
+    # Public turn-events/1 snapshots are a separate accounting domain, not
+    # synthetic provider calls. Unknown counters/cost remain None. Currency
+    # values are decimal strings and every actual model entry is retained.
+    public_turn_usage: dict[str, dict[str, Any] | None] = field(default_factory=dict)
+    public_turn_selections: dict[str, dict[str, Any]] = field(default_factory=dict)
     nodes_completed: int = 0
     nodes_total: int = 0
 
@@ -174,7 +179,24 @@ class PipelineRunState:
         Converts datetime objects to ISO format strings.
         Converts dataclass instances to plain dicts recursively.
         """
-        return _serialize(self)
+        result = _serialize(self)
+        if self.public_turn_usage:
+            # The raw counters above cover legacy provider:response only.
+            # They are not whole-pipeline totals once public turns participate;
+            # expose that domain explicitly and never label absent calls zero.
+            keys = (
+                "total_llm_calls",
+                "total_tokens_in",
+                "total_tokens_out",
+                "total_tokens_cached",
+                "total_tokens_reasoning",
+            )
+            result["legacy_provider_metrics"] = {key: result[key] for key in keys}
+            result.update(dict.fromkeys(keys))
+            for runs in result["node_runs"].values():
+                for run in runs:
+                    run["metrics_scope"] = "legacy_provider_response_only"
+        return result
 
 
 def _serialize(obj: Any) -> Any:

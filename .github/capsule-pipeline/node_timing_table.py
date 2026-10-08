@@ -96,6 +96,7 @@ class SessionStats:
         self.longest_label: str | None = None
         self.unparseable_lines = 0
         self.found = False
+        self.public_turns = False
 
     def _close(self, open_ts: datetime | None, end_ts: datetime | None, label: str):
         if open_ts is None or end_ts is None:
@@ -113,6 +114,7 @@ class SessionStats:
         open_llm: datetime | None = None
         open_tool: datetime | None = None
         open_tool_name = "tool"
+        public_tools: dict[tuple[str, str, str], tuple[datetime | None, str]] = {}
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -135,6 +137,31 @@ class SessionStats:
             event = record.get("event")
             ts = _parse_ts(record.get("timestamp"))
             data = record.get("data") if isinstance(record.get("data"), dict) else {}
+            if data.get("contract_version") == "turn-events/1":
+                self.public_turns = True
+                ts = _parse_ts(data.get("at")) or ts
+                payload = data.get("payload") or {}
+                if event == "amplifier-agent:tool_call":
+                    call = payload.get("call") or {}
+                    key = (
+                        data.get("session_id"),
+                        data.get("turn_id"),
+                        call.get("call_id"),
+                    )
+                    self.tool_calls += 1
+                    public_tools[key] = (ts, str(call.get("name") or "tool"))
+                elif event == "amplifier-agent:tool_result":
+                    resolution = payload.get("resolution") or {}
+                    key = (
+                        data.get("session_id"),
+                        data.get("turn_id"),
+                        resolution.get("call_id"),
+                    )
+                    opened = public_tools.pop(key, None)
+                    if opened:
+                        self._close(opened[0], ts, f"tool ({opened[1]})")
+                # Whole-turn and cumulative usage are NOT LLM-call spans.
+                continue
             if event == _LLM_START:
                 self.llm_calls += 1
                 open_llm = ts
@@ -234,8 +261,12 @@ def build_report(logs_root: Path) -> tuple[str, dict]:
             f"No `trace.jsonl` under `{logs_root}` -- the pipeline did not get "
             "far enough to write one. Nothing to report; this is not itself a "
             "failure.\n",
-            {"iterations_completed": 0, "mean_iteration_seconds": None,
-             "total_seconds": 0.0, "nodes": 0},
+            {
+                "iterations_completed": 0,
+                "mean_iteration_seconds": None,
+                "total_seconds": 0.0,
+                "nodes": 0,
+            },
         )
 
     rows, skipped_trace = _read_trace(trace_path)
@@ -257,7 +288,11 @@ def build_report(logs_root: Path) -> tuple[str, dict]:
         iteration = record.get("iteration")
         iteration_i = iteration if isinstance(iteration, int) else 0
         duration_ms = record.get("duration_ms")
-        seconds = float(duration_ms) / 1000.0 if isinstance(duration_ms, (int, float)) else 0.0
+        seconds = (
+            float(duration_ms) / 1000.0
+            if isinstance(duration_ms, (int, float))
+            else 0.0
+        )
         status = str(record.get("status", "?"))
 
         total_seconds += seconds
@@ -266,7 +301,7 @@ def build_report(logs_root: Path) -> tuple[str, dict]:
         stats = _stats_for(logs_root, node_id, iteration_i)
         unparseable_total += stats.unparseable_lines
         if stats.found:
-            llm = str(stats.llm_calls)
+            llm = "-" if stats.public_turns else str(stats.llm_calls)
             tools = str(stats.tool_calls)
             longest = (
                 f"{_fmt_duration(stats.longest_seconds)} {stats.longest_label}"

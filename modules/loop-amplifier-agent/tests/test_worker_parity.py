@@ -1,183 +1,44 @@
-"""worker-parity-kit wiring for loop-amplifier-agent.
+"""Unchanged shared MUSTs; absent legacy TARGETs have public replacements."""
 
-See modules/worker-parity-kit/README.md ("Why this exists") for the three
-incidents this kit's suite guards against. This file adds ONE thing: a
-``WorkerHarness`` (``worker_parity_kit.protocol``) that drives THIS
-module's REAL ``AmplifierAgentOrchestrator.execute()`` hermetically, reusing
-the exact fake-Engine ``turn_handler`` seam ``tests/test_orchestrator.py``
-already depends on (``tests/_fakes.py``'s ``make_fake_deps`` /
-``FakeFactoryContextManager`` / ``CapturingHooks``) -- no new fakes, no
-network, no credentials.
-
-``from worker_parity_kit.suite import *`` below is what actually collects
-the 3 MUST tests + the TARGET-tier parametrized test against the
-``worker_harness`` fixture; nothing in this file re-implements any of them.
-"""
-
-from __future__ import annotations
-
-import logging
-from typing import Any
-
-import amplifier_module_loop_amplifier_agent as laa
+import amplifier_module_loop_amplifier_agent as adapter
 import pytest
 from worker_parity_kit.protocol import TurnResult
-from worker_parity_kit.suite import *
+from worker_parity_kit.suite import *  # noqa: F403
 
-from ._fakes import (
-    CapturingHooks,
-    FakeContextManager,
-    FakeFactoryContextManager,
-    make_fake_deps,
-)
-
-#: README "Capability gaps vs the vendored CLI handler (v2)" +
-#: AmplifierAgentOrchestrator's own class docstring: providers/tools are
-#: accepted for Orchestrator protocol conformance, but amplifier-agent boots
-#: its OWN bundle with its OWN provider mounting -- the PARENT session's
-#: mounted tools are deliberately never used to drive the child turn. The
-#: only TARGET capability this adapter openly does not honor.
-#:
-#: TELEMETRY ROW (2026-09-07, node-matrix run 20260907T043835Z). Read
-#: `telemetry_session_id` as "this adapter does not MISHANDLE the capability",
-#: never as "the telemetry session id works" -- exactly as loop-agent's own
-#: harness says of its identical row, and for a reason this worker has now
-#: proven the hard way. The kit's probe config for that row is `{}` (see
-#: `worker_parity_kit.suite._PROBE_CONFIG`), so the TARGET bar is a no-crash /
-#: not-silently-dropped smoke check with nothing distinguishing to exercise.
-#: It stayed green through a total, silent, end-to-end break: the hosted
-#: amplifier-agent session -- a SECOND coordinator this adapter builds, where
-#: every provider and tool event actually lives -- persisted NOTHING into the
-#: run's evidence, and `status.json` named the adapter session instead, whose
-#: stream held three lifecycle brackets. Two `amplifier-agent` rows PASSed
-#: their gate while reporting no calls, no tokens and no cost.
-#:
-#: The row is NOT declared absent (nothing about this adapter's surface fails
-#: the kit's bar, then or now) and the kit is not the place to fix that: the
-#: break is a property of the ADAPTER-to-pipeline seam, invisible to a
-#: worker-agnostic harness that never spawns a real hosted session. The real
-#: coverage lives where the break was --
-#: `tests/test_child_session_telemetry.py` (this module) and
-#: `modules/loop-pipeline/tests/test_worker_session_observability.py`
-#: section 6.
-DECLARED_ABSENCES = frozenset({"tools_passthrough"})
-
-#: One LLM call as the hosted runtime really emits it (same shape as
-#: `tests/test_child_session_telemetry.py`'s `_HOSTED_TURN_EVENTS`):
-#: `provider:request` from loop-streaming -- which imports PROVIDER_REQUEST
-#: and PROVIDER_ERROR and *not* PROVIDER_RESPONSE -- and `llm:response` from
-#: the provider module itself, carrying the usage block the bridge forwards.
-#:
-#: The kit's `telemetry_provider_identity` probe declares
-#: `llm_provider="anthropic"`, so the module reporting itself as `anthropic`
-#: here is the AGREEING case: mount address and served family are the same,
-#: hence `provider_instance` is None. The DISAGREEING case -- the misroute
-#: signal -- is pinned in `test_child_session_telemetry.py`, which can drive
-#: a served-by-someone-else turn without fighting the shared probe config.
-_HOSTED_TURN_EVENTS: list[tuple[str, dict[str, Any]]] = [
-    ("provider:request", {"provider": "anthropic", "iteration": 0}),
-    (
-        "llm:response",
-        {
-            "provider": "anthropic",
-            "model": "claude-sonnet-5",
-            "status": "ok",
-            "usage": {
-                "input_tokens": 10,
-                "output_tokens": 5,
-                "cost_usd": "0.001",
-            },
-        },
-    ),
-]
+from ._fakes import CapturingHooks, FakeContextManager, Handles, coordinator
 
 
-class _ListWarningHandler(logging.Handler):
-    """Captures this module's own WARNING-level log records for a turn."""
-
-    def __init__(self, records: list[str]) -> None:
-        super().__init__(level=logging.WARNING)
-        self._records = records
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self._records.append(record.getMessage())
-
-
-class LoopAmplifierAgentHarness:
-    """WorkerHarness wiring the REAL orchestrator to worker-parity-kit's
-    shared suite via this module's existing hermetic fakes."""
-
-    declared_absences: frozenset[str] = DECLARED_ABSENCES
+class Harness:
+    declared_absences = frozenset(
+        {"tools_passthrough", "max_turns", "telemetry_provider_identity"}
+    )
 
     async def run_turn(
-        self,
-        prompt: str,
-        seeded_context_messages: list[dict[str, Any]] | None = None,
-        orchestrator_config: dict[str, Any] | None = None,
-    ) -> TurnResult:
-        hosted_context = FakeFactoryContextManager()
-        deps, captured = make_fake_deps(
-            reply_text="ok",
-            context_module=hosted_context,
-            # One LLM call, in the shape the hosted runtime really emits it:
-            # loop-streaming's own `provider:request`, and the provider
-            # MODULE's `llm:response` carrying the usage block. The bridge
-            # under test translates the latter into the canonical
-            # `provider:response`, so this is what makes the turn's provider
-            # events observable at all -- without it the
-            # `telemetry_provider_identity` row would have nothing to read
-            # and would (correctly) fail.
-            emit_events=_HOSTED_TURN_EVENTS,
-        )
-
-        original_load_deps = laa._load_dependencies
-        laa._load_dependencies = lambda: (
-            deps
-        )  # same seam test_orchestrator.py monkeypatches
-        warnings: list[str] = []
-        handler = _ListWarningHandler(warnings)
-        logger = logging.getLogger("amplifier_module_loop_amplifier_agent")
-        logger.addHandler(handler)
+        self, prompt, seeded_context_messages=None, orchestrator_config=None
+    ):
+        handles, hooks = Handles(), CapturingHooks()
+        old = adapter.create_agent
+        adapter.create_agent = handles.create_agent
         try:
-            orchestrator = laa.AmplifierAgentOrchestrator(
-                coordinator=object(), config=orchestrator_config or {}
+            orch = adapter.AmplifierAgentOrchestrator(
+                coordinator(), orchestrator_config or {}
             )
-            parent_context = FakeContextManager(seeded_context_messages)
-            hooks = CapturingHooks()
-            reply = await orchestrator.execute(prompt, parent_context, {}, {}, hooks)
+            reply = await orch.execute(
+                prompt, FakeContextManager(seeded_context_messages), {}, {}, hooks
+            )
         finally:
-            laa._load_dependencies = original_load_deps
-            logger.removeHandler(handler)
-
-        # Reconstruct "what reached the model boundary": the replayed
-        # history (support#497 -- captured by FakeSession.execute() reading
-        # the hosted context's get_messages_for_request()) plus the final
-        # prompt text the fake session actually saw (carries user_instructions
-        # only, per _build_prompt -- WAVE 4 retired the verdict nudge).
-        session = captured["session"]
-        sent: list[dict[str, Any]] = list(session.messages_sent_to_provider or [])
-        if session.prompt_seen is not None:
-            sent.append({"role": "user", "content": session.prompt_seen})
-
-        # The HOSTED session's own registry is where this worker's provider
-        # events live -- not the parent `hooks` the adapter was handed. That
-        # split is the exact defect `_attach_child_session_telemetry` closes,
-        # so reading them from the hosted coordinator is reading the real
-        # seam, not a shortcut.
-        hosted_events = captured["session"].coordinator.hooks.emitted
-        return TurnResult(
-            reply=reply,
-            messages_sent_to_provider=sent or None,
-            completion_envelope=hooks.completion,
-            warnings=warnings,
-            provider_events=[
-                {"event": name, **data}
-                for name, data in hosted_events
-                if name in ("provider:request", "provider:response")
-            ],
-        )
+            adapter.create_agent = old
+        messages = [
+            {
+                "role": message.role,
+                "content": "".join(part.text for part in message.content),
+            }
+            for message in handles.input.history or []
+        ]
+        messages.append({"role": "user", "content": handles.input.content[0].text})
+        return TurnResult(reply, messages, hooks.completion, [], provider_events=None)
 
 
 @pytest.fixture
-def worker_harness() -> LoopAmplifierAgentHarness:
-    return LoopAmplifierAgentHarness()
+def worker_harness():
+    return Harness()

@@ -81,18 +81,39 @@ class StatusBarContributor:
                 attempt_info = f" (attempt {attempt})" if attempt > 1 else ""
                 lines.append(f"Running: {state.current_node}{attempt_info}")
 
-        # Line 5: Token metrics (only if LLM calls happened)
+        # One metrics line: public snapshots and legacy counters stay separate.
+        metrics: list[str] = []
         if state.total_llm_calls > 0:
             cached_part = (
                 f", {state.total_tokens_cached} cached"
                 if state.total_tokens_cached
                 else ""
             )
-            lines.append(
-                f"Tokens: {state.total_tokens_in} in / "
+            label = "Legacy tokens" if state.public_turn_usage else "Tokens"
+            metrics.append(
+                f"{label}: {state.total_tokens_in} in / "
                 f"{state.total_tokens_out} out{cached_part} "
                 f"({state.total_llm_calls} calls)"
             )
+        if state.public_turn_usage:
+            entries: list[str] = []
+            for snapshot in state.public_turn_usage.values():
+                if snapshot is None:
+                    entries.append("unavailable")
+                else:
+                    for entry in snapshot.get("entries", []):
+                        tokens_in = entry.get("tokens_in")
+                        tokens_out = entry.get("tokens_out")
+                        entries.append(
+                            f"{entry.get('provider') or '?'}/{entry.get('model') or '?'} "
+                            f"{tokens_in if tokens_in is not None else '?'} in / "
+                            f"{tokens_out if tokens_out is not None else '?'} out"
+                        )
+            metrics.append(
+                f"Public usage: {', '.join(entries) or 'no entries'}; calls unavailable"
+            )
+        if metrics:
+            lines.append(" | ".join(metrics))
 
         # Line 6: Errors (only if any)
         if state.errors:

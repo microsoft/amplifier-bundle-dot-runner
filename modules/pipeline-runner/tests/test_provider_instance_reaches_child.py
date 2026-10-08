@@ -136,15 +136,13 @@ def test_the_nodes_model_reaches_the_instance(isolated_host: Path) -> None:
     )
 
 
-def test_the_preference_is_dropped_without_the_id_key(isolated_host: Path) -> None:
-    """RED-proof, run as a test rather than described in a commit message.
+def test_pinned_foundation_recognizes_instance_id_without_id(
+    isolated_host: Path,
+) -> None:
+    """The public engine's Foundation pin also indexes instance_id.
 
-    Strip ONLY the ``id`` key -- the exact pre-fix shape, where the instance
-    is still correctly mounted and still correctly routed -- and the same
-    preference silently vanishes.  Nothing raises; the run simply calls a
-    different model than the graph declares.  That is the failure mode this
-    key exists to remove, and it is why the assertion above is not merely a
-    restatement of the emitter.
+    The old negative-control assertion expected Foundation's historical bug.
+    Keep both keys in the emitter, but don't require that bug from a new pin.
     """
     providers = _providers_section()
     stripped = [{k: v for k, v in p.items() if k != "id"} for p in providers]
@@ -155,11 +153,7 @@ def test_the_preference_is_dropped_without_the_id_key(isolated_host: Path) -> No
     )
 
     entry = _entry(applied["providers"], "fakeinst")
-    assert entry["config"]["default_model"] == "gpt-fake-settings", (
-        "without the id key foundation must find no match at all -- if this "
-        "now passes the preference through, the RED half of this proof has "
-        "rotted and the test above proves nothing"
-    )
+    assert entry["config"]["default_model"] == "gpt-fake-node"
 
 
 def test_the_id_key_does_not_disturb_the_module_entries(isolated_host: Path) -> None:

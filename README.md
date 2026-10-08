@@ -1,5 +1,32 @@
 # amplifier-bundle-dot-runner
 
+## Public agent binding migration
+
+The mandatory root adapter now uses `amplifier_agent` public handles, not the
+private Engine/CLI integration described in historical sections below.
+Binding `main#subdirectory=packages/python` deliberately floats, with the
+`github-copilot` extra. Binding 0.22.0 pins engine v0.22.0, Core 2.0.1 and
+Foundation `21ad50fa40f7acff913cbf6615228ac359f7dedd`.
+
+The former Foundation-main policy conflicts with that engine SHA in an
+unoverridden consumer solve. Runner's published Foundation requirement/source
+now align to the engine SHA as a narrow consumer exception; the root override
+is removed. The historical shape-only fix below no longer governs this install.
+Consumers requiring Foundation main still need independent qualification.
+
+Canonical §§1.4/4.5 allow this backend replacement without altering graph
+traversal, String|Outcome or the worker-written status-file channel.
+Fresh ephemeral public sessions receive full-fidelity history as typed records.
+Set a matching provider **and** model. Positive `max_turns`, named roster
+injection, legacy workspace/host_config and caller tools are unsupported; use
+`coding-agent` for those controls.
+
+Curated `turn-events/1` telemetry has actual selections and cumulative snapshots,
+not internal call boundaries. Unknown remains unknown; terminal usage does not
+double-count. The timing table shows `-` for unavailable LLM-call counts.
+See [adapter README](modules/loop-amplifier-agent/README.md) for the current
+supported contract. Local green is not manager DTU/consumer acceptance.
+
 The engine that runs `.dot` pipelines: a DOT-graph-driven multi-stage AI
 workflow orchestrator, plus the CLI and provider client it depends on —
 packaged as a proper, composable **Amplifier bundle**.
@@ -35,7 +62,7 @@ docs) lives in the repos that consume this one.
 | `modules/unified-llm-client` | Provider-agnostic LLM client — a faithful implementation of the Attractor Unified LLM Client spec. |
 | `modules/remote-source` | Content-addressed `git+https://` fetcher (Layer A), used by `loop-pipeline[remote]` to materialize remote `.dot` graphs. |
 | `modules/loop-agent` | The `coding-agent-loop` nlspec implementation — a general worker (registerable in the worker registry as `coding-agent`), not attractor-specific. The module directory keeps its historical name; the user-facing worker name is `coding-agent` (renamed from `loop-agent`, WAVE 7). |
-| `modules/loop-amplifier-agent` | Adapter orchestrator: hosts [microsoft/amplifier-agent](https://github.com/microsoft/amplifier-agent)'s `Engine` as a pipeline node's worker via `session.spawn`. ALWAYS INSTALLED (WAVE 6): a real, unconditional dependency of the root package, along with its heavy peer library (`amplifier_agent_lib`, Python >=3.12). See "Default worker" below. |
+| `modules/loop-amplifier-agent` | Adapter orchestrator: uses [microsoft/amplifier-agent](https://github.com/microsoft/amplifier-agent)'s public `amplifier_agent` handles (`create_agent` → `create_session` → `start_turn` → one `events()` consumer → close session and agent) as a pipeline node's worker. ALWAYS INSTALLED: a real, unconditional dependency of the root package, with the public Python binding (Python >=3.12). See the [adapter README](modules/loop-amplifier-agent/README.md) for the current contract. |
 | `modules/hooks-pipeline-observability` | State aggregator, status bar, and event persistence hooks for pipeline runs. |
 | `modules/hooks-pipeline-progress` | Progress display hook. |
 | `modules/hooks-tool-truncation` | Tool-output truncation hook for context management. |

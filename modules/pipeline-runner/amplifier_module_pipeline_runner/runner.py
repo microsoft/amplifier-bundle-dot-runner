@@ -830,6 +830,40 @@ def make_spawn_fn(
         # upstream (both channels then carry identical values).
         child_bundle = apply_orchestrator_config(child_bundle, orchestrator_config)
 
+        async def before_initialize(child_session: Any) -> None:
+            # Preserve an explicit host policy installer. Neither bundle
+            # constraints nor this event bridge may replace that callback.
+            installer = kwargs.get("before_initialize")
+            if installer is not None:
+                await installer(child_session)
+            parent_hooks = getattr(
+                getattr(parent_session, "coordinator", None), "hooks", None
+            )
+            if parent_hooks is None:
+                return
+
+            async def forward_public_event(event: str, data: dict[str, Any]) -> Any:
+                from amplifier_core import HookResult
+
+                # Registry defaults are emitter identities. Keep the public
+                # envelope's actual hosted session/turn IDs and isolate any
+                # parent hook mutations from subsequent child observers.
+                await parent_hooks.emit(event, copy.deepcopy(data))
+                return HookResult()
+
+            # Accounting only: no lifecycle/pipeline events, tool streams or
+            # duplicate persistence. The adapter already persists public data.
+            for event in (
+                "amplifier-agent:turn_started",
+                "amplifier-agent:usage",
+                "amplifier-agent:terminal",
+            ):
+                child_session.coordinator.hooks.register(
+                    event,
+                    forward_public_event,
+                    name="pipeline-public-worker-accounting",
+                )
+
         spawn_coro = prepared.spawn(
             child_bundle=child_bundle,
             instruction=instruction,
@@ -840,6 +874,7 @@ def make_spawn_fn(
             provider_preferences=provider_preferences,
             self_delegation_depth=self_delegation_depth,
             session_cwd=cwd,
+            before_initialize=before_initialize,
         )
         if spawn_timeout is not None:
             return await asyncio.wait_for(spawn_coro, timeout=spawn_timeout)

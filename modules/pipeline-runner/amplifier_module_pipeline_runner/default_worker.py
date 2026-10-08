@@ -25,7 +25,7 @@ UNCHANGED by this rename -- only the user-facing WORKER NAME moved.
 WAVE 6 (feat/agent-always-installed) ruling: amplifier-agent is no longer an
 optional, probed-for peer -- the root ``amplifier-dot-runner`` package now
 declares ``amplifier-module-loop-amplifier-agent`` (and, transitively,
-amplifier-agent's own ``amplifier_agent_lib``) as a REAL, unconditional
+amplifier-agent's public ``amplifier_agent`` binding) as a REAL, unconditional
 dependency (see root ``pyproject.toml``). The default ladder, when a run
 makes NO explicit worker choice (no ``--worker``, no node ``worker=``), is
 now exactly this, PERIOD:
@@ -186,7 +186,7 @@ _ADAPTER_REGISTRY: dict[str, tuple[str, str, str, str]] = {
     ),
     AMPLIFIER_AGENT_NAME: (
         "amplifier_module_loop_amplifier_agent",
-        "amplifier_agent_lib",
+        "amplifier_agent",
         (
             "git+https://github.com/microsoft/amplifier-bundle-dot-runner@main"
             "#subdirectory=modules/loop-amplifier-agent"
@@ -437,7 +437,7 @@ def _adapter_importable(adapter_module: str) -> bool:
     the exact question :func:`_synthesize_agent_bundle_yaml` needs when
     deciding whether the agent's orchestrator still needs a lazy-activation
     ``source:`` hint.  ``_worker_available`` additionally requires the
-    worker's heavy PEER library (``amplifier_agent_lib``), which is a
+    worker's public Python binding (``amplifier_agent``), which is a
     question about whether the worker can RUN -- already answered, fail-loud,
     by :func:`resolve` before synthesis is ever reached.  Keeping them apart
     also keeps ``resolve``'s ladder probing exactly one worker, which its own

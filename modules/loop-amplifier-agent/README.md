@@ -1,312 +1,180 @@
 # loop-amplifier-agent
 
-An adapter orchestrator module: lets a `.dot` pipeline node use
-[microsoft/amplifier-agent](https://github.com/microsoft/amplifier-agent)'s
-`Engine` (a full, self-contained coding-agent runtime -- its own bundle, its
-own tool roster, its own provider mounting) as the node's worker, instead of
-this ecosystem's native `loop-agent`.
+Pipeline worker adapter using only the public Python binding:
+`create_agent(AgentOptions)` → `create_session(SessionOptions(persistence="ephemeral"))`
+→ `start_turn(TurnInput)` → one `events()` consumer → close session and agent.
+Python >=3.12; Core 2.0.1. The root distribution always installs this adapter;
+the thin engine bundle still does not include its opt-in behavior.
 
-**The engine stays agent-agnostic.** This module is a *second, opt-in* agent
-worker option alongside `loop-agent`. `loop-agent` remains the default in
-the attractor layer (`amplifier-bundle-attractor`). Nothing here changes
-`modules/loop-pipeline`'s engine code, and this module is never pulled in by
-the root `bundle.md` -- see `behaviors/dot-runner-amplifier-agent.yaml`,
-which is an opt-in partial a consuming bundle includes explicitly.
+Canonical Attractor §§1.4 and 4.5 permit backend replacement: the graph,
+String|Outcome boundary, and worker-written `status.json` channel are unchanged.
+The parent reads the file; this adapter never writes a verdict or invents one.
 
-## Why this exists
+## Selection and authority
 
-`modules/loop-pipeline` spawns a child agent per DOT node through a generic
-`Orchestrator.execute(prompt, context, providers, tools, hooks, **kwargs) ->
-str` contract (`amplifier_core.interfaces.Orchestrator`). Any module that
-satisfies that contract can be the worker behind a node. `loop-agent` is one
-implementation; this module is another, backed by a completely different
-agent runtime.
+Set `llm_provider` and a matching `llm_model`, or mount the matching provider
+with a concrete `config.default_model`. Priority-promoted outer provider entries
+carry Foundation's resolved node model. Instance addresses resolve to their actual
+provider module family. An unknown model fails naming `llm_model/default_model`;
+the binding's ambient model is never substituted for a different provider.
+`reasoning_effort` comes from explicit node config, then the selected outer entry.
+Unset effort remains unset (the public runtime applies its documented default).
 
-## The mechanism
+Supported provider connection settings are translated into documented variables
+in `AgentOptions.environment`, without mutating `os.environ`: `api_key/base_url`
+for Anthropic, OpenAI, Gemini, Chat Completions and vLLM; `api_key/endpoint` for
+Azure OpenAI; `api_key` for Ollama. Other connection variables, such as Azure
+identity, `OLLAMA_HOST`, or Copilot credentials, can be supplied directly through
+the per-agent `environment` map. Unsupported mounted provider settings fail by
+name rather than disappear. No arbitrary provider request config is injected.
 
-Proven empirically before this module was written -- see
-`/var/tmp/aa-probe/probe_q1_q2.py` ("Q1: can a host mount a foreign tool
-module into Engine's session? Q2: does the model actually call it?" -- both
-answered yes against a real Engine and a real model turn):
+`approval_policy=accept` maps to public `allow` and remains the default.
+`deny` maps to `deny`. `user_instructions` still appends to the prompt.
+Working directory precedence: explicit `working_dir`, outer
+`session.working_dir` capability, process cwd. Only the existing parent of the
+task-scoped `current_node_status_path` is added to `additional_directories` when
+outside cwd. No path is parsed from the prompt or widened to the whole log tree.
+These write directories are not a sandbox for bash.
 
-1. `amplifier_agent_lib.engine.Engine` takes a caller-injected
-   `turn_handler` coroutine at construction
-   (`amplifier_agent_lib/engine.py`, the `TurnHandler` type alias and
-   `Engine.__init__`). The vendored CLI's own handler factory,
-   `amplifier_agent_lib._runtime.make_turn_handler`, builds a handler that
-   calls `prepared.create_session()` and wires capabilities onto
-   `session.coordinator`.
-2. A custom turn handler *could* do the same `create_session()` call and
-   additionally `await session.coordinator.mount("tools", tool,
-   name=tool.name)` to add a tool amplifier-agent's own baked-in bundle
-   never declared. **This module does not.** WAVE 4 (maintainer ruling
-   2026-08-29, ruling 5) retired that reach-in mount as an
-   internals-reach-in, and WAVE 5 (2026-08-30) removed the tool it mounted
-   repo-wide. The call shape is kept documented here only because
-   `amplifier_agent_http/_session_runner.py` uses it (around line 134) for
-   its own `HostToolProxy` tools -- it is a real extension point, just not
-   one this adapter uses.
-3. After the turn, this module emits an `ORCHESTRATOR_COMPLETE` event in the
-   exact envelope shape
-   `amplifier_module_loop_agent.AgentOrchestrator._emit_completion` uses,
-   which `amplifier_module_loop_pipeline.backend._outcome_from_spawn_result`
-   already knows how to read. Its `metadata` is **always `{}`**: no verdict
-   channel rides this envelope any more. An explicit verdict travels via the
-   status-file contract instead (see "Fail-closed" below).
+## Continuity and unsupported legacy controls
 
-A fresh `Engine` (and fresh amplifier-agent session) is booted per
-`execute()` call -- **no caching** -- for per-node state isolation.
+Each invocation creates a fresh ephemeral hosted session. Public
+system/developer/user/assistant text history becomes fresh
+`ConversationMessage`/`TextPart` records in order, passed as first-turn history.
+Only context-simple's bookkeeping `metadata._seq` and `metadata.timestamp` are
+discarded; semantic metadata, tool-call structures and non-text parts fail
+clearly. Translation never edits the context or imports its dynamic bundle
+prompt factory. `thread_key` belongs to outer transcript bookkeeping; it is never
+a reusable hosted session ID.
 
-## Wiring an agent entry
+- `max_turns` absent, `None`, or integer `0` means unrestricted. Positive caps
+  (and other values) are refused before effects: use `worker=coding-agent`.
+- Nonempty `workspace`, `host_config`, and injected `agent_configs` are refused.
+  An ordinary outer pipeline agents roster is not injection and is accepted.
+- Generic `delegate` remains one of the built-ins. Named caller roster injection
+  is unsupported. Caller tools are not passed through and the built-in roster
+  is not changed.
 
-A pipeline profile that wants a node backed by amplifier-agent declares an
-inline `session.orchestrator` on that agent, exactly like a `loop-agent`
-entry does today (see `behaviors/dot-runner-amplifier-agent.yaml` for the
-full, commented example):
+## Completion and cancellation
 
-```yaml
-agents:
-  dot-runner-agent-amplifier-agent:
-    session:
-      orchestrator:
-        module: loop-amplifier-agent
-        source: git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-amplifier-agent
-        config:
-          llm_provider: anthropic
-          reasoning_effort: medium
-          max_turns: 8
+Terminal success returns concatenated text, including legitimate empty text.
+Failure/rejected turns emit incomplete completion and raise the full public
+`AgentError`, never partial success. Missing terminal means incomplete.
+Cancellation before completion dispatch emits cancelled completion, requests
+`turn.cancel()`, drains the same shielded consumer through terminal, closes
+handles, and re-raises cancellation.
+Cancellation drain (30s) and each close/cancel (10s) are bounded. A timed-out
+cleanup reports uncertainty; a cleanup failure never replaces a primary error.
+
+Both public handles are attempted in order: session, then agent, even when
+session close fails. A successful terminal is not sufficient to return its
+completed reply: an immediate close failure or close timeout emits incomplete
+completion and raises the first cleanup error instead. With an existing primary
+error, cleanup failures are attached as notes without replacing that error.
+Worker side effects and a worker-written `status.json` may already exist; neither
+an incomplete completion nor a raised error makes retry safe.
+
+An unexpected exception escaping a persistence handler stops the event consumer,
+emits incomplete completion and propagates unchanged. Unlike caller cancellation,
+this path relies on public `session.close()`/`agent.close()` rather than an explicit
+adapter `turn.cancel()`/consumer drain. The public lifecycle contract says close
+is idempotent and requests cancellation/drains paired events for an active turn.
+The focused tests model that contract with handle doubles and real public records;
+they do not prove real-provider drain or absence of orphaned work. A close deadline
+can expire before underlying cleanup settles; its effects remain unknown.
+
+Completion linearizes when the adapter enters `hooks.emit` with its frozen
+envelope, not when delivery is scheduled or when all observers finish. Pending
+caller cancellation is checked at that boundary, even before its exception
+handler runs. Cancellation after dispatch still propagates, with a note naming
+the committed status; it cannot retract observer-owned copies or issue a second
+completion. Dispatch is not an acknowledgment that every observer received it.
+
+Completion carries actual `metadata.worker_session_id` for the parent log join.
+`turn_count=None`: one public turn does not expose internal model-call count.
+
+## Public telemetry
+
+The shipped `SessionEventPersister.make_handler()` writes curated
+`amplifier-agent:<type>` events under
+`<stage>/sessions/<actual-session-id>/events.jsonl`, using existing write-time
+redaction. Curated types: `turn_started`, `tool_call`, `tool_result`,
+`approval_request`, `approval_decision`, `progress`, `usage`, `terminal`.
+Output/reasoning deltas and reasoning-final text are intentionally excluded.
+
+Ordinary write failures are different from an escaping handler error:
+`SessionEventPersister.make_handler()` catches ordinary `Exception` from its
+write seam and logs at debug level. Event observers and terminal processing
+continue, and a successful reply is allowed if cleanup succeeds. The failed
+record is not evidence of a successful write; the retained stream can have gaps.
+Separately, an ordinary event-observer exception is caught by the adapter and
+logged at warning level after persistence. This does not depend on the
+persister's write-failure catch and does not guarantee every observer saw the event.
+
+Each record retains `contract_version=turn-events/1`, actual session/turn IDs,
+sequence, type, optional `at`, and structurally serialized payload. Errors retain
+code, category, message, remedy, retryable, correlation_id and details; Decimal
+currency values serialize as strings. Actual reported selection is evidence;
+requested identity is not used as fallback telemetry.
+
+Usage snapshots replace preceding snapshots; terminal usage is the same
+accounting domain, not another charge. The observability consumer stores these
+per turn separately from legacy additive provider totals, retaining every actual
+model and unknown counters/costs. No synthetic provider request/response events,
+call counts, or call timing are emitted. The timing table shows `-` for public
+LLM calls and correlates tool spans by session/turn/call ID. Nested delegation is
+visible only to the extent exposed by public events/usage, not private hooks.
+
+The runner installs child-to-parent accounting handlers through the public
+`PreparedBundle.spawn(before_initialize=...)` seam, preserving explicit host
+installers and bundle constraints. Only selection/usage/terminal envelopes are
+forwarded, with actual session/turn identity; pipeline events and persistence
+are not replayed. Status queries retain public snapshots and selections. With
+public turns present, aggregate counters are unavailable (`null`), not zero;
+legacy-only counters remain inspectable as `legacy_provider_metrics`. The status
+bar shows actual per-model public usage and discloses unavailable call counts.
+
+## Packaging and verification
+
+The binding deliberately floats:
+
+```text
+amplifier-agent[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@main#subdirectory=packages/python
 ```
 
-**Inline `session.orchestrator` is required, not optional polish.** The
-spawn capability merges an agent's `session:` key onto the parent config,
-and `loop-pipeline`'s recursion guard
-(`amplifier_module_loop_pipeline.backend`) raises loudly if a node's
-resolved agent config has `session.orchestrator.module` absent or equal to
-`"loop-pipeline"` -- either would make the child inherit or re-enter
-`loop-pipeline` and recurse infinitely.
+Binding 0.22.0 pins engine v0.22.0; that engine pins Foundation
+`21ad50fa40f7acff913cbf6615228ac359f7dedd`. Runner `main` Foundation conflicts in
+an unoverridden consumer solve. The runner now aligns its published requirement
+and source to that exact pin as a narrow consumer exception. There is no root
+Foundation override hiding qualification failures. Other ecosystem consumers
+still naming Foundation main may conflict and need independent qualification.
 
-## Config-key mapping (`orchestrator_config` -> amplifier-agent)
+Upstream's `workspace=true` engine source can leak the binding-main revision
+into a consumer uv lock despite the binding's published engine tag. Root and
+adapter lock roots therefore carry a narrow engine-only override to the exact
+published v0.22.0 tag. This corrects development locks, not runtime authority.
+Fresh `uv --no-config pip install --no-sources` checks run independently of
+that override. When binding main changes its engine requirement, requalify and
+update this correction rather than silently holding an obsolete tag.
 
-The dot-pipeline backend passes `orchestrator_config` keys blind -- it does
-not know which orchestrator module is mounted, or which keys it understands.
-This module maps the four keys `backend.py`'s spawn path forwards:
+```bash
+cd modules/loop-amplifier-agent
+uv sync
+env -u AMPLIFIER_AGENT_CONFIG -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+    -u GOOGLE_API_KEY -u GEMINI_API_KEY -u COPILOT_AGENT_TOKEN \
+    -u COPILOT_GITHUB_TOKEN -u GH_TOKEN -u GITHUB_TOKEN uv run pytest -q
+ruff check amplifier_module_loop_amplifier_agent tests
+ruff format --check amplifier_module_loop_amplifier_agent tests
+```
 
-| key                 | injection point |
-|---------------------|-----------------|
-| `llm_provider`      | `amplifier_agent_cli.provider_sources.inject_provider(prepared, provider, ...)` -- the probe-proven seam. `prepared.mount_plan["providers"]` is cleared first: amplifier-agent's baked-in bundle declares 9 install-only provider *stubs*, and `inject_provider` no-ops ("don't clobber existing") unless they're cleared, which could otherwise trigger interactive OAuth for `openai-chatgpt` during session creation. |
-| `reasoning_effort`  | forwarded to the same `inject_provider(...)` call as `effort_override`. |
-| `max_turns`         | best-effort forward into `prepared.mount_plan["session"]["orchestrator"]["config"]["max_turns"]`. amplifier-agent's `Engine` has no "max turns" knob at the boot/turn-submit layer (one `execute()` call here is one `submit_turn`); this mirrors how the dot-pipeline backend itself blindly forwards `orchestrator_config` to whatever orchestrator is mounted, honored only if the mounted session orchestrator (`loop-streaming` by default) recognizes the key. |
-| `user_instructions` | appended to the prompt text handed to `session.execute()` (Layer-5 override). WAVE 4 retired this adapter's own verdict nudge, so this is the only thing appended. |
+The mandatory public smoke uses credential-free local Ollama construction/close
+without starting a turn or service; missing binding is never importorskip.
+Hermetic handle doubles use real public records. Shared worker-parity MUST tests
+remain unchanged. Legacy max-turns/per-call identity TARGETs are declared absent;
+mandatory public selection/usage tests replace those observations.
 
-When `llm_provider` is absent, this module defaults to `"anthropic"` --
-amplifier-agent's own baked-in default (`bundle.md`'s `default_provider:
-anthropic`).
-
-## Fail-closed: never fabricate success
-
-WAVE 4 (ruling 5) and WAVE 5 (2026-08-30) together removed the in-process
-verdict capture this section used to describe: there is no mounted tool, no
-`tool.last_outcome` read, and no synthesized `{"status": "retry", ...}`
-substitute. This module now does the strictly more honest thing -- it
-asserts **nothing**. `metadata` is always `{}`, so
-`backend.py::_outcome_from_spawn_result` falls through to the
-lifecycle-status-only path (`is_explicit=False`): the node can complete, but
-it can never satisfy a `goal_gate` on its own.
-
-An explicit verdict reaches the parent exclusively through the spec's own
-status-file channel (canonical Sec 4.5 / Appendix C, `EXTENSIONS.md` §41):
-`amplifier_module_loop_pipeline.backend` injects the absolute
-`<stage_dir>/status.json` path and the envelope contract into the prompt
-(`status_contract.py`), the hosted amplifier-agent writes it with its own
-file tools, and `handlers/codergen.py`'s `read_status_override` -- running in
-the PARENT process, entirely outside this adapter -- reads it back.
-
-See `tests/test_orchestrator.py`'s
-`test_envelope_shape_never_fabricates_a_verdict` and
-`test_never_fabricates_a_verdict_when_child_asserts_none` for the hermetic
-proof, and `tests/test_spawn_status_file_transport.py` for the live
-end-to-end one.
-
-## Capability gaps vs the vendored CLI handler (v2)
-
-v1 disclosed five deliberate scope cuts vs. the vendored
-`amplifier_agent_lib._runtime.make_turn_handler` this module's custom
-`TurnHandler` is modeled on (see "The mechanism" above). v2 closes all five,
-each judged for what makes sense on an EMBEDDED node worker rather than an
-interactive CLI (there is no human, no TTY, no `--config` file, no `--workspace`
-flag):
-
-- **`prepare_bundle_for_session` -- closed.** `_run_turn` now calls the REAL
-  vendored `amplifier_agent_lib._runtime.prepare_bundle_for_session` (skills/
-  modes `BUNDLE_DIR` injection, the host-config `merge_config` overlay, and
-  the hook-context-intelligence workspace seed) instead of reimplementing it.
-  **Judgment call:** the CLI's `--workspace` flag has no argv equivalent here,
-  so `orchestrator_config.workspace` fills that role, resolved through the
-  SAME `amplifier_agent_lib.persistence.resolve_workspace` (argv > env >
-  cwd-derived slug) and always applied -- a child turn gets a real, isolated
-  context-intelligence workspace bucket by default, not amplifier-agent's bare
-  baked-in bundle. The CLI's `--config` file has no natural analogue for a
-  pipeline node, so `host_config` defaults to `None` (no-op overlay) unless a
-  pipeline author opts in via `orchestrator_config.host_config` (a
-  host_config-shaped dict, forwarded verbatim). No remainder: closing this one
-  call closes the whole gap for the embedded case. See `_run_turn`'s docstring
-  and `tests/test_v2_capabilities.py`'s gap-1 tests.
-- **`session.spawn` -- closed.** Registered on the child session's coordinator
-  exactly like the vendored handler (same closure pattern: `agent_configs`
-  defaults from the cold-path hydration, `parent_session` pinned to the
-  current turn's session), so the child's own `delegate` tool can spawn
-  grandchild sessions. See `test_session_spawn_registered_and_forwards_to_delegate`
-  (RED-proof: against v1, `session.coordinator.capabilities.get("session.spawn")`
-  was always `None`).
-- **Approvals -- closed, defaults to `"accept"` (worker parity).**
-  `approval.request` wires the REAL
-  `WireApprovalProvider(approval_request_fn=ctx.approval.request)` seam,
-  forwarding the actual decision instead of a hardcoded stub. The decision
-  itself is governed by an `approval_policy: "accept" | "deny"` config key.
-
-  **This shipped defaulting to `"deny"` and was flipped to `"accept"` after a
-  design challenge** (maintainer-decided; an independent review already
-  adjudicated the direction). Three grounds:
-
-  1. **Worker parity.** `loop-agent` -- the *default* worker -- has **no
-     approval system at all** (`coding-agent-loop-spec` sec8 excludes it
-     deliberately); that is behaviorally accept-everything. `"deny"` made
-     this adapter *stricter* than the default worker: swap workers on a
-     pipeline node and approval-gated actions that used to succeed would
-     silently start failing -- a parity violation of exactly the class
-     already fixed twice (support#497).
-  2. **The attractor spec's own posture.** sec6.4 defines the
-     `AutoApproveInterviewer` ("Always selects YES") as the non-interactive
-     default. Autonomous convergence is the point of a pipeline node.
-  3. **House doctrine -- gates outside workers.** The safety layer is the
-     graph's evidence gates and budget walls, not an approval prompt inside a
-     headless worker nobody is watching. `"deny"`-by-default was
-     interactive-CLI instinct imported into a headless context.
-
-  `"deny"` remains available as opt-in hardening: it logs a `WARNING` once
-  per `execute()` call (an operator who opts into stricter behavior should
-  see it, but it need not spam every turn). `"accept"` (the default,
-  expected posture) logs a single `INFO` line instead -- no more per-turn
-  `WARNING` noise for the normal case.
-
-  **Unknown `approval_policy` value:** warns *loudly*, naming the bad value,
-  and then uses the default (`"accept"`) -- it does **not** fail closed to
-  `"deny"` the way v1 did. Rationale: a typo silently bricking every
-  approval-gated action is the *worse* failure in a headless pipeline; the
-  graph's own evidence gates and budget walls catch a bad work product, so a
-  fully-bricked worker is not a safer failure mode, just a more confusing
-  one.
-
-  See `test_approval_defaults_to_accept` (RED-proof: fails against the
-  pre-flip `"deny"`-default code), `test_approval_policy_deny_forwards_decline`
-  (opt-in hardening still works), `test_approval_policy_accept_logs_at_info_once`,
-  `test_approval_policy_deny_logs_at_warning_once`, and
-  `test_approval_policy_invalid_value_warns_and_uses_default`. One inherited
-  claim, disclosed honestly: that a DECLINED approval degrades gracefully
-  mid-turn (the agent proceeds past the denial rather than crashing) is
-  upstream amplifier-agent's own tested non-interactive CLI behavior -- this
-  module's tests prove the WIRING (the decision reaches the real
-  `WireApprovalProvider`), not the mid-turn degradation itself.
-- **`provider_preferences` -- closed.** There is no `provider_preferences`
-  parameter on `Orchestrator.execute()` at all (the kernel's orchestrator call
-  boundary, `amplifier_core._session_exec.run_orchestrator`, threads through
-  only `prompt`/`context`/`providers`/`tools`/`hooks`/`coordinator`) -- the
-  generic foundation spawn path resolves `provider_preferences` BEFORE session
-  creation by mutating the CHILD session's OWN mount-plan `providers` list
-  (`apply_provider_preferences_with_resolution` promotes the matching entry to
-  `priority=0` and stamps its `config["default_model"]`). Since this
-  orchestrator IS that child session's mounted orchestrator,
-  `_resolve_parent_provider_preference` reads it back from
-  `coordinator.config["providers"]`. **Fragile-signal caveat:** the read-back
-  detects the promotion by the PRESENCE of `config["default_model"]` on the
-  promoted provider entry -- that marker is foundation's current
-  implementation detail, verified by source-reading (not by a live
-  provider_preferences spawn). If a future foundation refactor changes how
-  `apply_provider_preferences_with_resolution` records the preference, this
-  detection must be revisited; the unit tests pin today's marker so the
-  break will be loud, not silent. **Precedence (documented, tested):** an
-  explicit `llm_provider` config always wins PROVIDER SELECTION --
-  `loop-pipeline`'s own `backend.py` says so in its spawn_kwargs comment
-  ("Provider SELECTION ... flows via orchestrator_config['llm_provider']"
-  while `provider_preferences` exists purely to carry the model, which "has no
-  other channel"). So: `llm_provider` set -> it selects the provider, and the
-  parent's preferred model is honored only when it names that SAME provider
-  (a mismatched model is dropped rather than forced onto the wrong provider).
-  `llm_provider` absent -> the parent preference's provider+model wins
-  outright. Neither present -> `DEFAULT_PROVIDER`, no model override (v1
-  behavior, unchanged). See `_run_turn`'s docstring and the four
-  `test_*provider_preferences*` / `test_explicit_llm_provider_wins_*` /
-  `test_mismatched_parent_preference_model_is_dropped` /
-  `test_no_parent_preference_and_no_llm_provider_falls_back_to_default` tests.
-- **`hooks.set_default_fields` -- closed.** The per-turn handler now mints an
-  ephemeral session id (mirroring `make_turn_handler`'s identical one-shot
-  fallback: this adapter always submits with no incoming session id, so a
-  fresh `ephemeral-<uuid>` id is minted every turn) and calls
-  `session.coordinator.hooks.set_default_fields(session_id=..., turn_id=...)`,
-  so every tool/llm/execution event this turn emits carries a non-empty
-  `session_id` instead of being dropped by the context-intelligence
-  `LoggingHandler`'s empty-session-id check. See
-  `test_hooks_default_fields_stamped_with_session_and_turn_id` (RED-proof:
-  against v1, `coordinator.hooks.set_default_fields` was never called at all).
-
-The sixth item below is NOT one of those five disclosed scope cuts -- it is a
-later bug fix for a parameter that was being dropped:
-
-- **Session continuity (`context` replay) -- fixed (support#497).** The
-  `Orchestrator.execute()` `context` parameter is the PARENT session's mounted
-  `ContextManager`, which the foundation spawn path seeds with the parent's
-  prior-turn `parent_messages` (`fidelity="full"` cross-node history) BEFORE
-  `execute` runs. v1 accepted it and silently DROPPED it, so the hosted
-  amplifier-agent session (a second, inner session booted per turn) started
-  with an empty transcript -- `fidelity="full"` continuity never reached the
-  model (a real hosted turn asked to recall a prior-turn fact replies "no code
-  was given" and self-reports `status=fail`). `execute` now reads that history
-  (`_history_from_context`, inside the completion-envelope `try` so a failing
-  read still emits `ORCHESTRATOR_COMPLETE`) and replays it into the hosted
-  session's OWN mounted context via
-  `session.coordinator.get("context").set_messages(history)` -- the SAME
-  mount-registry seam (`coordinator.get`, not `get_capability`), `hasattr`
-  guard, and warn-on-missing that `amplifier_agent_lib._runtime`'s own
-  `is_resumed` replay uses. See `test_parent_history_replayed_into_hosted_session_context`
-  (RED-proof: against the pre-fix adapter the hosted context's `set_messages`
-  was never called), the two negative guards
-  (`test_no_parent_context_replays_nothing`,
-  `test_empty_parent_context_replays_nothing`), the fail-closed-envelope guard
-  (`test_context_get_messages_failure_still_emits_incomplete`), the
-  missing-`set_messages` warn branch
-  (`test_hosted_context_without_set_messages_warns_and_continues`), and the
-  live end-to-end proof `tests/test_continuity_live.py` (a real hosted
-  amplifier-agent turn recalls a secret that exists ONLY in the replayed
-  history).
-
-## Python version note
-
-`amplifier-agent` (the peer library this module hosts) declares
-`requires-python = ">=3.12"`. This module cannot support a lower floor than
-the library it wraps, so its own `pyproject.toml` also declares
-`requires-python = ">=3.12"` -- one Python floor higher than this repo's
-usual `>=3.11`. `.github/workflows/ci.yml`'s `unit-tests` matrix excludes
-the `py3.11` cell for this one module accordingly (see that file's
-`exclude:` entry and comment).
-
-This module's own top-level code has no import-time dependency on
-`amplifier_agent_lib` (the real import is lazy, inside `_load_dependencies`,
-called only from `_run_turn`) specifically so its hermetic unit tests can
-run without the real, heavy, Python-3.12-only library installed at all.
-
-## Tests
-
-* `tests/test_mount.py` -- protocol compliance (`mount()` registers the
-  orchestrator).
-* `tests/test_orchestrator.py` -- hermetic unit tests. Monkeypatches the one
-  seam (`_load_dependencies`) with fakes faithful to the real amplifier-agent
-  contract (`tests/_fakes.py`): envelope shape (cross-checked against the
-  REAL `loop-pipeline` backend reader), config-key mapping, fail-closed
-  behavior, empty-reply-with-verdict success, exception handling, and
-  `Engine.shutdown()` always being called (including on exception).
-* `tests/test_spawn_status_file_transport.py` -- a real,
-  network-and-credential-requiring integration test with this module as the
-  producer, proving the status-file verdict channel end-to-end. `pytest.importorskip("amplifier_agent_lib")`
-  skips when the peer library isn't installed; a `skipif` additionally skips
-  when no `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` is present, so CI (which
-  carries no secrets) skips this test honestly rather than failing it.
+Live tests require Anthropic credentials and have honest credential skips:
+seeded random history recall plus a two-node full-fidelity graph/control run,
+different models, actual selection records and status outside cwd read by the real
+parent. The outer spawn carrier in that local test is doubled; it is not proof
+of installed Foundation spawning. Manager DTU qualification remains required.

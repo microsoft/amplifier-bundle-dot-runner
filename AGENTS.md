@@ -36,3 +36,15 @@ strongdm/attractor nlspec has to say about this first?"**
 See `docs/VISION.md` for the full doctrine, `ledger/rows.yaml` for the
 asserted ledger, `specs/EXTENSIONS.md` for the decision records, and
 `specs/EXTENSIONS.md` for every documented extension/divergence.
+
+## Runner CLI test isolation
+
+When tests change `AMPLIFIER_HOME` in one process, cached context-simple
+submodules still belong to the previous home. Keep Core's origin guard intact:
+use a scoped, uniquely named local context package and empty CI overlay for
+no-provider routing tests, with real Bundle preparation/session mounting.
+Restore cwd, home presence/value, patched seams, sys.path and the original
+preparation-set object/content; remove only the fixture-owned imports.
+Declare test imports in the module's dev dependency group: a uv source mapping
+alone is not a dependency. Run `uv sync --locked` and `uv run --locked pytest -q`
+from `modules/pipeline-runner` in a repo-local venv with real credentials unset.

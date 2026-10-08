@@ -8,11 +8,19 @@ exercise routing without a provider, LLM node, or post-gate pipeline behavior.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager, nullcontext
+import hashlib
 import json
+import os
 from pathlib import Path
+import sys
+import tomllib
+from uuid import uuid4
 
 import pytest
 import unified_llm
+from amplifier_foundation import Bundle
+from amplifier_foundation.bundle._prepared import PreparedBundle
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.dot_parser import parse_dot
 from amplifier_module_loop_pipeline.engine import PipelineEngine
@@ -24,7 +32,7 @@ from amplifier_module_loop_pipeline.pipeline_events import (
     PIPELINE_NODE_START,
 )
 
-from amplifier_module_pipeline_runner import cli
+from amplifier_module_pipeline_runner import cli, runner
 
 REPO = Path(__file__).resolve().parents[3]
 GRAPHS = REPO / ".github" / "capsule-pipeline"
@@ -66,6 +74,88 @@ PARAMS = {
     "task_file": "/tmp/task.md",
     "branch": "test",
 }
+
+
+@contextmanager
+def _isolated_cli_dependencies(tmp_path):
+    """Replace only context/CI loading; prepare and mount real local modules.
+
+    Every scope owns a unique package *and submodule*, so changing homes never
+    collides with context-simple's cached imports. Only our imports are removed.
+    """
+    module_name = f"context-escalation-test-{uuid4().hex}"
+    package_name = f"amplifier_module_{module_name.replace('-', '_')}"
+    source = tmp_path / "context-source"
+    package = source / package_name
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        '__amplifier_module_type__ = "context"\n'
+        "from .store import Context\n\n"
+        "async def mount(coordinator, config):\n"
+        '    await coordinator.mount("context", Context())\n',
+        encoding="utf-8",
+    )
+    (package / "store.py").write_text(
+        """class Context:
+    def __init__(self):
+        self.messages = []
+
+    async def add_message(self, message):
+        self.messages.append(message)
+
+    async def get_messages_for_request(self, token_budget, provider=None):
+        return self.messages.copy()
+
+    async def get_messages(self):
+        return self.messages.copy()
+
+    async def set_messages(self, messages):
+        self.messages = messages.copy()
+
+    async def clear(self):
+        self.messages.clear()
+""",
+        encoding="utf-8",
+    )
+    base = Bundle(
+        name="escalation-test-base",
+        session={"context": {"module": module_name, "source": str(source)}},
+    )
+    original_path = sys.path.copy()
+
+    async def no_provider_call(*args, **kwargs):
+        raise AssertionError("the no-LLM projection must not call a provider")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("AMPLIFIER_HOME", str(tmp_path / "amplifier-home"))
+        patch.setenv("ANTHROPIC_API_KEY", "unused-test-credential")
+        patch.delenv("ATTRACTOR_INSTALL_DEPS", raising=False)
+        patch.chdir(tmp_path)
+        patch.setattr(runner, "_bare_base_bundle", lambda: base)
+        patch.setattr(
+            runner,
+            "_context_intelligence_overlay",
+            lambda: Bundle(name="escalation-test-no-ci"),
+        )
+        patch.setattr(
+            runner,
+            "_PREPARED_SOURCE_IDENTITIES",
+            runner._PREPARED_SOURCE_IDENTITIES.copy(),
+        )
+        patch.setattr(unified_llm.Client, "complete", no_provider_call)
+        try:
+            yield module_name, package_name, source
+        finally:
+            for name in tuple(sys.modules):
+                if name == package_name or name.startswith(f"{package_name}."):
+                    del sys.modules[name]
+            sys.path[:] = original_path
+
+
+@pytest.fixture
+def _cli_dependencies(tmp_path):
+    with _isolated_cli_dependencies(tmp_path) as dependency:
+        yield dependency
 
 
 class _Events:
@@ -197,6 +287,7 @@ def test_all_eight_shipped_choices_route_with_canonical_metadata(
     ] == ["start", "escalate", target]
 
 
+@pytest.mark.usefixtures("_cli_dependencies")
 @pytest.mark.parametrize("graph_name", CASES)
 @pytest.mark.parametrize("payload_kind", ("valid", "generic"))
 def test_real_cli_fail_policy_stops_at_each_guarded_escalation(
@@ -213,7 +304,6 @@ def test_real_cli_fail_policy_stops_at_each_guarded_escalation(
     workdir.mkdir()
     monkeypatch.chdir(workdir)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "unused-test-credential")
-    monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path / "amplifier-home"))
 
     async def no_provider_call(*args, **kwargs):
         raise AssertionError("the no-LLM projection must not call a provider")
@@ -266,6 +356,7 @@ def test_real_cli_fail_policy_stops_at_each_guarded_escalation(
     assert artifact.is_file()
 
 
+@pytest.mark.usefixtures("_cli_dependencies")
 @pytest.mark.parametrize("graph_name", CASES)
 def test_unguarded_source_main_baseline_routes_stale_a_to_first_abandon(
     monkeypatch, tmp_path, graph_name
@@ -281,7 +372,6 @@ def test_unguarded_source_main_baseline_routes_stale_a_to_first_abandon(
     workdir.mkdir()
     monkeypatch.chdir(workdir)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "unused-test-credential")
-    monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path / "amplifier-home"))
     assert (
         cli.cmd_run(
             cli.build_parser().parse_args(
@@ -305,3 +395,152 @@ def test_unguarded_source_main_baseline_routes_stale_a_to_first_abandon(
     )
     checkpoint = json.loads((logs_root / "checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["completed_nodes"] == ["start", "escalate", "abandon"]
+
+
+@pytest.mark.parametrize("home_present", (False, True), ids=("absent-home", "set-home"))
+@pytest.mark.parametrize("raise_after_run", (False, True), ids=("normal", "exception"))
+def test_adjacent_cli_dependency_scopes_restore_process_state(
+    tmp_path, monkeypatch, home_present, raise_after_run
+):
+    """Two real prepare/mount/CLI/teardown cycles preserve pre-existing state."""
+    if home_present:
+        monkeypatch.setenv("AMPLIFIER_HOME", str(tmp_path / "original-home"))
+    else:
+        monkeypatch.delenv("AMPLIFIER_HOME", raising=False)
+    home = os.environ.get("AMPLIFIER_HOME")
+    cwd, path_object, path = Path.cwd(), sys.path, sys.path.copy()
+    identities = runner._PREPARED_SOURCE_IDENTITIES
+    identity_contents = identities.copy()
+    seams = (
+        runner._bare_base_bundle,
+        runner._context_intelligence_overlay,
+        unified_llm.Client.complete,
+        Bundle.prepare,
+        PreparedBundle.create_session,
+        runner._BARE_BASE_BUNDLE,
+    )
+    modules = sys.modules.copy()
+    module_bytes = {
+        Path(module.__file__): hashlib.sha256(
+            Path(module.__file__).read_bytes()
+        ).digest()
+        for name, module in modules.items()
+        if name.startswith(("amplifier_", "unified_llm"))
+        and getattr(module, "__file__", "").endswith(".py")
+    }
+    packages = []
+    for index in range(2):
+        cycle = tmp_path / f"cycle-{index}"
+        cycle.mkdir()
+        expected_exit = (
+            pytest.raises(RuntimeError, match="exercise exceptional teardown")
+            if raise_after_run
+            else nullcontext()
+        )
+        with expected_exit:
+            with _isolated_cli_dependencies(cycle) as (
+                module_name,
+                package_name,
+                source,
+            ):
+                assert package_name not in modules
+                assert package_name not in packages
+                packages.append(package_name)
+                assert runner._PREPARED_SOURCE_IDENTITIES is not identities
+                assert runner._PREPARED_SOURCE_IDENTITIES == identity_contents
+                assert os.environ["AMPLIFIER_HOME"] == str(cycle / "amplifier-home")
+                assert Path.cwd() == cycle
+                dot = _projection_dot(_source("capsule.dot"), guarded=False)
+
+                async def mount_and_close():
+                    prepared = await runner._build_prepared(
+                        dot,
+                        cycle / "mount-logs",
+                        params=None,
+                        profiles=None,
+                        worker="llm-direct",
+                    )
+                    assert prepared.resolver.resolve(module_name).resolve() == source
+                    assert prepared.mount_plan.get("hooks", []) == []
+                    session = await prepared.create_session(session_cwd=cycle)
+                    async with session:
+                        context = session.coordinator.get("context")
+                        assert (
+                            type(context)
+                            is sys.modules[f"{package_name}.store"].Context
+                        )
+                        await context.add_message({"role": "user", "content": "probe"})
+                        assert await context.get_messages() == [
+                            {"role": "user", "content": "probe"}
+                        ]
+
+                asyncio.run(mount_and_close())
+                assert str(source) in runner._PREPARED_SOURCE_IDENTITIES
+                assert identities == identity_contents
+                assert str(source) in sys.path
+                dot_path, logs = cycle / "cycle.dot", cycle / "cli-logs"
+                dot_path.write_text(dot, encoding="utf-8")
+                assert (
+                    cli.cmd_run(
+                        cli.build_parser().parse_args(
+                            [
+                                "run",
+                                str(dot_path),
+                                "--worker",
+                                "llm-direct",
+                                "--on-human-gate",
+                                "fail",
+                                "--cwd",
+                                str(cycle),
+                                "--logs-root",
+                                str(logs),
+                                "--param",
+                                "human.gate.selected=A",
+                            ]
+                        )
+                    )
+                    == 0
+                )
+                checkpoint = json.loads((logs / "checkpoint.json").read_text())
+                assert checkpoint["completed_nodes"] == ["start", "escalate", "abandon"]
+                if raise_after_run:
+                    raise RuntimeError("exercise exceptional teardown")
+
+        assert os.environ.get("AMPLIFIER_HOME") == home
+        assert ("AMPLIFIER_HOME" in os.environ) is home_present
+        assert Path.cwd() == cwd
+        assert sys.path is path_object
+        assert sys.path == path
+        assert runner._PREPARED_SOURCE_IDENTITIES is identities
+        assert identities == identity_contents
+        restored_seams = (
+            runner._bare_base_bundle,
+            runner._context_intelligence_overlay,
+            unified_llm.Client.complete,
+            Bundle.prepare,
+            PreparedBundle.create_session,
+            runner._BARE_BASE_BUNDLE,
+        )
+        assert all(
+            actual is original for actual, original in zip(restored_seams, seams)
+        )
+        assert not any(
+            name == package_name or name.startswith(f"{package_name}.")
+            for name in sys.modules
+        )
+        assert all(sys.modules.get(name) is module for name, module in modules.items())
+        assert all(
+            hashlib.sha256(file.read_bytes()).digest() == digest
+            for file, digest in module_bytes.items()
+        )
+
+
+def test_remote_smoke_dependency_is_declared_in_runner_dev_group():
+    """A same-repo source mapping alone does not declare a test dependency."""
+    metadata = tomllib.loads(
+        (REPO / "modules/pipeline-runner/pyproject.toml").read_text()
+    )
+    assert "amplifier-module-remote-source" in metadata["dependency-groups"]["dev"]
+    assert metadata["tool"]["uv"]["sources"]["amplifier-module-remote-source"] == {
+        "path": "../remote-source"
+    }

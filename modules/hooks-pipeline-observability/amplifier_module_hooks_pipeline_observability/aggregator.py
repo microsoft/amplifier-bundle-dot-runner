@@ -323,6 +323,34 @@ class StateAggregator:
 
     # -- Provider events ---------------------------------------------------
 
+    async def handle_public_turn_event(
+        self, event: str, data: dict[str, Any]
+    ) -> HookResult:
+        """Replace cumulative usage; terminal cannot charge the turn twice.
+
+        Keep legacy additive provider totals untouched. A public turn does not
+        expose LLM-call counts or call boundaries, so it must not increment them.
+        """
+        if self.state is None or data.get("contract_version") != "turn-events/1":
+            return HookResult()
+        session_id, turn_id = data.get("session_id"), data.get("turn_id")
+        if not session_id or not turn_id:
+            return HookResult()
+        key = f"{session_id}/{turn_id}"
+        payload = data.get("payload") or {}
+        if event == "amplifier-agent:turn_started":
+            self.state.public_turn_selections[key] = payload.get("primary_actual")
+            self.state.public_turn_usage.setdefault(key, None)
+        else:
+            snapshot = (
+                payload.get("snapshot")
+                if event == "amplifier-agent:usage"
+                else payload.get("usage")
+            )
+            if snapshot is not None:
+                self.state.public_turn_usage[key] = snapshot
+        return HookResult()
+
     async def handle_provider_response(
         self, event: str, data: dict[str, Any]
     ) -> HookResult:
