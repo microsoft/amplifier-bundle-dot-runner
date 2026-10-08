@@ -236,15 +236,14 @@ class AmplifierAgentOrchestrator:
             return None
         messages = await context.get_messages()
         if not isinstance(messages, list):
-            raise ValueError(
-                "Pipeline history must be a list of public text messages"
-            )
+            raise ValueError("Pipeline history must be a list of public text messages")
         history = []
         for index, message in enumerate(messages):
             metadata = message.get("metadata") if isinstance(message, dict) else None
             if (
                 not isinstance(message, dict)
-                or message.get("role") not in ("system", "developer", "user", "assistant")
+                or message.get("role")
+                not in ("system", "developer", "user", "assistant")
                 or set(message) - {"role", "content", "metadata"}
                 or (
                     metadata is not None
@@ -454,17 +453,24 @@ class AmplifierAgentOrchestrator:
                     if primary is None:
                         primary = asyncio.CancelledError()
 
-            async def publish_completion() -> None:
+            async def publish_completion() -> bool:
                 nonlocal committed_status
                 # The completion linearizes at entry into hooks.emit, not when
                 # this coroutine is scheduled or when opaque observers finish.
                 # Check pending requests even if the caller's except has not run.
                 observe_pending_cancellation()
-                if status == "cancelled":
-                    await cancel_and_drain()
+                if (
+                    status == "cancelled"
+                    and turn is not None
+                    and not cancellation_drained
+                ):
+                    # Hand back to finalization BEFORE dispatch. Cancel/drain
+                    # have their own budgets, not the delivery task's deadline.
+                    return False
                 # No suspension between freezing status and entering emit.
                 committed_status = status
                 await self._emit_completion(hooks, committed_status, session_id)
+                return True
 
             async def finalize() -> None:
                 nonlocal status
@@ -483,14 +489,21 @@ class AmplifierAgentOrchestrator:
                     consumer.cancel()
                 if cleanup_errors and primary is None and status != "cancelled":
                     status = "incomplete"
-                try:
-                    await _bounded(
-                        publish_completion(),
-                        CLEANUP_TIMEOUT,
-                        "completion delivery",
-                    )
-                except (Exception, asyncio.CancelledError) as exc:
-                    cleanup_failure("completion delivery", exc)
+                while True:
+                    try:
+                        dispatched = await _bounded(
+                            publish_completion(),
+                            CLEANUP_TIMEOUT,
+                            "completion delivery",
+                        )
+                    except (Exception, asyncio.CancelledError) as exc:
+                        cleanup_failure("completion delivery", exc)
+                        break
+                    if dispatched:
+                        break
+                    # At most one pre-dispatch deferral: this sets the drain
+                    # guard even when acknowledgement fails or times out.
+                    await cancel_and_drain()
 
             # All finalization lives in one shielded task. Late or repeated
             # caller cancellation cannot skip agent.close or completion. Each
@@ -505,7 +518,11 @@ class AmplifierAgentOrchestrator:
                     if primary is None:
                         primary = exc
             finalizer.result()
-            if isinstance(primary, asyncio.CancelledError) and committed_status != "cancelled":
+            if (
+                committed_status is not None
+                and isinstance(primary, asyncio.CancelledError)
+                and committed_status != "cancelled"
+            ):
                 primary.add_note(
                     "Cancellation arrived after completion dispatch began; "
                     f"committed status={committed_status}. Delivery is not retractable."

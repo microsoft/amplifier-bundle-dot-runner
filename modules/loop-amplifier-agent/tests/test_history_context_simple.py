@@ -26,6 +26,7 @@ async def test_real_restamped_history_preserves_roles_parts_and_inputs():
     original = copy.deepcopy(incoming)
     context = SimpleContextManager()
     await context.set_messages(incoming)
+
     # Foundation uses this factory for bundle instructions, not transcript data.
     async def factory():
         raise AssertionError("dynamic bundle prompt must not enter history")

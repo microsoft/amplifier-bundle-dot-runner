@@ -179,7 +179,21 @@ class PipelineRunState:
         Converts datetime objects to ISO format strings.
         Converts dataclass instances to plain dicts recursively.
         """
-        return _serialize(self)
+        result = _serialize(self)
+        if self.public_turn_usage:
+            # The raw counters above cover legacy provider:response only.
+            # They are not whole-pipeline totals once public turns participate;
+            # expose that domain explicitly and never label absent calls zero.
+            keys = (
+                "total_llm_calls",
+                "total_tokens_in",
+                "total_tokens_out",
+                "total_tokens_cached",
+                "total_tokens_reasoning",
+            )
+            result["legacy_provider_metrics"] = {key: result[key] for key in keys}
+            result.update(dict.fromkeys(keys))
+        return result
 
 
 def _serialize(obj: Any) -> Any:

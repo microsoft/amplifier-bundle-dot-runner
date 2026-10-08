@@ -171,6 +171,34 @@ async def test_execute_metrics_filter():
     assert "execution_path" not in result.output
 
 
+@pytest.mark.asyncio
+async def test_metrics_keep_public_snapshots_selections_and_unknown_calls():
+    state = _make_state_dict()
+    state.update(
+        total_llm_calls=None,
+        total_tokens_in=None,
+        public_turn_usage={
+            "actual-session/turn": {
+                "entries": [
+                    {"provider": "served", "model": "m1", "tokens_in": 10},
+                    {"provider": "served", "model": "m2", "tokens_in": None},
+                ]
+            }
+        },
+        public_turn_selections={
+            "actual-session/turn": {"provider": "served", "model": "m1"}
+        },
+        legacy_provider_metrics={"total_llm_calls": 2, "total_tokens_in": 500},
+    )
+    tool = PipelineStatusTool({}, _make_coordinator_with_state(state))
+    result = await tool.execute({"filter": "metrics"})
+    assert result.output["total_llm_calls"] is None
+    assert result.output["total_tokens_in"] is None
+    assert result.output["public_turn_usage"] == state["public_turn_usage"]
+    assert result.output["public_turn_selections"] == state["public_turn_selections"]
+    assert result.output["legacy_provider_metrics"] == state["legacy_provider_metrics"]
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_execute_current_filter():
     """execute with filter='current' returns current node and progress info."""

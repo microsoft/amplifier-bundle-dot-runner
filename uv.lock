@@ -356,6 +356,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "amplifier-core" },
+    { name = "amplifier-module-context-simple", git = "https://github.com/microsoft/amplifier-module-context-simple?rev=c7ec55db96888200ba619adedc857278daf787c5" },
     { name = "amplifier-module-hooks-pipeline-observability", editable = "modules/hooks-pipeline-observability" },
     { name = "amplifier-module-loop-pipeline", editable = "modules/loop-pipeline" },
     { name = "amplifier-worker-parity-kit", editable = "modules/worker-parity-kit" },

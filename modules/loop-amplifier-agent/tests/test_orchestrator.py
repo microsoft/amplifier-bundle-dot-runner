@@ -287,7 +287,9 @@ async def test_cancellation_after_completion_dispatch_preserves_committed_envelo
         await task
     assert hooks.completion["status"] == "success"
     assert any("committed status=success" in note for note in caught.value.__notes__)
-    assert len([name for name, _ in hooks.events if name == "orchestrator:complete"]) == 1
+    assert (
+        len([name for name, _ in hooks.events if name == "orchestrator:complete"]) == 1
+    )
     assert handles.closes == ["session", "agent"]
 
 

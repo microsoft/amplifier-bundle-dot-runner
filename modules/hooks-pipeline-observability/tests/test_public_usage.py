@@ -1,6 +1,9 @@
 import pytest
 from amplifier_module_hooks_pipeline_observability.aggregator import StateAggregator
 from amplifier_module_hooks_pipeline_observability.models import PipelineRunState
+from amplifier_module_hooks_pipeline_observability.status_bar import (
+    StatusBarContributor,
+)
 
 
 @pytest.mark.asyncio
@@ -43,3 +46,43 @@ async def test_snapshots_replace_terminal_deduplicates_and_unknown_stays_unknown
     )
     assert agg.state.total_tokens_in == 7
     assert agg.state.total_llm_calls == 1
+    rendered = agg.state.to_dict()
+    assert rendered["total_llm_calls"] is None
+    assert rendered["total_tokens_in"] is None
+    assert rendered["public_turn_usage"] == {"s/t": final}
+    assert rendered["legacy_provider_metrics"]["total_llm_calls"] == 1
+    assert rendered["legacy_provider_metrics"]["total_tokens_in"] == 7
+    text = StatusBarContributor(agg).contribute()
+    assert "Legacy tokens: 7 in / 3 out (1 calls)" in text
+    assert "Public usage: actual/m1 20 in / ? out, actual/m2 ? in / ? out" in text
+    assert "calls unavailable" in text
+    assert len(text.splitlines()) <= 7
+
+
+@pytest.mark.asyncio
+async def test_public_selection_without_usage_discloses_unavailable_not_zero():
+    agg = StateAggregator()
+    await agg.handle_pipeline_start("pipeline:start", {"graph_name": "test"})
+    await agg.handle_public_turn_event(
+        "amplifier-agent:turn_started",
+        {
+            "contract_version": "turn-events/1",
+            "session_id": "s",
+            "turn_id": "t",
+            "payload": {"primary_actual": {"provider": "actual", "model": "m"}},
+        },
+    )
+    assert agg.state.to_dict()["total_llm_calls"] is None
+    text = StatusBarContributor(agg).contribute()
+    assert "Public usage: unavailable; calls unavailable" in text
+    assert "(0 calls)" not in text
+
+
+def test_legacy_serialization_and_status_remain_unchanged():
+    state = PipelineRunState("legacy", "", "")
+    state.total_llm_calls = 2
+    state.total_tokens_in = 15
+    rendered = state.to_dict()
+    assert rendered["total_llm_calls"] == 2
+    assert rendered["total_tokens_in"] == 15
+    assert "legacy_provider_metrics" not in rendered

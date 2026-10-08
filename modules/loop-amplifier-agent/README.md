@@ -99,6 +99,15 @@ call counts, or call timing are emitted. The timing table shows `-` for public
 LLM calls and correlates tool spans by session/turn/call ID. Nested delegation is
 visible only to the extent exposed by public events/usage, not private hooks.
 
+The runner installs child-to-parent accounting handlers through the public
+`PreparedBundle.spawn(before_initialize=...)` seam, preserving explicit host
+installers and bundle constraints. Only selection/usage/terminal envelopes are
+forwarded, with actual session/turn identity; pipeline events and persistence
+are not replayed. Status queries retain public snapshots and selections. With
+public turns present, aggregate counters are unavailable (`null`), not zero;
+legacy-only counters remain inspectable as `legacy_provider_metrics`. The status
+bar shows actual per-model public usage and discloses unavailable call counts.
+
 ## Packaging and verification
 
 The binding deliberately floats:
