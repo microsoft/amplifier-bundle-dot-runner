@@ -146,6 +146,9 @@ class PipelineEngine:
         cancel_event: threading.Event | None = None,
     ) -> None:
         self.graph = graph
+        self.max_steps = int(graph.graph_attrs.get("max_steps", len(graph.nodes) * self._MAX_GOAL_GATE_RETRIES))
+        if self.max_steps < 0:
+            raise ValueError("max_steps must be non-negative (0 means unlimited)")
         self.context = context
         self.handler_registry = handler_registry
         self.logs_root = logs_root
@@ -608,17 +611,16 @@ class PipelineEngine:
         # Bound total pipeline steps to prevent infinite loops caused by
         # condition-routing bugs or missing edge guards. Matches the safety
         # bound used in the subgraph runner (run_subgraph).
-        max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
+        max_steps = self.max_steps
         while True:
             # Safety step counter — checked first so every loop iteration
             # (including resume-path continues) is counted.
             steps += 1
-            if steps > max_steps:
+            if max_steps > 0 and steps > max_steps:
                 exceeded_outcome = Outcome(
                     status=StageStatus.FAIL,
                     failure_reason=(
-                        f"Pipeline exceeded {max_steps} steps (safety bound): "
-                        f"{len(self.graph.nodes)} nodes × {self._MAX_GOAL_GATE_RETRIES}"
+                        f"Pipeline exceeded {max_steps} steps (safety bound)"
                     ),
                 )
                 logger.error(
@@ -687,7 +689,7 @@ class PipelineEngine:
                 # Unsatisfied gate with retry target — jump there
                 if (
                     gate_result.suggested_next_ids
-                    and goal_gate_retries < self._MAX_GOAL_GATE_RETRIES
+                    and (self.max_steps == 0 or goal_gate_retries < self._MAX_GOAL_GATE_RETRIES)
                 ):
                     # _check_goal_gates() is currently the sole producer of a
                     # FAIL outcome carrying suggested_next_ids here, and it
@@ -828,7 +830,7 @@ class PipelineEngine:
                         retry_node = self._resolve_failure_retry_target(current_node)
                         if (
                             retry_node is not None
-                            and failure_routing_retries < self._MAX_GOAL_GATE_RETRIES
+                            and (self.max_steps == 0 or failure_routing_retries < self._MAX_GOAL_GATE_RETRIES)
                         ):
                             failure_routing_retries += 1
                             current_node = retry_node
@@ -1265,7 +1267,7 @@ class PipelineEngine:
                 retry_node = self._resolve_failure_retry_target(current_node)
                 if (
                     retry_node is not None
-                    and failure_routing_retries < self._MAX_GOAL_GATE_RETRIES
+                    and (self.max_steps == 0 or failure_routing_retries < self._MAX_GOAL_GATE_RETRIES)
                 ):
                     failure_routing_retries += 1
                     logger.info(
@@ -1410,9 +1412,11 @@ class PipelineEngine:
         last_outcome: Outcome | None = None
 
         # Safety bound to prevent infinite loops
-        max_steps = len(self.graph.nodes) * self._MAX_GOAL_GATE_RETRIES
+        max_steps = self.max_steps
 
-        for _step in range(max_steps):
+        steps = 0
+        while max_steps == 0 or steps < max_steps:
+            steps += 1
             # Check cancellation in subgraph runner too
             if self._check_cancelled():
                 return Outcome(
