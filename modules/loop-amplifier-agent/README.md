@@ -142,20 +142,11 @@ The binding deliberately floats:
 amplifier-agent[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@main#subdirectory=packages/python
 ```
 
-Binding 0.22.0 pins engine v0.22.0; that engine pins Foundation
-`21ad50fa40f7acff913cbf6615228ac359f7dedd`. Runner `main` Foundation conflicts in
-an unoverridden consumer solve. The runner now aligns its published requirement
-and source to that exact pin as a narrow consumer exception. There is no root
-Foundation override hiding qualification failures. Other ecosystem consumers
-still naming Foundation main may conflict and need independent qualification.
-
-Upstream's `workspace=true` engine source can leak the binding-main revision
-into a consumer uv lock despite the binding's published engine tag. Root and
-adapter lock roots therefore carry a narrow engine-only override to the exact
-published v0.22.0 tag. This corrects development locks, not runtime authority.
-Fresh `uv --no-config pip install --no-sources` checks run independently of
-that override. When binding main changes its engine requirement, requalify and
-update this correction rather than silently holding an obsolete tag.
+The binding and engine select the same upstream `main` source. Foundation
+and tool-delegate also select Foundation `main`, matching the runner without
+an engine or Foundation override. Release tooling must explicitly resolve and
+freeze both agent packages and Foundation at their selected commits. An
+installation from moving refs alone does not establish immutable provenance.
 
 ```bash
 cd modules/loop-amplifier-agent
