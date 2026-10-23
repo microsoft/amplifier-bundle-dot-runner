@@ -243,12 +243,25 @@ class TruncationHook:
         source = data.get("dispatch_source")
         if (
             isinstance(source, dict)
-            and all(isinstance(source.get(key), str) and source[key] for key in (
-                "session_id", "run_id", "parent_tool_call_id", "tool_call_id", "tool_name",
-            ))
-            and all(source[key] == data.get(key) for key in (
-                "session_id", "parent_tool_call_id", "tool_call_id", "tool_name",
-            ))
+            and all(
+                isinstance(source.get(key), str) and source[key]
+                for key in (
+                    "session_id",
+                    "run_id",
+                    "parent_tool_call_id",
+                    "tool_call_id",
+                    "tool_name",
+                )
+            )
+            and all(
+                source[key] == data.get(key)
+                for key in (
+                    "session_id",
+                    "parent_tool_call_id",
+                    "tool_call_id",
+                    "tool_name",
+                )
+            )
         ):
             # Nested dispatch still runs all ordinary hooks and the caller's
             # result/transport limits. Its selected outer output takes the

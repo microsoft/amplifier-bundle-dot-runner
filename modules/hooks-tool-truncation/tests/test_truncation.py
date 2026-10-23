@@ -433,14 +433,29 @@ class TestHookHandler:
         assert result.action in ("continue", "modify")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("broken", [
-        "missing_source", "parent_tool_call_id", "tool_call_id", "tool_name", "session_id", "run_id",
-    ])
-    async def test_incomplete_nested_attribution_does_not_skip_model_limit(self, broken):
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            "missing_source",
+            "parent_tool_call_id",
+            "tool_call_id",
+            "tool_name",
+            "session_id",
+            "run_id",
+        ],
+    )
+    async def test_incomplete_nested_attribution_does_not_skip_model_limit(
+        self, broken
+    ):
         from amplifier_module_hooks_tool_truncation import TruncationHook
 
-        source = {"session_id": "session", "run_id": "run", "parent_tool_call_id": "parent",
-                  "tool_call_id": "child", "tool_name": "read_file"}
+        source = {
+            "session_id": "session",
+            "run_id": "run",
+            "parent_tool_call_id": "parent",
+            "tool_call_id": "child",
+            "tool_name": "read_file",
+        }
         data = {**source, "dispatch_source": dict(source), "result": "x" * 100_000}
         if broken == "missing_source":
             data.pop("dispatch_source")
