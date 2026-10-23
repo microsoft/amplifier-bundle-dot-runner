@@ -235,6 +235,38 @@ class TruncationHook:
 
     async def handle_tool_post(self, event: str, data: dict[str, Any]) -> HookResult:
         """Handle a ``tool:post`` event."""
+        # A tools.dispatch child returns machine data to its active caller, not
+        # text to the model. Serializing/truncating its ToolResult here destroys
+        # confirmed success/error and prevents selective output in tool_exec.
+        # The host supplies this attribution outside tool arguments. Require a
+        # matching envelope; an ordinary call or stray parent id is not enough.
+        source = data.get("dispatch_source")
+        if (
+            isinstance(source, dict)
+            and all(
+                isinstance(source.get(key), str) and source[key]
+                for key in (
+                    "session_id",
+                    "run_id",
+                    "parent_tool_call_id",
+                    "tool_call_id",
+                    "tool_name",
+                )
+            )
+            and all(
+                source[key] == data.get(key)
+                for key in (
+                    "session_id",
+                    "parent_tool_call_id",
+                    "tool_call_id",
+                    "tool_name",
+                )
+            )
+        ):
+            # Nested dispatch still runs all ordinary hooks and the caller's
+            # result/transport limits. Its selected outer output takes the
+            # unchanged model-facing character/line truncation below.
+            return HookResult(action="continue")
         tool_name = data.get("tool_name", "")
         raw_result = data.get("result")
 

@@ -5289,3 +5289,30 @@ checkpoint-proven `write_green_finding` precedence over a stray
 gate's synthetic no-Interviewer probe left the generic artifact behind, and
 the old existence-only classifier misreported that test residue as an
 escalation.*
+
+## 49. Nested Tool Results Stay Machine-Readable Until Model Delivery
+
+**Classification: additive host integration on a spec-silent surface.** Dated
+2026-10-23. The pinned `coding-agent-loop-spec-canonical.md` §5.1 requires
+truncation before output is sent to the LLM, with full output in the event
+stream; §§5.2–5.3 define limits and character-before-line order. Those rules
+remain unchanged for ordinary calls and the outer programmatic tool's selected
+output. The spec does not define the host's `tools.dispatch` nested-call API.
+
+An attributed nested call returns structured data to its active caller, which
+selects the output to send to the model. Applying textual head/tail truncation
+to that intermediate `ToolResult` destroyed its success/error fields and made
+completed mutations appear unknown. The truncation hook now leaves matching
+host-attributed child events intact. It does not skip other hooks, grant tool
+authority, infer success from pre-hook data, or change the caller's bounded
+result/transport/output limits. Incomplete or mismatched attribution still
+takes ordinary truncation. Full child evidence remains in ordinary events.
+
+This is implemented at the optional hook boundary, not in the graph engine;
+no `.dot` behavior or frozen conformance row changes. The real Core/live
+dispatcher, JavaScript tool worker and hook regression proves two saved effects
+occur once, failed and denied calls remain distinct, cancellation remains
+unknown without rollback, and both selected-output and nested-result limits
+retain confirmed outcomes. The ordinary-call control still truncates with the
+required warning and retains full event output. Evidence owner:
+`modules/hooks-tool-truncation/tests/test_nested_dispatch.py`.
