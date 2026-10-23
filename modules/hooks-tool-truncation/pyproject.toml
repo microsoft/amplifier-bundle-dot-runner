@@ -41,6 +41,10 @@ asyncio_mode = "strict"
 [dependency-groups]
 dev = [
     "amplifier-core",
+    # Real approved dispatch and isolated JavaScript worker regression tests.
+    "amplifier-module-loop-live @ git+https://github.com/microsoft/amplifier-module-loop-live@76073827ba6742ae026a12b524f596120cd2b314",
+    "amplifier-module-context-simple @ git+https://github.com/microsoft/amplifier-module-context-simple@db641363013ff906b656f49498a87ab01f5c506f",
+    "amplifier-module-tool-exec @ git+https://github.com/microsoft/amplifier-module-tool-exec@f267548ccd1b38a236a46afb96252bb6dd474dcd",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
 ]
