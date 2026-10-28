@@ -145,16 +145,33 @@ jobs:
 
       - name: Install root package without uv source mappings
         run: |
-          # Only redirect same-repo packages to this candidate. Never override
-          # binding/engine/Foundation sources: their conflicts must remain visible.
+          # Redirect the root's same-repo runtime dependency closure only.
+          # A module elsewhere in this repository can share a distribution name
+          # with an engine dependency without implementing that dependency's API.
+          # Never override binding/engine/Foundation-owned sources.
           python - <<'PY'
           from pathlib import Path
           import tomllib
+          modules = {
+              tomllib.loads(path.read_text())["project"]["name"]: path
+              for path in Path("modules").glob("*/pyproject.toml")
+          }
+          pending = [Path("pyproject.toml")]
+          visited = set()
           lines = []
-          for path in Path("modules").glob("*/pyproject.toml"):
-              name = tomllib.loads(path.read_text())["project"]["name"]
-              lines.append(f"{name} @ {path.parent.resolve().as_uri()}")
-          Path("candidate-overrides.txt").write_text("\n".join(lines) + "\n")
+          while pending:
+              project = tomllib.loads(pending.pop().read_text())["project"]
+              for dependency in project.get("dependencies", []):
+                  if " @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@" not in dependency:
+                      continue
+                  name = dependency.split(" @ ", 1)[0].split("[", 1)[0]
+                  if name in visited:
+                      continue
+                  visited.add(name)
+                  path = modules[name]
+                  lines.append(f"{name} @ {path.parent.resolve().as_uri()}")
+                  pending.append(path)
+          Path("candidate-overrides.txt").write_text("\n".join(sorted(lines)) + "\n")
           PY
           uv --no-config pip install --python .venv-root-install -e . \
             --no-sources --overrides candidate-overrides.txt
