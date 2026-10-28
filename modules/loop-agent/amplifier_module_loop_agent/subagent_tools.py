@@ -14,6 +14,7 @@ They use the coordinator's spawn capability for actual execution.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -42,6 +43,7 @@ class SubagentState:
     model: str = ""  # M-8: optional model override for subagent
     pending_messages: list[str] = field(default_factory=list)
     result: str | None = None
+    execution: asyncio.Task | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +289,14 @@ class WaitTool(_SubagentTool):
                 output=f"Agent not found: {agent_id}",
             )
 
+        if state.status == "closed":
+            return ToolResult(
+                success=False,
+                output=json.dumps({"agent_id": agent_id, "status": state.status}),
+            )
+        if state.execution is not None:
+            return await self._join(state)
+
         # If already completed or failed, return cached result
         if state.status in ("completed", "failed"):
             return ToolResult(
@@ -327,17 +337,48 @@ class WaitTool(_SubagentTool):
             "parent_session": parent_session,
             "agent_configs": agent_configs,
         }
-        # Pass max_turns via orchestrator_config if set
+        # Canonical coding-agent spec §7.3: descendants retain the limit and
+        # consume one level. Forward both loop and delegate depth channels.
+        spawn_kwargs["orchestrator_config"] = {
+            "current_depth": self._manager._current_depth + 1,
+            "max_subagent_depth": self._manager._max_depth,
+        }
+        spawn_kwargs["self_delegation_depth"] = self._manager._current_depth + 1
         if state.max_turns:
-            spawn_kwargs["orchestrator_config"] = {
-                "max_turns": state.max_turns,
-            }
+            spawn_kwargs["orchestrator_config"]["max_turns"] = state.max_turns
         # Pass model as provider_preferences if set (M-8)
         if state.model:
             spawn_kwargs["provider_preferences"] = [{"model": state.model}]
 
         # Execute via session.spawn capability
         state.status = "running"
+        state.execution = asyncio.create_task(self._run(state, spawn_fn, spawn_kwargs))
+        return await self._join(state)
+
+    async def _join(self, state: SubagentState) -> ToolResult:
+        try:
+            return await asyncio.shield(state.execution)
+        except asyncio.CancelledError:
+            # close_agent cancelled the child, rather than this waiter. Return
+            # its actual terminal state to the pursuing agent.
+            if not asyncio.current_task().cancelling():
+                return ToolResult(
+                    success=False,
+                    output=json.dumps(
+                        {"agent_id": state.agent_id, "status": state.status}
+                    ),
+                )
+            state.execution.cancel()
+            try:
+                await state.execution
+            except asyncio.CancelledError:
+                pass
+            raise
+
+    async def _run(
+        self, state: SubagentState, spawn_fn: Any, spawn_kwargs: dict
+    ) -> ToolResult:
+        agent_id = state.agent_id
         try:
             result = await spawn_fn(**spawn_kwargs)
 
@@ -347,6 +388,26 @@ class WaitTool(_SubagentTool):
             )
             session_id = result.get("session_id") if isinstance(result, dict) else None
 
+            execution_status = (
+                result.get("status", "success")
+                if isinstance(result, dict)
+                else "success"
+            )
+            if execution_status != "success":
+                state.status = "failed"
+                state.result = output
+                return ToolResult(
+                    success=False,
+                    output=json.dumps(
+                        {
+                            "agent_id": agent_id,
+                            "status": "failed",
+                            "execution_status": execution_status,
+                            "output": output,
+                            "session_id": session_id,
+                        }
+                    ),
+                )
             state.status = "completed"
             state.result = output
             state.pending_messages.clear()
@@ -363,6 +424,10 @@ class WaitTool(_SubagentTool):
                     }
                 ),
             )
+        except asyncio.CancelledError:
+            state.status = "closed" if state.status == "closing" else "failed"
+            state.result = "Subagent execution cancelled"
+            raise
         except Exception as e:
             state.status = "failed"
             state.result = str(e)
@@ -410,7 +475,16 @@ class CloseAgentTool(_SubagentTool):
                 output=f"Agent not found: {agent_id}",
             )
 
-        # Idempotent: closing already-closed agent is fine
+        # Terminate actual owned work before reporting closure (§7.2), and
+        # never allow a subsequent wait to restart a closed pending handle.
+        state.status = "closing"
+        if state.execution is not None and not state.execution.done():
+            state.execution.cancel()
+            try:
+                await state.execution
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
         state.status = "closed"
         state.pending_messages.clear()
 
