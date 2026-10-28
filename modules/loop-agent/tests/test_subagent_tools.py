@@ -98,9 +98,11 @@ class TestSpawnAgent:
         mgr = SubagentManager(coordinator=coordinator)
         tool = _find_tool(mgr, "spawn_agent")
 
-        result = await tool.execute({
-            "task": "Plan the feature",
-        })
+        result = await tool.execute(
+            {
+                "task": "Plan the feature",
+            }
+        )
         assert result.success
         assert "agent_id" in result.output
 
@@ -151,11 +153,13 @@ class TestSpawnAgent:
         mgr = SubagentManager(coordinator=coordinator)
         tool = _find_tool(mgr, "spawn_agent")
 
-        result = await tool.execute({
-            "task": "Plan feature",
-            "working_dir": "/tmp/work",
-            "max_turns": 25,
-        })
+        result = await tool.execute(
+            {
+                "task": "Plan feature",
+                "working_dir": "/tmp/work",
+                "max_turns": 25,
+            }
+        )
         assert result.success
         agent_id = _extract_agent_id(result.output)
         state = mgr._agents[agent_id]
@@ -169,10 +173,12 @@ class TestSpawnAgent:
         mgr = SubagentManager(coordinator=coordinator)
         tool = _find_tool(mgr, "spawn_agent")
 
-        result = await tool.execute({
-            "task": "Analyze code",
-            "model": "claude-sonnet-4-20250514",
-        })
+        result = await tool.execute(
+            {
+                "task": "Analyze code",
+                "model": "claude-sonnet-4-20250514",
+            }
+        )
         assert result.success
         agent_id = _extract_agent_id(result.output)
         state = mgr._agents[agent_id]
@@ -205,10 +211,12 @@ class TestModelPassthrough:
         spawn_tool = _find_tool(mgr, "spawn_agent")
         wait_tool = _find_tool(mgr, "wait")
 
-        spawn_result = await spawn_tool.execute({
-            "task": "Work",
-            "model": "gpt-4o",
-        })
+        spawn_result = await spawn_tool.execute(
+            {
+                "task": "Work",
+                "model": "gpt-4o",
+            }
+        )
         agent_id = _extract_agent_id(spawn_result.output)
         await wait_tool.execute({"agent_id": agent_id})
 
@@ -253,10 +261,12 @@ class TestSendInput:
         spawn_result = await spawn_tool.execute({"task": "Work"})
         agent_id = _extract_agent_id(spawn_result.output)
 
-        result = await send_tool.execute({
-            "agent_id": agent_id,
-            "message": "Focus on tests first",
-        })
+        result = await send_tool.execute(
+            {
+                "agent_id": agent_id,
+                "message": "Focus on tests first",
+            }
+        )
         assert result.success
         assert mgr._agents[agent_id].pending_messages == ["Focus on tests first"]
 
@@ -267,10 +277,12 @@ class TestSendInput:
         mgr = SubagentManager(coordinator=coordinator)
         send_tool = _find_tool(mgr, "send_input")
 
-        result = await send_tool.execute({
-            "agent_id": "nonexistent",
-            "message": "hello",
-        })
+        result = await send_tool.execute(
+            {
+                "agent_id": "nonexistent",
+                "message": "hello",
+            }
+        )
         assert not result.success
         assert "not found" in result.output.lower()
 
@@ -287,10 +299,12 @@ class TestSendInput:
         agent_id = _extract_agent_id(spawn_result.output)
         await close_tool.execute({"agent_id": agent_id})
 
-        result = await send_tool.execute({
-            "agent_id": agent_id,
-            "message": "hello",
-        })
+        result = await send_tool.execute(
+            {
+                "agent_id": agent_id,
+                "message": "hello",
+            }
+        )
         assert not result.success
         assert "closed" in result.output.lower()
 
@@ -349,10 +363,12 @@ class TestWait:
 
         spawn_result = await spawn_tool.execute({"task": "Build feature"})
         agent_id = _extract_agent_id(spawn_result.output)
-        await send_tool.execute({
-            "agent_id": agent_id,
-            "message": "Focus on tests",
-        })
+        await send_tool.execute(
+            {
+                "agent_id": agent_id,
+                "message": "Focus on tests",
+            }
+        )
         await wait_tool.execute({"agent_id": agent_id})
 
         # The instruction passed to session.spawn should include the task and message
@@ -437,7 +453,9 @@ class TestWait:
         coordinator = _make_coordinator(
             spawn_result={"output": "done", "session_id": "child-123"},
             session="parent-session-abc",
-            agents={"test-agent": {"session": {"orchestrator": {"module": "loop-agent"}}}},
+            agents={
+                "test-agent": {"session": {"orchestrator": {"module": "loop-agent"}}}
+            },
         )
         mgr = SubagentManager(coordinator=coordinator)
         spawn_tool = _find_tool(mgr, "spawn_agent")
@@ -455,13 +473,16 @@ class TestWait:
         call_kwargs = coordinator._mock_spawn.call_args[1]
         assert call_kwargs["instruction"] == "Write hello.py"
         assert call_kwargs["parent_session"] == "parent-session-abc"
-        assert call_kwargs["agent_configs"] == {"test-agent": {"session": {"orchestrator": {"module": "loop-agent"}}}}
+        assert call_kwargs["agent_configs"] == {
+            "test-agent": {"session": {"orchestrator": {"module": "loop-agent"}}}
+        }
         assert "agent_name" in call_kwargs
 
     @pytest.mark.asyncio
     async def test_wait_returns_session_id_from_spawn(self):
         """wait returns session_id from the spawn result dict."""
         import json
+
         coordinator = _make_coordinator(
             spawn_result={"output": "Task done", "session_id": "child-999"},
         )
@@ -552,15 +573,20 @@ class TestOrchestratorWiring:
         coordinator.register_capability = MagicMock()
 
         provider = AsyncMock()
-        provider.complete = AsyncMock(return_value=ChatResponse(
-            content=[{"type": "text", "text": "done"}],
-            tool_calls=None,
-            usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
-        ))
+        provider.complete = AsyncMock(
+            return_value=ChatResponse(
+                content=[{"type": "text", "text": "done"}],
+                tool_calls=None,
+                usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
+            )
+        )
         hooks = MagicMock()
         hooks.emit = AsyncMock(return_value=MagicMock(action="continue"))
 
-        orch = AgentOrchestrator(coordinator, {"system_prompt": "You are a test coding agent.", "max_subagent_depth": 1})
+        orch = AgentOrchestrator(
+            coordinator,
+            {"system_prompt": "You are a test coding agent.", "max_subagent_depth": 1},
+        )
         await orch.execute("hi", MagicMock(), {"test": provider}, {}, hooks)
 
         # Session should have the 4 subagent tools
@@ -580,17 +606,24 @@ class TestOrchestratorWiring:
         coordinator.register_capability = MagicMock()
 
         provider = AsyncMock()
-        provider.complete = AsyncMock(return_value=ChatResponse(
-            content=[{"type": "text", "text": "done"}],
-            tool_calls=None,
-            usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
-        ))
+        provider.complete = AsyncMock(
+            return_value=ChatResponse(
+                content=[{"type": "text", "text": "done"}],
+                tool_calls=None,
+                usage=Usage(input_tokens=10, output_tokens=5, total_tokens=15),
+            )
+        )
         hooks = MagicMock()
         hooks.emit = AsyncMock(return_value=MagicMock(action="continue"))
 
         # current_depth=1, max_subagent_depth=1 => no subagent tools
         orch = AgentOrchestrator(
-            coordinator, {"system_prompt": "You are a test coding agent.", "max_subagent_depth": 1, "current_depth": 1}
+            coordinator,
+            {
+                "system_prompt": "You are a test coding agent.",
+                "max_subagent_depth": 1,
+                "current_depth": 1,
+            },
         )
         await orch.execute("hi", MagicMock(), {"test": provider}, {}, hooks)
 
@@ -619,6 +652,7 @@ def _extract_agent_id(output: str) -> str:
     Expects output to contain 'agent_id: <id>' or similar.
     """
     import json
+
     try:
         data = json.loads(output)
         return data["agent_id"]
@@ -631,3 +665,89 @@ def _extract_agent_id(output: str) -> str:
                 if len(parts) >= 2:
                     return parts[-1].strip().strip('"')
         raise ValueError(f"Could not extract agent_id from: {output}")
+
+
+@pytest.mark.asyncio
+async def test_descendant_depth_and_limit_reach_host_spawn():
+    coordinator = _make_coordinator()
+    manager = SubagentManager(coordinator, max_depth=3, current_depth=1)
+    handle = _extract_agent_id(
+        (await _find_tool(manager, "spawn_agent").execute({"task": "bounded"})).output
+    )
+    await _find_tool(manager, "wait").execute({"agent_id": handle})
+    sent = coordinator._mock_spawn.call_args.kwargs
+    assert sent["orchestrator_config"]["current_depth"] == 2
+    assert sent["orchestrator_config"]["max_subagent_depth"] == 3
+    assert sent["self_delegation_depth"] == 2
+
+
+@pytest.mark.asyncio
+async def test_closed_pending_handle_cannot_be_started_by_wait():
+    coordinator = _make_coordinator()
+    manager = SubagentManager(coordinator)
+    handle = _extract_agent_id(
+        (await _find_tool(manager, "spawn_agent").execute({"task": "pending"})).output
+    )
+    await _find_tool(manager, "close_agent").execute({"agent_id": handle})
+    result = await _find_tool(manager, "wait").execute({"agent_id": handle})
+    assert not result.success and "closed" in result.output
+    coordinator._mock_spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_active_close_stops_owned_execution_and_concurrent_waits_do_not_duplicate():
+    import asyncio
+    import json
+
+    coordinator = _make_coordinator()
+    entered, stopped = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def execute(**kwargs):
+        calls.append(kwargs)
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    coordinator.get_capability.return_value = execute
+    manager = SubagentManager(coordinator)
+    handle = _extract_agent_id(
+        (await _find_tool(manager, "spawn_agent").execute({"task": "active"})).output
+    )
+    first = asyncio.create_task(
+        _find_tool(manager, "wait").execute({"agent_id": handle})
+    )
+    await asyncio.wait_for(entered.wait(), 2)
+    second = asyncio.create_task(
+        _find_tool(manager, "wait").execute({"agent_id": handle})
+    )
+    closed = await _find_tool(manager, "close_agent").execute({"agent_id": handle})
+    results = await asyncio.gather(first, second)
+    assert stopped.is_set()
+    assert len(calls) == 1
+    assert json.loads(closed.output)["status"] == "closed"
+    assert all(not result.success and "closed" in result.output for result in results)
+    assert not (await _find_tool(manager, "wait").execute({"agent_id": handle})).success
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", ["incomplete", "cancelled", "failed"])
+@pytest.mark.asyncio
+async def test_unfinished_helper_is_not_reported_as_completed(status):
+    coordinator = _make_coordinator(
+        spawn_result={
+            "output": "partial result",
+            "session_id": "child",
+            "status": status,
+        }
+    )
+    manager = SubagentManager(coordinator)
+    handle = _extract_agent_id(
+        (await _find_tool(manager, "spawn_agent").execute({"task": "work"})).output
+    )
+    result = await _find_tool(manager, "wait").execute({"agent_id": handle})
+    assert not result.success
+    assert status in result.output and "partial result" in result.output
+    assert manager._agents[handle].status == "failed"
