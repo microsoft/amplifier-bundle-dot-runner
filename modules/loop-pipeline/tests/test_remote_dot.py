@@ -438,3 +438,74 @@ async def test_load_remote_forwards_params_to_materialize(tmp_path, monkeypatch)
         "parse gets -- the tree walk parses every fetched file"
     )
     assert "s" in graph.nodes
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_caller_owned_view_parent_retains_unique_views_and_ownership(tmp_path):
+    """Two consumers may share a parent without sharing a writable view."""
+    parent = tmp_path / "prepared-generation"
+    parent.mkdir()
+    canary = parent / "caller-owned"
+    canary.write_text("preserve")
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/main.dot",
+        "digraph G { start [shape=Mdiamond]; exit [shape=Msquare]; start -> exit; }",
+    )
+    cache = BlobCache(tmp_path / "cache")
+    first, clean_first = await materialize_remote_dot(
+        ENTRY, cache=cache, view_parent=parent
+    )
+    second, clean_second = await materialize_remote_dot(
+        ENTRY, cache=cache, view_parent=parent
+    )
+    try:
+        assert first.is_relative_to(parent)
+        assert second.is_relative_to(parent)
+        assert first != second
+        clean_first()
+        assert not first.exists()
+        assert second.read_text().startswith("digraph G")
+        assert canary.read_text() == "preserve"
+    finally:
+        clean_first()
+        clean_second()
+    assert list(parent.iterdir()) == [canary]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_failed_materialization_removes_only_owned_view_under_parent(tmp_path):
+    parent = tmp_path / "preparation"
+    parent.mkdir()
+    canary = parent / "caller-owned"
+    canary.write_text("preserve")
+    _contents(
+        "acme",
+        "samples",
+        "pipelines/main.dot",
+        'digraph G { child [dot_file="missing.dot"]; }',
+    )
+    respx.get(
+        url__regex=re_escape(f"{API}/acme/samples/contents/pipelines/missing.dot")
+    ).mock(return_value=httpx.Response(404))
+    with pytest.raises(remote_source.RemoteFetchNotFound):
+        await materialize_remote_dot(
+            ENTRY, cache=BlobCache(tmp_path / "cache"), view_parent=parent
+        )
+    assert list(parent.iterdir()) == [canary]
+    assert canary.read_text() == "preserve"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["absent", "file"])
+async def test_unusable_view_parent_does_not_fall_back_to_system_temp(tmp_path, kind):
+    parent = tmp_path / "parent"
+    if kind == "file":
+        parent.write_text("not a directory")
+    with pytest.raises(OSError):
+        await materialize_remote_dot(
+            ENTRY, cache=BlobCache(tmp_path / "cache"), view_parent=parent
+        )

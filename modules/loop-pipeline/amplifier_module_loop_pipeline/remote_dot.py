@@ -36,7 +36,7 @@ _GIT_HTTPS_PREFIX = "git+https://"
 
 @dataclass
 class _Ref:
-    origin: object            # Origin (Layer A) — typed loosely to avoid a top-level import
+    origin: object  # Origin (Layer A) — typed loosely to avoid a top-level import
     local_relpath: str
     cross_origin: bool
 
@@ -72,7 +72,9 @@ def extract_dot_file_refs(
             f"Failed to parse DOT from {origin.owner}/{origin.repo}"
             f"@{origin.ref}#{origin.path}: {exc}"
         ) from exc
-    return [n.attrs["dot_file"] for n in graph.nodes.values() if n.attrs.get("dot_file")]
+    return [
+        n.attrs["dot_file"] for n in graph.nodes.values() if n.attrs.get("dot_file")
+    ]
 
 
 def _resolve_ref(raw_ref: str, referrer) -> _Ref | None:
@@ -118,12 +120,19 @@ async def materialize_remote_dot(
     cache=None,
     base_url: str | None = None,
     params: dict[str, str] | None = None,
+    view_parent: Path | None = None,
 ) -> tuple[Path, Callable[[], None]]:
     """Materialize a remote pipeline tree into a per-run local view.
 
     Returns (entry_local_path, cleanup). Blobs persist in the shared cache;
     ``cleanup()`` removes only the per-run view dir. On failure the partial view
     is removed here (nothing has executed yet) and the error propagates.
+
+    ``view_parent`` optionally places that private view beneath an existing
+    caller-owned directory, for example a retained preparation generation. Each
+    call still creates its own unique child; cleanup never removes the parent
+    or another call's view. An unusable parent raises rather than using a
+    different location. Omitting it preserves the normal temporary directory.
 
     ``params`` is the graph-level ``$name`` mapping (EXTENSIONS.md entry 43),
     forwarded to the ``dot_file=`` ref-extraction parse of every fetched file.
@@ -143,7 +152,7 @@ async def materialize_remote_dot(
     token = token if token is not None else resolve_token()
 
     entry = parse_uri(entry_uri)
-    view_dir = tempfile.mkdtemp(prefix="attractor-remote-")
+    view_dir = tempfile.mkdtemp(prefix="attractor-remote-", dir=view_parent)
     entry_local_path = Path(view_dir) / _repo_root_relpath(entry)
 
     seen: dict[tuple, str] = {}
