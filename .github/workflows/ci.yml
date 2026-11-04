@@ -145,16 +145,40 @@ jobs:
 
       - name: Install root package without uv source mappings
         run: |
-          # Only redirect same-repo packages to this candidate. Never override
-          # binding/engine/Foundation sources: their conflicts must remain visible.
+          # Follow the root's declared same-repo runtime references, including
+          # selected extras. A shared package name alone does not make a dependency
+          # ours: Agent's apply-patch comes from amplifier-bundle-filesystem.
+          # Never replace external binding/engine/tool/Foundation sources.
           python - <<'PY'
           from pathlib import Path
           import tomllib
-          lines = []
-          for path in Path("modules").glob("*/pyproject.toml"):
-              name = tomllib.loads(path.read_text())["project"]["name"]
-              lines.append(f"{name} @ {path.parent.resolve().as_uri()}")
-          Path("candidate-overrides.txt").write_text("\n".join(lines) + "\n")
+          prefix = "git+https://github.com/microsoft/amplifier-bundle-dot-runner@"
+          pending = [(Path("."), ())]
+          visited = set()
+          overrides = {}
+          while pending:
+              directory, extras = pending.pop()
+              identity = (directory.resolve(), extras)
+              if identity in visited:
+                  continue
+              visited.add(identity)
+              project = tomllib.loads((directory / "pyproject.toml").read_text())["project"]
+              dependencies = list(project.get("dependencies", []))
+              for extra in extras:
+                  dependencies.extend(project["optional-dependencies"][extra])
+              for dependency in dependencies:
+                  requirement, separator, url = dependency.partition("@")
+                  requirement, url = requirement.strip(), url.strip()
+                  if not separator or not url.startswith(prefix):
+                      continue
+                  name, _, selected = requirement.partition("[")
+                  selected = tuple(sorted(item.strip() for item in selected.rstrip("]").split(","))) if selected else ()
+                  module = Path(url.split("#subdirectory=", 1)[1])
+                  candidate = tomllib.loads((module / "pyproject.toml").read_text())["project"]
+                  assert candidate["name"] == name, (name, module)
+                  overrides[name] = f"{name} @ {module.resolve().as_uri()}"
+                  pending.append((module, selected))
+          Path("candidate-overrides.txt").write_text("\n".join(sorted(overrides.values())) + "\n")
           PY
           uv --no-config pip install --python .venv-root-install -e . \
             --no-sources --overrides candidate-overrides.txt
