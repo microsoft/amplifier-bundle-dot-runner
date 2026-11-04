@@ -7,10 +7,7 @@ requires-python = ">=3.11"
 authors = [{ name = "Microsoft MADE:Explorations Team" }]
 dependencies = [
     "amplifier-core>=2.0.1",
-    # Narrow consumer exception: the public binding's v0.22.0 engine requires
-    # this exact Foundation source. main conflicts in an unoverridden solve.
-    # Direct URL also survives Foundation activation with --no-sources.
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@21ad50fa40f7acff913cbf6615228ac359f7dedd",
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
     "amplifier-module-loop-pipeline[remote] @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-pipeline",
 ]
 
@@ -25,7 +22,7 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.uv.sources]
-amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "21ad50fa40f7acff913cbf6615228ac359f7dedd" }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", rev = "main" }
 amplifier-module-loop-pipeline = { path = "../loop-pipeline" }
 amplifier-module-remote-source = { path = "../remote-source" }
 
