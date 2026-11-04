@@ -809,6 +809,18 @@ class AmplifierBackend:
         # afterward by the handler layer, unaffected by this method.
         output = result.get("output", "") if isinstance(result, dict) else str(result)
 
+        if isinstance(result, dict) and result.get("status") in {"incomplete", "cancelled"}:
+            outcome = Outcome(
+                status=StageStatus.FAIL,
+                failure_reason=f"Child session {result['status']}",
+                execution_complete=False,
+                is_explicit=False,
+            )
+            outcome.session_id = _session_id_from_spawn_result(result)
+            if fidelity == "full" and graph is not None and thread_key is not None:
+                self._append_to_transcript(thread_key, node.id, instruction, _synthesize_outcome_marker(outcome))
+            return outcome
+
         if not output.strip():
             # The child's FINAL assistant message was empty — but that does NOT
             # mean the child failed.  A child that did its work via tool calls

@@ -5245,6 +5245,32 @@ proxy. `.github/capsule-pipeline/test_turn_caps.py` contains the complete
 graph/node census, exact caps, sources, and these assumptions, so a new
 LLM node cannot escape the pin or cap silently.*
 
+## 49. Author-selected Unbounded Goal Traversal and Interrupted Children
+
+**Classification:** implementer extension on graph attributes (Attractor
+canonical §3.2), with honest child-completion handling at §4.5. No frozen
+contract or ledger assertion changes. Owner instruction dated 2026-10-09:
+Goals must not have arbitrary turn, attempt or traversal budgets.
+
+An explicit graph `max_steps=0` removes the engine's traversal safety ceiling
+for both root and subgraph execution. Omitted values preserve the existing
+node-count ceiling for other graphs; positive values remain explicit bounds,
+and negative values are rejected. Explicit zero also removes the engine's
+50-hop gate/failure-routing retry ceiling; per-node infrastructure retry policy
+is unchanged. Graph composition alone cannot remove the
+engine-imposed ceiling, which is why an author-controlled attribute is needed.
+Cancellation and externally owned deadlines are unchanged; this does not
+authorize additional capacity or privilege.
+
+Coding-agent canonical §2.5 distinguishes completed execution from interrupted
+execution. A spawned child's `incomplete` or `cancelled` envelope is a failed,
+unfinished execution, regardless of intermediate prose or success JSON. Its
+status file cannot override that lifecycle fact. Completed children retain the
+existing §41 external status-file channel and verdict parsing.
+
+Evidence: `test_goal_unbounded_execution.py` exercises root/subgraph convergence
+beyond the old ceiling and interrupted text/status-file refusal.
+
 ## 48. CI-Safe Escalation Artifacts Must Be Actionable
 
 **Classification: implementer extension on a spec-silent surface. No

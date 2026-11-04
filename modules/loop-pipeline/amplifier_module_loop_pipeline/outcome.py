@@ -95,6 +95,7 @@ class Outcome:
     #: branch execution which has no retry policy). Additive field
     #: \u2014 not part of status.json's existing shape; consumers must opt in.
     attempt_count: int | None = None
+    execution_complete: bool = True
 
     @property
     def is_success(self) -> bool:
