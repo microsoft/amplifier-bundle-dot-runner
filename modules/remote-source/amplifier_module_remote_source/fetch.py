@@ -10,9 +10,12 @@ import asyncio
 import base64
 import hashlib
 import logging
+import math
 import os
 import subprocess
+import time
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -40,8 +43,8 @@ class FetchResult:
     """
 
     content: bytes | None
-    blob_sha: str | None        # locally computed git blob SHA
-    server_sha: str | None      # sha the server declared (for integrity compare)
+    blob_sha: str | None  # locally computed git blob SHA
+    server_sha: str | None  # sha the server declared (for integrity compare)
     etag: str | None
     not_modified: bool = False
 
@@ -67,6 +70,7 @@ def resolve_token() -> str | None:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         token = out.stdout.strip()
         if out.returncode == 0 and token:
@@ -104,6 +108,56 @@ def _contents_url(base: str, origin: Origin) -> str:
     return f"{base}/repos/{origin.owner}/{origin.repo}/contents/{origin.path}"
 
 
+def _nonnegative_number(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _rate_limit_delay(
+    resp: httpx.Response, fallback: float
+) -> tuple[float, float | None]:
+    """Honor provider cooldowns without retaining untrusted headers or bodies."""
+    reset = _nonnegative_number(resp.headers.get("x-ratelimit-reset"))
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after is not None:
+        seconds = _nonnegative_number(retry_after)
+        if seconds is None:
+            try:
+                date = parsedate_to_datetime(retry_after)
+                if date.tzinfo is not None:
+                    seconds = max(0.0, date.timestamp() - time.time())
+            except (ValueError, TypeError, OverflowError):
+                pass
+        if seconds is not None:
+            return seconds, reset
+    if resp.headers.get("x-ratelimit-remaining") == "0" and reset is not None:
+        return max(0.0, reset - time.time()), reset
+    return fallback, reset
+
+
+def _is_rate_limited(resp: httpx.Response) -> bool:
+    if resp.status_code == 429:
+        return True
+    if resp.status_code != 403:
+        return False
+    if (
+        "Retry-After" in resp.headers
+        or resp.headers.get("x-ratelimit-remaining") == "0"
+    ):
+        return True
+    try:
+        payload = resp.json()
+    except ValueError:
+        return False
+    message = payload.get("message") if isinstance(payload, dict) else None
+    return isinstance(message, str) and "secondary rate limit" in message.lower()
+
+
 async def fetch_blob(
     origin: Origin,
     *,
@@ -129,17 +183,21 @@ async def fetch_blob(
         headers["If-None-Match"] = etag
 
     backoff = 1.0
+    rate_backoff = 60.0
     last_exc: Exception | None = None
     async with httpx.AsyncClient() as client:
-        for _ in range(_MAX_ATTEMPTS):
+        for attempt in range(_MAX_ATTEMPTS):
             try:
                 resp = await client.get(
-                    url, params=params, headers=headers,
+                    url,
+                    params=params,
+                    headers=headers,
                     timeout=limits.per_request_timeout,
                 )
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc = exc
-                await asyncio.sleep(backoff)
+                if attempt + 1 < _MAX_ATTEMPTS:
+                    await asyncio.sleep(backoff)
                 backoff *= 2
                 continue
 
@@ -179,26 +237,31 @@ async def fetch_blob(
                     f"404 fetching {origin.owner}/{origin.repo}@{origin.ref}"
                     f"#{origin.path} (check the ref and the file path)"
                 )
-            if resp.status_code in (401, 403):
-                retry_after = resp.headers.get("Retry-After")
-                secondary = resp.status_code == 403 and (
-                    retry_after is not None
-                    or resp.headers.get("x-ratelimit-remaining") == "0"
+            if _is_rate_limited(resp):
+                delay, reset = _rate_limit_delay(resp, rate_backoff)
+                kind = (
+                    "primary rate limit"
+                    if resp.headers.get("x-ratelimit-remaining") == "0"
+                    else "rate limit"
                 )
-                if secondary:
-                    last_exc = RemoteFetchError(
-                        f"secondary rate limit on {origin.owner}/{origin.repo}"
-                    )
-                    await asyncio.sleep(float(retry_after) if retry_after else backoff)
-                    backoff *= 2
-                    continue
+                detail = f"; reset_epoch={reset}" if reset is not None else ""
+                last_exc = RemoteFetchError(
+                    f"HTTP {resp.status_code} {kind} on {origin.owner}/{origin.repo}"
+                    f"; retry_after_seconds={delay}{detail}"
+                )
+                if attempt + 1 < _MAX_ATTEMPTS:
+                    await asyncio.sleep(delay)
+                rate_backoff *= 2
+                continue
+            if resp.status_code in (401, 403):
                 raise RemoteFetchAuthError(
                     f"{resp.status_code} fetching {origin.owner}/{origin.repo}"
                     f"@{origin.ref} — check the token scope for this repo"
                 )
             if resp.status_code in _RETRYABLE_STATUS:
                 last_exc = RemoteFetchError(f"{resp.status_code} from {url}")
-                await asyncio.sleep(backoff)
+                if attempt + 1 < _MAX_ATTEMPTS:
+                    await asyncio.sleep(backoff)
                 backoff *= 2
                 continue
             raise RemoteFetchError(f"Unexpected {resp.status_code} fetching {url}")
