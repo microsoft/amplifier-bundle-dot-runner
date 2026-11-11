@@ -454,6 +454,94 @@ async def test_real_task_cancellation_during_response_observation_propagates():
 
 # ---------------------------------------------------------------------------
 # provider:request emission tests
+@pytest.mark.asyncio
+async def test_stubborn_observers_are_capped_owned_and_reaped(monkeypatch, caplog):
+    from amplifier_module_loop_pipeline.workers import direct_worker as module
+
+    assert not module._observation_tasks
+    monkeypatch.setattr(module, "_MAX_OBSERVATION_TASKS", 2)
+    monkeypatch.setattr(module, "_OBSERVATION_TIMEOUT", 0.01)
+    release = asyncio.Event()
+    started = []
+
+    class StubbornHooks:
+        async def emit(self, event, data):
+            started.append(asyncio.current_task())
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            raise ValueError("private late error")
+
+    try:
+        # Different workers share the cap, not one cap per clone or node visit.
+        for _ in range(8):
+            await DirectWorker(hooks=StubbornHooks())._observe(PROVIDER_RESPONSE, {})
+        assert len(started) == 2
+        assert len(module._observation_tasks) == 2
+        assert all(not task.done() for task in started)
+        assert "capacity exhausted" in caplog.text
+    finally:
+        release.set()
+        # wait (unlike gather) doesn't retrieve exceptions; the production done
+        # callback must do that even for failures after the caller returned.
+        if started:
+            await asyncio.wait(started)
+        await asyncio.sleep(0)  # Allow scheduled done callbacks to run.
+    assert not module._observation_tasks
+    assert all(not task._log_traceback for task in started)
+    assert "private late error" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stall_after_cancel", [False, True])
+@pytest.mark.parametrize("external_cancel", [False, True])
+async def test_suppressing_observer_cannot_hold_or_uncancel_worker(
+    stall_after_cancel, external_cancel
+):
+    entered = asyncio.Event()
+    released = asyncio.Event()
+    stopped = asyncio.Event()
+    observer_tasks = []
+
+    class SuppressingHooks(RecordingHooks):
+        async def emit(self, event, data):
+            await super().emit(event, data)
+            if event != PROVIDER_RESPONSE:
+                return
+            observer_tasks.append(asyncio.current_task())
+            entered.set()
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                if stall_after_cancel:
+                    await released.wait()
+            finally:
+                stopped.set()
+
+    worker = DirectWorker(
+        hooks=SuppressingHooks(),
+        unified_client=MockUnifiedClient([_make_text_response('{"status":"success"}')]),
+    )
+    work = asyncio.create_task(worker.run(_make_node(), "private", PipelineContext(), []))
+    try:
+        await entered.wait()
+        if external_cancel:
+            work.cancel("human stop")
+        done, _ = await asyncio.wait({work}, timeout=0.35)
+        assert work in done, "observer held work past its 100ms deadline"
+        if external_cancel:
+            with pytest.raises(asyncio.CancelledError, match="human stop"):
+                await work
+        else:
+            assert work.result()[1].status == StageStatus.SUCCESS
+            assert work.cancelling() == 0
+    finally:
+        released.set()
+        await asyncio.gather(work, *observer_tasks, return_exceptions=True)
+        await stopped.wait()
+
+
 # ---------------------------------------------------------------------------
 
 

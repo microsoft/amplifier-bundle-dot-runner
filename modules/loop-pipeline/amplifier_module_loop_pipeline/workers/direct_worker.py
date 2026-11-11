@@ -72,6 +72,19 @@ from ..pipeline_events import PROVIDER_ERROR, PROVIDER_REQUEST, PROVIDER_RESPONS
 
 _logger = logging.getLogger(__name__)
 _OBSERVATION_TIMEOUT = 0.1
+# Shared across worker instances/clones: an emitter that suppresses cancellation
+# must not leave one unbounded background task per invocation. Saturation drops
+# terminal observation (a coverage gap), never execution. Tasks remain owned
+# until they actually finish; cancellation is only a request, not completion.
+_MAX_OBSERVATION_TASKS = 64
+_observation_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _observation_done(task: asyncio.Task[Any]) -> None:
+    _observation_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        # Retrieve even late exceptions without logging private emitter data.
+        _logger.warning("Direct-worker terminal observer failed")
 
 
 def _identity(
@@ -190,22 +203,30 @@ class DirectWorker:
         """Terminal telemetry cannot replace a result or indefinitely delay stop.
 
         Request hooks deliberately do NOT use this helper: their existing deny
-        and failure semantics are authoritative. Ordinary terminal hook faults
-        (including a hook raising CancelledError itself) are isolated, but an
-        actual cancellation of this task still propagates.
+        and failure semantics are authoritative. Terminal emitters run in owned,
+        capped tasks: even cancellation-suppressing emitters cannot hold or
+        uncancel the work task. Waiting is bounded; cancellation cooperation is
+        not awaited. A blocking synchronous emitter can still block its event
+        loop; this is async isolation, not process isolation.
         """
-        task = asyncio.current_task()
-        cancelling = task.cancelling() if task else 0
+        if self._hooks is None:
+            return
+        if len(_observation_tasks) >= _MAX_OBSERVATION_TASKS:
+            _logger.warning("Direct-worker terminal observer capacity exhausted")
+            return
+        observer = asyncio.create_task(
+            self._emit(event_name, data), name="direct-worker-terminal-observer"
+        )
+        _observation_tasks.add(observer)
+        observer.add_done_callback(_observation_done)
         try:
-            async with asyncio.timeout(_OBSERVATION_TIMEOUT):
-                await self._emit(event_name, data)
+            done, _ = await asyncio.wait({observer}, timeout=_OBSERVATION_TIMEOUT)
         except asyncio.CancelledError:
-            if task and task.cancelling() > cancelling:
-                raise
-            _logger.warning("Direct-worker terminal observer cancelled: %s", event_name)
-        except Exception:
-            # Do not log raw observer exceptions: they may contain model data.
-            _logger.warning("Direct-worker terminal observer failed: %s", event_name)
+            observer.cancel()
+            raise
+        if not done:
+            observer.cancel()
+            _logger.warning("Direct-worker terminal observer timed out: %s", event_name)
 
     def _get_or_create_unified_client(self) -> Any:
         if self._unified_client is not None:
