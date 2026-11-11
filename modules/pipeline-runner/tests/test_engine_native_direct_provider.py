@@ -165,6 +165,109 @@ def _patch_from_env(monkeypatch, client: _FakeDirectClient) -> None:
     monkeypatch.setattr(unified_llm.Client, "from_env", classmethod(lambda cls: client))
 
 
+@pytest.mark.parametrize("explicit_hooks", [False, True])
+@pytest.mark.parametrize("faulty_observer", [False, True])
+def test_drive_engine_receives_direct_usage_events(
+    monkeypatch, tmp_path, explicit_hooks, faulty_observer
+):
+    """Real engine/backend/worker/generate route, not a constructor-spy assertion."""
+    from amplifier_core import HookResult
+    from amplifier_core.hooks import HookRegistry
+
+    hooks = HookRegistry()
+    received = []
+
+    async def receive(event, data):
+        received.append((event, dict(data)))
+        return HookResult()
+
+    async def faulty(event, data):
+        raise ValueError("observer failure")
+
+    for event in ("provider:request", "provider:response", "provider:error"):
+        if faulty_observer:
+            hooks.register(event, faulty)
+        hooks.register(event, receive)
+    coordinator = FakeCoordinator()
+    coordinator.hooks = HookRegistry() if explicit_hooks else hooks
+    response = unified_llm.Response(
+        id="fixture",
+        model="claude-x",
+        provider="anthropic",
+        message=unified_llm.Message.assistant('{"status":"success"}'),
+        finish_reason=unified_llm.FinishReason(reason="stop"),
+        usage=unified_llm.Usage(input_tokens=5, output_tokens=7, total_tokens=12),
+    )
+    client = _FakeDirectClient(response)
+    _patch_from_env(monkeypatch, client)
+    outcome = asyncio.run(
+        runner_mod.drive_engine(
+            _make_box_dot(), coordinator, logs_root=tmp_path,
+            hooks=hooks if explicit_hooks else None,
+            default_worker="llm-direct", transform=True,
+        )
+    )
+    assert outcome.status.value == "success"
+    assert len(client.requests) == 1
+    assert [event for event, _ in received] == ["provider:request", "provider:response"]
+    request, response = [data for _, data in received]
+    assert request["invocation_id"] == response["invocation_id"]
+    assert response["usage_basis"] == "unified-llm-total/1"
+    assert response["usage"]["total_tokens"] == 12
+    assert response["cost_usd"] is None
+    assert response["cost_coverage"] == "unavailable"
+
+
+@pytest.mark.parametrize("termination", ["deny", "error", "cancel"])
+def test_drive_engine_direct_terminal_paths(monkeypatch, tmp_path, termination):
+    from amplifier_core import HookResult
+    from amplifier_core.hooks import HookRegistry
+
+    hooks = HookRegistry()
+    events = []
+    calls = []
+
+    async def receive(event, data):
+        events.append((event, dict(data)))
+        if termination == "deny" and event == "provider:request":
+            return HookResult(action="deny", reason="not approved")
+        return HookResult()
+
+    for event in ("provider:request", "provider:response", "provider:error"):
+        hooks.register(event, receive)
+
+    class Client:
+        async def complete(self, request):
+            calls.append(request)
+            if termination == "cancel":
+                raise asyncio.CancelledError("original stop")
+            raise ValueError("original error")
+
+    _patch_from_env(monkeypatch, Client())
+    coordinator = FakeCoordinator()
+    coordinator.hooks = hooks
+    run = runner_mod.drive_engine(
+        _make_box_dot(), coordinator, logs_root=tmp_path,
+        default_worker="llm-direct", transform=True,
+    )
+    if termination == "cancel":
+        with pytest.raises(asyncio.CancelledError, match="original stop"):
+            asyncio.run(run)
+    else:
+        outcome = asyncio.run(run)
+        assert outcome.status.value == "fail"
+    if termination == "deny":
+        assert not calls
+        assert [event for event, _ in events] == ["provider:request"]
+    else:
+        assert len(calls) == 1
+        assert [event for event, _ in events] == ["provider:request", "provider:error"]
+        request, terminal = [data for _, data in events]
+        assert request["invocation_id"] == terminal["invocation_id"]
+        assert terminal["usage_unavailable"] is True
+        assert "original error" not in repr(events)
+
+
 # ---------------------------------------------------------------------------
 # 1. Genuine end-to-end: real drive_engine, real AmplifierBackend, real
 #    registry, real DirectWorker. RED-proof: fails on ba12ab9, passes after.
