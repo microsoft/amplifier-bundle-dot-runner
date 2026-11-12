@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 import pytest
@@ -51,6 +52,21 @@ _STUB_PROFILES = {
     "openai": "attractor-agent-openai",
     "anthropic": "attractor-agent-anthropic",
 }
+
+
+@pytest.fixture(autouse=True)
+def isolated_credential_environment(monkeypatch):
+    """Presence tests use only synthetic keys, never a developer's environment.
+
+    Replace the Python mapping rather than copying/clearing its real contents:
+    failed-frame repr cannot expose inherited credentials, and teardown restores
+    the original mapping. Test subprocesses must also launch with a clean env.
+    """
+    monkeypatch.setattr(os, "environ", {})
+
+
+def test_credential_environment_starts_empty():
+    assert set(os.environ) <= {"PYTEST_CURRENT_TEST"}
 
 
 class _StubCoordinator:
