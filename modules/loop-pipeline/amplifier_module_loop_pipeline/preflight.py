@@ -306,7 +306,8 @@ def check_provider_preflight(
           ``resolvable_profiles`` is supplied, the profile name must be in it
           (issue #195); and
       (b) its credential can be presumed present: for providers with a known
-          credential env var (``PROVIDER_KEY_ENV``) the var must be set -- a
+          credential env var (``PROVIDER_KEY_ENV``) that var or a supported
+          alias must be set -- a
           profile whose agent can never construct its provider is exactly the
           issue-#155 crash loop; for unknown providers the credential gets the
           benefit of the doubt (nothing to check statically).
@@ -348,6 +349,15 @@ def check_provider_preflight(
         if provider in mounted:
             continue
         key_env = PROVIDER_KEY_ENV.get(provider)
+        # unified-llm-spec §2.2 explicitly permits this Gemini alias, already
+        # accepted by provider setup. Presence only: do not select a key or
+        # change provider/config precedence. Mounted providers bypass this.
+        credential_keys = (
+            ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+            if provider == "gemini"
+            else (key_env,) if key_env is not None else ()
+        )
+        credential_hint = " or ".join(credential_keys)
         if provider in profiles:
             profile_name = profiles[provider]
             problems: list[str] = []
@@ -363,16 +373,16 @@ def check_provider_preflight(
                     f"this node would fail"
                 )
             # (b) credential presence -- issue #155.
-            if key_env is not None and not env.get(key_env):
+            if credential_keys and not any(env.get(key) for key in credential_keys):
                 problems.append(
                     f"profile '{profile_name}' is mounted for it, but its "
-                    f"credential {key_env} is not set"
+                    f"credential {credential_hint} is not set"
                 )
             if not problems:
                 continue  # profile resolves and credential present/unknowable
             reason = "; ".join(problems)
         else:
-            cred = f" (credential: {key_env})" if key_env else ""
+            cred = f" (credential: {credential_hint})" if credential_hint else ""
             reason = f"no provider module or profile is mounted for it{cred}"
         for node_id in node_ids:
             failures.append(

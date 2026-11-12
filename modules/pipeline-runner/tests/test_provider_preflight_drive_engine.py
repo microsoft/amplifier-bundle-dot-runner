@@ -212,6 +212,37 @@ class _NoSpawnCoordinator:
         return None
 
 
+@pytest.mark.parametrize("keys", [
+    ("GOOGLE_API_KEY",), ("GEMINI_API_KEY",), ("GOOGLE_API_KEY", "GEMINI_API_KEY"), (),
+])
+def test_drive_engine_gemini_alias_reaches_mapped_spawn(tmp_path, monkeypatch, keys):
+    from amplifier_module_loop_pipeline.preflight import ProviderPreflightError
+    from amplifier_module_pipeline_runner import runner
+
+    for key in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    for key in keys:
+        monkeypatch.setenv(key, "fixture-" + key)
+    # No provider construction or live calls: this receiving check exercises the
+    # actual preflight/backend route to the recording session.spawn boundary.
+    monkeypatch.setattr(runner, "_bootstrap_direct_provider", lambda: (None, None))
+    coordinator = _AgentsCoordinator("gemini-agent")
+    run = drive_engine(
+        _DOT_DUAL_CRITIQUE.replace('"openai"', '"gemini"'),
+        coordinator, cwd=tmp_path, logs_root=tmp_path / "logs",
+        profiles={"gemini": "gemini-agent"}, transform=True,
+    )
+    if keys:
+        outcome = asyncio.run(run)
+        assert outcome.status.value == "success"
+        assert coordinator.spawn_calls == ["gemini-agent"]
+    else:
+        with pytest.raises(ProviderPreflightError) as caught:
+            asyncio.run(run)
+        assert "GEMINI_API_KEY or GOOGLE_API_KEY" in str(caught.value)
+        assert not coordinator.spawn_calls
+
+
 def test_drive_engine_refuses_when_profile_names_an_absent_agent(
     tmp_path, monkeypatch
 ) -> None:
