@@ -69,7 +69,6 @@ from ..hook_bridge import _current_node_context, set_node_context
 from ..outcome import Outcome, StageStatus
 from ..pipeline_events import PROVIDER_ERROR, PROVIDER_REQUEST, PROVIDER_RESPONSE
 
-
 _logger = logging.getLogger(__name__)
 _OBSERVATION_TIMEOUT = 0.1
 # Shared across worker instances/clones: an emitter that suppresses cancellation
@@ -212,7 +211,11 @@ class DirectWorker:
         if self._hooks is None:
             return
         if len(_observation_tasks) >= _MAX_OBSERVATION_TASKS:
-            _logger.warning("Direct-worker terminal observer capacity exhausted")
+            _logger.warning(
+                "Direct-worker terminal observer capacity exhausted: %s invocation=%s",
+                event_name,
+                data.get("invocation_id"),
+            )
             return
         observer = asyncio.create_task(
             self._emit(event_name, data), name="direct-worker-terminal-observer"
@@ -226,7 +229,11 @@ class DirectWorker:
             raise
         if not done:
             observer.cancel()
-            _logger.warning("Direct-worker terminal observer timed out: %s", event_name)
+            _logger.warning(
+                "Direct-worker terminal observer timed out: %s invocation=%s",
+                event_name,
+                data.get("invocation_id"),
+            )
 
     def _get_or_create_unified_client(self) -> Any:
         if self._unified_client is not None:

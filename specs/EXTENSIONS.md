@@ -1712,6 +1712,103 @@ the `Outcome.session_id` worker reference is emitted only as optional
 the optional worker field, and every other supplied value is preserved without
 validation or coercion.
 
+### Addendum 4 (2026-11-13, direct-worker aggregate observations; PR #139)
+
+**Disposition and spec anchor.** This refines the existing §26/§40 backend
+observability extension; it is not a new graph feature or an upstream divergence.
+Canonical Attractor §§1.4/4.5 delegate the backend behind `String | Outcome`;
+the surrounding handler still owns prompt/response files and outcomes. §9.6
+permits metrics observers but does not specify provider accounting fields or
+delivery guarantees. Its silence alone is not authorization: the need here is
+to make an already-emitted worker event reach its existing caller-owned registry.
+A consumer wrapper cannot recover an event emitted into no registry, or invent
+missing generation measurements. Aggregation, retention and presentation policy
+remain outside this engine. Frozen `engine-surface.v1.md`, its C15 audit-trail
+and redaction requirements, and the separately ratified C15.5 identity rule are
+unchanged.
+
+**Scope correction to Addendum 1's call-boundary wording.** The `llm-direct`
+worker already bracketed `unified_llm.generate()`, not each physical provider
+request. One generation may contain multiple tool-loop steps. This change labels
+that existing granularity rather than changing it or making it uniform with
+other workers' event bases:
+
+- `invocation_id` is fresh per direct-worker invocation and correlates its
+  request with its terminal observation, including repeated/parallel node visits.
+  It is not a physical request id, persistent replay identity or worker session id.
+- `usage_basis="unified-llm-total/1"` means one returned generation aggregate.
+  Copy `result.total_usage` once; do not add it to its component steps or count
+  the event pair as one physical API call. `step_count` counts returned generation
+  steps, not retries or every billable operation.
+- Usage counters and top-level `cost_usd` retain the supplied values, including
+  unknowns and Decimal precision; no normalization or repricing occurs here.
+  `cost_coverage` is `unavailable` for an unknown aggregate cost, `complete` when
+  every returned step supplies a cost, otherwise `partial` for a supplied
+  subtotal. The current client propagates any unknown step cost to an unknown
+  aggregate, so it normally emits only `complete` or `unavailable`. These labels
+  concern supplied estimates, not complete provider pricing or invoice accuracy.
+- Failed/cancelled generation emits `provider:error` with
+  `usage_unavailable=True`, not invented zero tokens/cost. Intermediate usage on
+  these paths is not returned by `generate`. Request denial skips generation
+  and has no terminal measurement. Setup failures before the request are outside
+  this pair. The legacy SDK-error `message` is diagnostic-only: retained
+  accounting consumers must allowlist fields and exclude it.
+
+**Delivery policy and its cost.** `drive_engine` passes the same effective hooks
+to backend, handlers and engine; explicit hooks override coordinator hooks.
+Request hooks retain their existing awaited denial/failure semantics. Terminal
+observations are non-authoritative: emitter failures cannot replace the worker
+result, and work cancellation is re-raised. Each terminal emission runs in an
+owned task with a 100 ms asynchronous wait. Timeout requests cancellation without
+waiting for cooperation; a shared cap of 64 unfinished observer tasks across
+worker instances/clones drops new terminal emissions on saturation. Finished
+tasks are reaped and late exceptions retrieved. This avoids unbounded outer
+emission tasks and cancellation-resistant emitters holding work indefinitely; it
+does not promise complete delivery, process isolation or bounded synchronous I/O.
+The cap owns the worker's outer emission tasks, not tasks a registry/receiver
+may independently create. Older Core's Rust/Python bridge can leave an inner
+callback running after its outer emission is cancelled; a cancellation request
+does not establish callback termination or prevent late delivery.
+
+Missing terminal observations are coverage gaps, never evidence of zero spend or
+an executed request: correlate the persisted request's `invocation_id` with
+terminal observations and retain unmatched requests as unmeasured. Denial, a
+crash, timeout and saturation are not distinguishable from the event pair alone.
+Timeout/saturation warnings identify the event and invocation; process logs must
+be retained if their specific cause matters. No synthetic terminal record or
+second session store is fabricated, and an absent registry/session identity still
+has the pre-existing missing-seam limits above. A downstream complete-accounting
+claim requires receiving/retention qualification, not merely this event surface.
+
+**The actual persistence seam.** The shipped `SessionEventPersister` handler is
+async in signature but calls serialization, write-time redaction and file append
+synchronously, with no suspension point. Once entered, the observer deadline
+cannot interrupt that write, even if it exceeds 100 ms; blocking work can instead
+delay the event loop. This does not protect a persister queued behind an earlier
+suspending hook: the emission can time out before the persister is entered,
+leaving an unmatched request at worker return even if delivery later completes.
+Unmatched-request handling therefore remains necessary. Other/custom asynchronous
+receivers need their own qualification. Persisted Decimal costs use the existing
+JSON `default=str` representation; redaction and payload-withheld markers remain
+at the existing write seam, not in the worker.
+
+**Executable assertions.** `modules/loop-pipeline/tests/test_provider_hooks.py`
+pins correlation, aggregates, unknown/zero costs, observer faults, cancellation,
+the shared cap and late exception retrieval.
+`test_worker_session_observability.py::test_direct_worker_real_persister_terminal_observations`
+drives the real engine/backend/direct worker/client-generation path into the
+shipped persister and redactor through Core's HookRegistry, including a
+synchronous write slower than the observation deadline and error/cancellation
+records. Its
+`test_direct_worker_timeout_before_persister_leaves_unmatched_request` control
+pins the earlier-suspending-hook limit without fabricating usage.
+`modules/pipeline-runner/tests/test_engine_native_direct_provider.py` pins the
+runner's receiving and explicit-hook-precedence paths. These tests refine this
+existing extension; they do not amend the frozen contract or qualify all consumers.
+The receiving cases also run in the paired runner/engine environment (Core 2.0.1),
+separately from the engine's locked Core 1.6.1 environment; their callback
+cancellation behavior must not be assumed identical.
+
 ---
 
 ## 27. `must_write=` Node Attribute — Fail-Closed Artifact Contract
@@ -3161,6 +3258,20 @@ they drove, in `loop-agent/tests/test_orchestrator_completion.py`. No lifecycle-
 ---
 
 ## 36. Startup Provider Preflight and No-Fallback Profile Resolution (Fail-Loud)
+
+**Credential-alias clarification (2026-11-13, PR #139).** The historical
+single-key Gemini description below is superseded: a mapped Gemini profile is
+serviceable with either non-empty `GEMINI_API_KEY` or `GOOGLE_API_KEY`, matching
+the already-supported client inputs. Unified LLM §2.2 permits the alternate key;
+its adjacent programmatic-setup and provider-resolution rules still own actual
+credential selection and routing. This is a false-refusal repair to this existing
+preflight extension, not permission to choose/forward credentials here. Mounted
+providers still own their configuration; profile resolution, other providers,
+and presence-not-validity semantics are unchanged.
+`modules/loop-pipeline/tests/test_provider_preflight.py` and
+`modules/pipeline-runner/tests/test_provider_preflight_drive_engine.py` assert
+both aliases, missing credentials, missing profiles, mounted-provider bypass and
+cross-provider credential isolation (already indexed under `ESF-007`).
 
 > **depends-on:** none (this closes a fail-open configuration hole; it does not build on or
 > narrow any other ledger entry. It is the same fail-closed doctrine as §25 — refuse loudly at
