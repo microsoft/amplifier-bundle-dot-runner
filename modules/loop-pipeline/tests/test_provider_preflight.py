@@ -158,6 +158,67 @@ def test_mounted_provider_module_is_serviceable():
     check_provider_preflight(graph, mounted_providers=["openai"], env={})
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"GOOGLE_API_KEY": "fixture-google"},
+        {"GEMINI_API_KEY": "fixture-gemini"},
+        {"GOOGLE_API_KEY": "fixture-google", "GEMINI_API_KEY": "fixture-gemini"},
+        {"GOOGLE_API_KEY": "fixture-google", "GEMINI_API_KEY": ""},
+    ],
+)
+def test_gemini_profile_accepts_supported_credential_aliases(env):
+    graph = parse_dot(_DOT_DECLARED_OPENAI.replace('"openai"', '"gemini"'))
+    original = dict(env)
+    check_provider_preflight(
+        graph, profiles={"gemini": "agent-gemini"},
+        resolvable_profiles={"agent-gemini"}, env=env,
+    )
+    assert env == original  # Presence check never selects, copies or rewrites keys.
+
+
+@pytest.mark.parametrize("env", [{}, {"GOOGLE_API_KEY": "", "GEMINI_API_KEY": ""}])
+def test_gemini_missing_credentials_names_both_supported_remedies(env):
+    graph = parse_dot(_DOT_DECLARED_OPENAI.replace('"openai"', '"gemini"'))
+    with pytest.raises(ProviderPreflightError) as caught:
+        check_provider_preflight(graph, profiles={"gemini": "agent-gemini"}, env=env)
+    assert "GEMINI_API_KEY or GOOGLE_API_KEY" in str(caught.value)
+    assert "critique_b" in str(caught.value)
+
+
+def test_gemini_alias_does_not_bypass_profile_resolution_or_expose_values():
+    graph = parse_dot(_DOT_DECLARED_OPENAI.replace('"openai"', '"gemini"'))
+    with pytest.raises(ProviderPreflightError) as caught:
+        check_provider_preflight(
+            graph, profiles={"gemini": "missing"}, resolvable_profiles=set(),
+            env={"GOOGLE_API_KEY": "secret-google", "GEMINI_API_KEY": "secret-gemini"},
+        )
+    assert "no agent" in str(caught.value)
+    assert "secret-google" not in str(caught.value)
+    assert "secret-gemini" not in str(caught.value)
+
+
+def test_gemini_mounted_provider_preserves_explicit_configuration():
+    graph = parse_dot(_DOT_DECLARED_OPENAI.replace('"openai"', '"gemini"'))
+    check_provider_preflight(
+        graph, mounted_providers={"gemini"}, profiles={"gemini": "missing"},
+        resolvable_profiles=set(), env={},
+    )  # A mounted provider owns its credentials, including explicit config.
+
+
+@pytest.mark.parametrize("provider,key", [
+    ("openai", "OPENAI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY"),
+])
+def test_google_key_cannot_satisfy_another_provider(provider, key):
+    graph = parse_dot(_DOT_DECLARED_OPENAI.replace('"openai"', f'"{provider}"'))
+    with pytest.raises(ProviderPreflightError) as caught:
+        check_provider_preflight(
+            graph, profiles={provider: "agent"}, env={"GOOGLE_API_KEY": "secret-google"},
+        )
+    assert f"{key} is not set" in str(caught.value)
+    assert "secret-google" not in str(caught.value)
+
+
 def test_unknown_provider_with_profile_gets_benefit_of_the_doubt():
     """A provider outside PROVIDER_KEY_ENV has no statically checkable
     credential -- a mounted profile is accepted as serviceable."""

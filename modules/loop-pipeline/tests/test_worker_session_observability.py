@@ -24,10 +24,13 @@ exactly as a spawned loop-agent worker does.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import sys
+import time
 import types
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -647,3 +650,189 @@ def test_worker_reported_metadata_is_not_a_verdict_channel():
     assert outcome is not None
     assert outcome.status is StageStatus.SUCCESS
     assert outcome.is_explicit is False
+
+
+# ---------------------------------------------------------------------------
+# 7. Direct-worker terminal observations reach the real persistence/redaction seam
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slow_write", [False, True])
+@pytest.mark.parametrize("termination", ["success", "sdk_error", "cancel"])
+async def test_direct_worker_real_persister_terminal_observations(
+    tmp_path, monkeypatch, slow_write, termination
+):
+    """No mocked emitter/serializer/redactor; only the provider boundary is fake.
+
+    The shipped async handler does not suspend inside serialization/redaction/
+    append. A slow synchronous write must finish even after the observer's
+    asynchronous wait deadline; this is not a hard I/O or shutdown bound.
+    """
+    import unified_llm
+
+    from amplifier_module_loop_pipeline.backend import AmplifierBackend
+    from amplifier_module_loop_pipeline.workers import direct_worker
+
+    session_events = _load_shipped_persister_module()
+    hooks = HookRegistry()
+    hooks.set_default_fields(session_id="direct-receiver")
+    persister = session_events.register_session_event_persister(hooks)
+    serialize = persister._serialize
+    elapsed = []
+
+    def serialize_with_delay(record, session_id):
+        started = time.monotonic()
+        if slow_write and record["event"] != "provider:request":
+            time.sleep(2 * direct_worker._OBSERVATION_TIMEOUT)
+        result = serialize(record, session_id)
+        elapsed.append((record["event"], time.monotonic() - started))
+        return result
+
+    monkeypatch.setattr(persister, "_serialize", serialize_with_delay)
+    synthetic_secret = "sk-" + "fixturekey" * 4
+    calls = []
+
+    class Client:
+        async def complete(self, request):
+            calls.append(request)
+            if termination == "sdk_error":
+                raise unified_llm.ConfigurationError(synthetic_secret)
+            if termination == "cancel":
+                raise asyncio.CancelledError("original stop")
+            return unified_llm.Response(
+                id="fixture",
+                model="fixture-model",
+                provider="anthropic",
+                message=unified_llm.Message.assistant('{"status":"success"}'),
+                finish_reason=unified_llm.FinishReason(reason="stop"),
+                usage=unified_llm.Usage(
+                    input_tokens=5,
+                    output_tokens=7,
+                    total_tokens=12,
+                    cost_usd=Decimal("0.01234567890123456789"),
+                ),
+            )
+
+    backend = AmplifierBackend(
+        provider=object(),
+        unified_client=Client(),
+        hooks=hooks,
+        default_worker="llm-direct",
+    )
+    graph = parse_dot(
+        SIMPLE_DOT.replace(
+            'prompt="produce the analysis"',
+            'prompt="produce the analysis", llm_model="fixture-model", '
+            'llm_provider="anthropic"',
+        )
+    )
+    engine = PipelineEngine(
+        graph=graph,
+        context=PipelineContext(),
+        handler_registry=HandlerRegistry(HandlerContext(backend=backend)),
+        logs_root=str(tmp_path),
+    )
+    if termination == "cancel":
+        with pytest.raises(asyncio.CancelledError, match="original stop"):
+            await engine.run()
+    else:
+        outcome = await engine.run()
+        assert outcome.status is (
+            StageStatus.SUCCESS if termination == "success" else StageStatus.FAIL
+        )
+    assert len(calls) == 1
+    assert current_worker_sessions_dir.get() is None
+    path = tmp_path / "work" / "sessions" / "direct-receiver" / "events.jsonl"
+    raw = path.read_text()
+    records = [json.loads(line) for line in raw.splitlines()]
+    terminal_event = (
+        "provider:response" if termination == "success" else "provider:error"
+    )
+    assert [record["event"] for record in records] == [
+        "provider:request",
+        terminal_event,
+    ]
+    request, terminal = [record["data"] for record in records]
+    assert request["invocation_id"] == terminal["invocation_id"]
+    assert terminal["session_id"] == "direct-receiver"
+    assert terminal["usage_basis"] == "unified-llm-total/1"
+    if termination == "success":
+        assert terminal["usage"]["total_tokens"] == 12
+        # Existing JSON default=str retains Decimal precision, not a float.
+        assert terminal["cost_usd"] == "0.01234567890123456789"
+        assert terminal["cost_coverage"] == "complete"
+    else:
+        assert terminal["usage_unavailable"] is True
+        assert "usage" not in terminal and "cost_usd" not in terminal
+        if termination == "sdk_error":
+            assert synthetic_secret not in raw
+            assert terminal["message"] == "[REDACTED:openai-key]"
+            assert records[-1]["redaction"]["count"] == 1
+        else:
+            assert terminal["error_type"] == "CancelledError"
+    if slow_write:
+        assert elapsed[-1][1] >= 2 * direct_worker._OBSERVATION_TIMEOUT
+    if direct_worker._observation_tasks:
+        _, pending = await asyncio.wait(
+            set(direct_worker._observation_tasks),
+            timeout=1,
+        )
+        assert not pending
+    await asyncio.sleep(0)  # Run observer ownership/reaping callbacks.
+    assert not direct_worker._observation_tasks
+
+
+@pytest.mark.asyncio
+async def test_direct_worker_timeout_before_persister_leaves_unmatched_request(
+    tmp_path, caplog
+):
+    """A prior suspending hook can prevent persistence; do not invent a terminal."""
+    from amplifier_module_loop_pipeline.workers.direct_worker import DirectWorker
+
+    session_events = _load_shipped_persister_module()
+    hooks = HookRegistry()
+    hooks.set_default_fields(session_id="direct-receiver")
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    stopped = asyncio.Event()
+    callbacks = []
+
+    async def earlier_hook(event, data):
+        callbacks.append(asyncio.current_task())
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            stopped.set()
+
+    hooks.register("provider:response", earlier_hook, priority=-100)
+    session_events.register_session_event_persister(hooks)
+    token = current_worker_sessions_dir.set(str(tmp_path / "sessions"))
+    try:
+        request = {
+            "invocation_id": "fixture-unmatched",
+            "usage_basis": "unified-llm-total/1",
+        }
+        await hooks.emit("provider:request", request)
+        await DirectWorker(hooks=hooks)._observe(
+            "provider:response",
+            {**request, "private": "not-loggable"},
+        )
+        assert entered.is_set()
+        path = tmp_path / "sessions" / "direct-receiver" / "events.jsonl"
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert [record["event"] for record in records] == ["provider:request"]
+        assert records[0]["data"]["invocation_id"] == "fixture-unmatched"
+        assert (
+            "timed out: provider:response invocation=fixture-unmatched" in caplog.text
+        )
+        assert "not-loggable" not in caplog.text
+    finally:
+        # Older Core may detach its callback from the cancelled emission future.
+        # Release the fixture callback explicitly; outer cancellation is not
+        # proof that an inner callback stopped.
+        release.set()
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+        await asyncio.gather(*callbacks, return_exceptions=True)
+        current_worker_sessions_dir.reset(token)

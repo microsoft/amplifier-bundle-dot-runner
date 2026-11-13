@@ -4,9 +4,11 @@ Validates that AmplifierBackend and DirectProviderBackend emit hook events
 around unified_llm.generate() calls, and that deny hook results abort LLM calls.
 """
 
+import asyncio
 import sys
 import types
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -179,6 +181,7 @@ async def test_amplifier_backend_emit_helper_noop_without_hooks():
 from amplifier_module_loop_pipeline.context import PipelineContext
 from amplifier_module_loop_pipeline.graph import Node
 from amplifier_module_loop_pipeline.outcome import StageStatus
+from amplifier_module_loop_pipeline.workers.direct_worker import DirectWorker
 
 
 class _MockSession:
@@ -261,8 +264,284 @@ def _make_node(**kwargs: Any) -> Node:
     return Node(**defaults)
 
 
+@pytest.mark.asyncio
+async def test_direct_invocations_have_distinct_correlated_identity():
+    hooks = RecordingHooks()
+    response = _make_text_response('{"status":"success"}')
+    worker = DirectWorker(
+        hooks=hooks, unified_client=MockUnifiedClient([response] * 4)
+    )
+    # Same worker revisited, clone in a parallel branch, and a nested worker
+    # sharing the registry must not collapse identical node names/token values.
+    await worker.run(_make_node(), "private prompt", PipelineContext(), [])
+    await asyncio.gather(
+        worker.run(_make_node(), "private prompt", PipelineContext(), []),
+        worker.clone().run(_make_node(), "private prompt", PipelineContext(), []),
+        DirectWorker(hooks=hooks, unified_client=MockUnifiedClient([response])).run(
+            _make_node(), "private prompt", PipelineContext(), []
+        ),
+    )
+    requests = hooks.get_data(PROVIDER_REQUEST)
+    responses = hooks.get_data(PROVIDER_RESPONSE)
+    ids = {data["invocation_id"] for data in requests}
+    assert len(ids) == 4
+    assert {data["invocation_id"] for data in responses} == ids
+    assert len(responses) == 4
+    assert all(data["usage_basis"] == "unified-llm-total/1" for data in responses)
+    assert sum(data["usage"]["total_tokens"] for data in responses) == 120
+    assert "private prompt" not in repr(hooks.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "costs, expected, coverage",
+    [
+        ([Decimal("0.10"), Decimal("0.20")], Decimal("0.30"), "complete"),
+        ([Decimal("0.10"), None], None, "unavailable"),
+        ([None, None], None, "unavailable"),
+        ([Decimal("0"), Decimal("0")], Decimal("0"), "complete"),
+    ],
+)
+async def test_direct_reports_generate_aggregate_once(costs, expected, coverage):
+    class Echo:
+        name = "echo"
+        description = "fixture"
+
+        async def execute(self, args):
+            return "ok"
+
+    first = _make_text_response("")
+    first.message = unified_llm.Message(
+        role=unified_llm.Role.ASSISTANT,
+        content=[unified_llm.ContentPart(
+            kind=unified_llm.ContentKind.TOOL_CALL,
+            tool_call=unified_llm.ToolCallData(id="tc", name="echo", arguments={}),
+        )],
+    )
+    first.finish_reason = unified_llm.FinishReason(reason="tool_calls")
+    last = _make_text_response('{"status":"success"}')
+    first.usage.cost_usd, last.usage.cost_usd = costs
+    first.usage.cache_read_tokens = 3
+    last.usage.cache_read_tokens = 4
+    hooks = RecordingHooks()
+    client = MockUnifiedClient([first, last])
+    text, outcome = await DirectWorker(
+        hooks=hooks, unified_client=client, tools={"echo": Echo()}
+    ).run(_make_node(), "private", PipelineContext(), [])
+    assert outcome.status == StageStatus.SUCCESS
+    assert text == last.text
+    assert client.call_count == 2
+    assert hooks.event_names == [PROVIDER_REQUEST, PROVIDER_RESPONSE]
+    data = hooks.get_data(PROVIDER_RESPONSE)[0]
+    assert data["step_count"] == 2
+    assert data["usage"]["input_tokens"] == 20
+    assert data["usage"]["total_tokens"] == 60
+    assert data["usage"]["cache_read_tokens"] == 7
+    assert data["usage"]["cache_write_tokens"] is None
+    assert data["cost_usd"] == expected
+    assert data["cost_coverage"] == coverage
+    assert first.usage.cost_usd == costs[0]  # No rewriting/repricing source values.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sdk_error", [False, True])
+async def test_direct_failure_correlates_without_fabricated_usage(sdk_error):
+    error = (
+        unified_llm.ConfigurationError("private failure")
+        if sdk_error else ValueError("private failure")
+    )
+    hooks = RecordingHooks()
+    text, outcome = await DirectWorker(
+        hooks=hooks, unified_client=FailingUnifiedClient(error)
+    ).run(_make_node(), "private prompt", PipelineContext(), [])
+    assert text == ""
+    assert outcome.status == StageStatus.FAIL
+    assert outcome.failure_reason == str(error)
+    request, terminal = [data for _, data in hooks.events]
+    assert terminal["invocation_id"] == request["invocation_id"]
+    assert terminal["usage_unavailable"] is True
+    assert "usage" not in terminal and "cost_usd" not in terminal
+    if not sdk_error:
+        assert "private failure" not in repr(hooks.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["exception", "cancel", "stall"])
+@pytest.mark.parametrize("failed", [False, True])
+async def test_terminal_observer_cannot_replace_worker_result(fault, failed):
+    class FaultyHooks(RecordingHooks):
+        async def emit(self, event, data):
+            await super().emit(event, data)
+            if event != PROVIDER_REQUEST:
+                if fault == "exception":
+                    raise ValueError("observer private details")
+                if fault == "cancel":
+                    raise asyncio.CancelledError("observer cancellation")
+                await asyncio.Event().wait()
+
+    error = ValueError("original failure")
+    client = (
+        FailingUnifiedClient(error) if failed
+        else MockUnifiedClient([_make_text_response('{"status":"success"}')])
+    )
+    text, outcome = await asyncio.wait_for(
+        DirectWorker(hooks=FaultyHooks(), unified_client=client).run(
+            _make_node(), "private prompt", PipelineContext(), []
+        ), timeout=1,
+    )
+    if failed:
+        assert outcome.status == StageStatus.FAIL
+        assert outcome.failure_reason == str(error)
+    else:
+        assert outcome.status == StageStatus.SUCCESS
+        assert text == '{"status":"success"}'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("observer_fault", [False, True])
+async def test_direct_cancellation_is_reported_and_propagated(observer_fault):
+    entered = asyncio.Event()
+
+    class WaitingClient:
+        async def complete(self, request):
+            entered.set()
+            await asyncio.Event().wait()
+
+    class Hooks(RecordingHooks):
+        async def emit(self, event, data):
+            await super().emit(event, data)
+            if observer_fault and event == PROVIDER_ERROR:
+                await asyncio.Event().wait()
+
+    hooks = Hooks()
+    task = asyncio.create_task(DirectWorker(
+        hooks=hooks, unified_client=WaitingClient()
+    ).run(_make_node(), "private prompt", PipelineContext(), []))
+    await entered.wait()
+    task.cancel("original cancellation")
+    with pytest.raises(asyncio.CancelledError, match="original cancellation"):
+        await asyncio.wait_for(task, timeout=1)
+    assert hooks.event_names == [PROVIDER_REQUEST, PROVIDER_ERROR]
+    request, terminal = [data for _, data in hooks.events]
+    assert terminal["invocation_id"] == request["invocation_id"]
+    assert terminal["error_type"] == "CancelledError"
+    assert terminal["usage_unavailable"] is True
+    assert "usage" not in terminal and "cost_usd" not in terminal
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_real_task_cancellation_during_response_observation_propagates():
+    entered = asyncio.Event()
+
+    class WaitingHooks(RecordingHooks):
+        async def emit(self, event, data):
+            await super().emit(event, data)
+            if event == PROVIDER_RESPONSE:
+                entered.set()
+                await asyncio.Event().wait()
+
+    hooks = WaitingHooks()
+    worker = DirectWorker(hooks=hooks, unified_client=MockUnifiedClient(
+        [_make_text_response('{"status":"success"}')]
+    ))
+    task = asyncio.create_task(worker.run(_make_node(), "private", PipelineContext(), []))
+    await entered.wait()
+    task.cancel("stop during response")
+    with pytest.raises(asyncio.CancelledError, match="stop during response"):
+        await task
+
+
 # ---------------------------------------------------------------------------
 # provider:request emission tests
+@pytest.mark.asyncio
+async def test_stubborn_observers_are_capped_owned_and_reaped(monkeypatch, caplog):
+    from amplifier_module_loop_pipeline.workers import direct_worker as module
+
+    assert not module._observation_tasks
+    monkeypatch.setattr(module, "_MAX_OBSERVATION_TASKS", 2)
+    monkeypatch.setattr(module, "_OBSERVATION_TIMEOUT", 0.01)
+    release = asyncio.Event()
+    started = []
+
+    class StubbornHooks:
+        async def emit(self, event, data):
+            started.append(asyncio.current_task())
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            raise ValueError("private late error")
+
+    try:
+        # Different workers share the cap, not one cap per clone or node visit.
+        for _ in range(8):
+            await DirectWorker(hooks=StubbornHooks())._observe(PROVIDER_RESPONSE, {})
+        assert len(started) == 2
+        assert len(module._observation_tasks) == 2
+        assert all(not task.done() for task in started)
+        assert "capacity exhausted" in caplog.text
+    finally:
+        release.set()
+        # wait (unlike gather) doesn't retrieve exceptions; the production done
+        # callback must do that even for failures after the caller returned.
+        if started:
+            await asyncio.wait(started)
+        await asyncio.sleep(0)  # Allow scheduled done callbacks to run.
+    assert not module._observation_tasks
+    assert all(not task._log_traceback for task in started)
+    assert "private late error" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stall_after_cancel", [False, True])
+@pytest.mark.parametrize("external_cancel", [False, True])
+async def test_suppressing_observer_cannot_hold_or_uncancel_worker(
+    stall_after_cancel, external_cancel
+):
+    entered = asyncio.Event()
+    released = asyncio.Event()
+    stopped = asyncio.Event()
+    observer_tasks = []
+
+    class SuppressingHooks(RecordingHooks):
+        async def emit(self, event, data):
+            await super().emit(event, data)
+            if event != PROVIDER_RESPONSE:
+                return
+            observer_tasks.append(asyncio.current_task())
+            entered.set()
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                if stall_after_cancel:
+                    await released.wait()
+            finally:
+                stopped.set()
+
+    worker = DirectWorker(
+        hooks=SuppressingHooks(),
+        unified_client=MockUnifiedClient([_make_text_response('{"status":"success"}')]),
+    )
+    work = asyncio.create_task(worker.run(_make_node(), "private", PipelineContext(), []))
+    try:
+        await entered.wait()
+        if external_cancel:
+            work.cancel("human stop")
+        done, _ = await asyncio.wait({work}, timeout=0.35)
+        assert work in done, "observer held work past its 100ms deadline"
+        if external_cancel:
+            with pytest.raises(asyncio.CancelledError, match="human stop"):
+                await work
+        else:
+            assert work.result()[1].status == StageStatus.SUCCESS
+            assert work.cancelling() == 0
+    finally:
+        released.set()
+        await asyncio.gather(work, *observer_tasks, return_exceptions=True)
+        await stopped.wait()
+
+
 # ---------------------------------------------------------------------------
 
 

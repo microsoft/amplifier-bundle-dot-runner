@@ -39,7 +39,8 @@ RED-proofs):
     ``__init__.py``'s ``_build_backend``), gate text now reaches this
     worker on every invocation -- resolving the asymmetry by construction
     rather than by duplicating the injection here.
-  - row 11 (``provider:{request,response,error}``): preserved verbatim.
+  - row 11 (``provider:{request,response,error}``): preserved, with additive
+    invocation correlation and aggregate-accounting coverage metadata.
   - row 12 (``llm_model``): mandatory here (``_resolve_model`` raises if
     absent) -- unchanged from both predecessors; optional on the spawn
     path. One documented rule per worker (this docstring + EXTENSIONS Sec40).
@@ -47,8 +48,11 @@ RED-proofs):
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import logging
 from typing import Any
+from uuid import uuid4
 
 from ..backend import (
     _MAX_TOOL_LOOP_ROUNDS,
@@ -64,6 +68,22 @@ from ..graph import Node, resolve_bool_attr
 from ..hook_bridge import _current_node_context, set_node_context
 from ..outcome import Outcome, StageStatus
 from ..pipeline_events import PROVIDER_ERROR, PROVIDER_REQUEST, PROVIDER_RESPONSE
+
+_logger = logging.getLogger(__name__)
+_OBSERVATION_TIMEOUT = 0.1
+# Shared across worker instances/clones: an emitter that suppresses cancellation
+# must not leave one unbounded background task per invocation. Saturation drops
+# terminal observation (a coverage gap), never execution. Tasks remain owned
+# until they actually finish; cancellation is only a request, not completion.
+_MAX_OBSERVATION_TASKS = 64
+_observation_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _observation_done(task: asyncio.Task[Any]) -> None:
+    _observation_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        # Retrieve even late exceptions without logging private emitter data.
+        _logger.warning("Direct-worker terminal observer failed")
 
 
 def _identity(
@@ -178,6 +198,43 @@ class DirectWorker:
             return await self._hooks.emit(event_name, data)
         return None
 
+    async def _observe(self, event_name: str, data: dict[str, Any]) -> None:
+        """Terminal telemetry cannot replace a result or indefinitely delay stop.
+
+        Request hooks deliberately do NOT use this helper: their existing deny
+        and failure semantics are authoritative. Terminal emitters run in owned,
+        capped tasks: even cancellation-suppressing emitters cannot hold or
+        uncancel the work task. Waiting is bounded; cancellation cooperation is
+        not awaited. A blocking synchronous emitter can still block its event
+        loop; this is async isolation, not process isolation.
+        """
+        if self._hooks is None:
+            return
+        if len(_observation_tasks) >= _MAX_OBSERVATION_TASKS:
+            _logger.warning(
+                "Direct-worker terminal observer capacity exhausted: %s invocation=%s",
+                event_name,
+                data.get("invocation_id"),
+            )
+            return
+        observer = asyncio.create_task(
+            self._emit(event_name, data), name="direct-worker-terminal-observer"
+        )
+        _observation_tasks.add(observer)
+        observer.add_done_callback(_observation_done)
+        try:
+            done, _ = await asyncio.wait({observer}, timeout=_OBSERVATION_TIMEOUT)
+        except asyncio.CancelledError:
+            observer.cancel()
+            raise
+        if not done:
+            observer.cancel()
+            _logger.warning(
+                "Direct-worker terminal observer timed out: %s invocation=%s",
+                event_name,
+                data.get("invocation_id"),
+            )
+
     def _get_or_create_unified_client(self) -> Any:
         if self._unified_client is not None:
             return self._unified_client
@@ -200,9 +257,22 @@ class DirectWorker:
         docstring, row 10). ``replayed_history`` is the adapter-resolved
         node-exchange transcript for this thread (empty when not
         applicable); this worker prepends it verbatim as prior turns.
+
+        Public accounting surface: ``invocation_id`` correlates request and
+        terminal events for this invocation only; ``usage_basis`` identifies
+        ``unified-llm-total/1`` (one aggregate of generate's returned steps, not
+        a physical API call or a promise of all billable work). Usage counters
+        and top-level ``cost_usd`` are copied, never normalized or repriced.
+        Cache/reasoning overlap remains adapter-specific. ``cost_coverage``
+        describes the supplied estimate, not delivery completeness. Failed or
+        cancelled generation emits ``usage_unavailable=True`` without invented
+        zeroes; intermediate steps on those paths are not exposed by generate.
+        Request denial still skips generation with no terminal measurement.
+        Accounting consumers must exclude the legacy SDK error ``message``.
         """
         import unified_llm
 
+        invocation_id = uuid4().hex
         provider_name = node.llm_provider or node.attrs.get("llm_provider", "anthropic")
 
         # llm-direct is the PURE unified-llm-spec client (SDK-direct
@@ -260,14 +330,23 @@ class DirectWorker:
         else:
             generate_kwargs["prompt"] = prompt
 
+        # One ID per generate invocation, NOT one ID per underlying provider
+        # request/step. Equal usages on repeated/parallel/nested node visits are
+        # independent observations. Spec §4.5 delegates backend internals; §9.6
+        # permits metrics observers without changing graph/outcome semantics.
+        event_identity = {
+            "provider": provider_name,
+            **_identity(provider_name, model, reasoning_effort),
+            "node_id": node.id,
+            "invocation_id": invocation_id,
+            "usage_basis": "unified-llm-total/1",
+        }
         token = set_node_context({"node_id": node.id})
         try:
             pre_result = await self._emit(
                 PROVIDER_REQUEST,
                 {
-                    "provider": provider_name,
-                    **_identity(provider_name, model, reasoning_effort),
-                    "node_id": node.id,
+                    **event_identity,
                     "tool_names": [t.name for t in tools] if tools else [],
                     "message_count": len(generate_kwargs.get("messages", [])) or 1,
                 },
@@ -283,31 +362,50 @@ class DirectWorker:
                 )
 
             result = await unified_llm.generate(**generate_kwargs)
+        except asyncio.CancelledError:
+            try:
+                await self._observe(
+                    PROVIDER_ERROR,
+                    {
+                        **event_identity,
+                        "error_type": "CancelledError",
+                        "usage_unavailable": True,
+                    },
+                )
+            finally:
+                raise
         except unified_llm.SDKError as exc:
-            await self._emit(
+            await self._observe(
                 PROVIDER_ERROR,
                 {
-                    "provider": provider_name,
-                    "model": model,
-                    "node_id": node.id,
+                    **event_identity,
                     "error_type": type(exc).__name__,
                     "error_class": type(exc).__mro__[1].__name__,
                     "retryable": getattr(exc, "retryable", False),
+                    # Legacy diagnostic field, NOT accounting data. Accounting
+                    # consumers must allowlist fields and exclude this message.
                     "message": str(exc),
+                    "usage_unavailable": True,
                 },
             )
             return "", Outcome(status=StageStatus.FAIL, failure_reason=str(exc))
         except Exception as exc:  # noqa: BLE001 -- mirrors predecessor's catch-all
+            await self._observe(
+                PROVIDER_ERROR,
+                {
+                    **event_identity,
+                    "error_type": type(exc).__name__,
+                    "usage_unavailable": True,
+                },
+            )
             return "", Outcome(status=StageStatus.FAIL, failure_reason=str(exc))
         finally:
             _current_node_context.reset(token)
 
-        await self._emit(
+        await self._observe(
             PROVIDER_RESPONSE,
             {
-                "provider": provider_name,
-                **_identity(provider_name, model, reasoning_effort),
-                "node_id": node.id,
+                **event_identity,
                 "usage": {
                     "input_tokens": result.total_usage.input_tokens,
                     "output_tokens": result.total_usage.output_tokens,
@@ -326,6 +424,17 @@ class DirectWorker:
                 # never previously false) -- see
                 # tests/test_provider_hooks.py::test_direct_backend_emits_provider_response.
                 "cost_usd": result.total_usage.cost_usd,
+                # Preserve the supplied estimate, including None. Current
+                # Usage.__add__ propagates any unknown cost to None; should a
+                # client supply a subtotal, do not call it a complete estimate.
+                "cost_coverage": (
+                    "unavailable"
+                    if result.total_usage.cost_usd is None
+                    else "complete"
+                    if result.steps
+                    and all(step.usage.cost_usd is not None for step in result.steps)
+                    else "partial"
+                ),
             },
         )
 

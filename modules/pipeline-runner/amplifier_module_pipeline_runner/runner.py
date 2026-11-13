@@ -348,7 +348,8 @@ async def drive_engine(
         cwd: Working directory for the pipeline (tool/box nodes write here).
             Defaults to ``Path.cwd()`` if not given.
         logs_root: Directory for this run's engine logs.
-        hooks: Optional hooks object forwarded to the handler registry and engine.
+        hooks: Optional hooks object forwarded to the backend, handler registry
+            and engine; defaults to the coordinator's hooks.
         profiles: llm_provider -> agent-name routing map. Defaults to ``{}``
             if not given (``None``).
         interviewer: Optional interviewer object forwarded to the handler
@@ -545,6 +546,7 @@ async def drive_engine(
             # Nothing between that call and this one mutates either.
             coordinator=coordinator,
             profiles=resolved_profiles,
+            hooks=effective_hooks,
             # Run-level worker-selection default (EXTENSIONS.md Sec40 /
             # DESIGN-worker-registry-core-split.md P1 item 3, P3 item 2).
             # ``None`` (the default) leaves AmplifierBackend's own
