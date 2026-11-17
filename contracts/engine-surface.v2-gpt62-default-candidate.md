@@ -2,7 +2,8 @@ target: contracts/engine-surface.v1.md
 
 # Candidate amendment — SDK-direct OpenAI fresh default
 
-**Date:** 2026-11-17  
+**Date:** 2026-11-17
+
 **Status:** proposal and candidate implementation for review only; **not ratified**.
 This is not contract-version adoption, merge, release, or live-adoption authority.
 
