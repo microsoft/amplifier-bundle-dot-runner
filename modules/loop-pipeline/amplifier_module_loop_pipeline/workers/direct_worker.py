@@ -62,6 +62,7 @@ from ..backend import (
     _parse_outcome,
     _resolve_concrete_model,
     _resolve_model,
+    _resolve_openai_default_model,
 )
 from ..context import PipelineContext
 from ..graph import Node, resolve_bool_attr
@@ -163,6 +164,8 @@ class DirectWorker:
         self._tools = tools or {}
         self._hooks = hooks
         self._unified_client = unified_client
+        self._default_models: dict[int, tuple[Any, str]] = {}
+        self._default_model_lock = asyncio.Lock()
 
     def clone(self) -> DirectWorker:
         """Branch-isolated clone (gap-table row 6).
@@ -175,6 +178,8 @@ class DirectWorker:
         new._provider = self._provider
         new._hooks = self._hooks
         new._unified_client = self._unified_client
+        new._default_models = self._default_models
+        new._default_model_lock = self._default_model_lock
         new._tools = {k: _clone_tool(v) for k, v in self._tools.items()}
         return new
 
@@ -192,6 +197,11 @@ class DirectWorker:
         if close_fn is not None:
             await close_fn()
         self._unified_client = None
+        # Clones can own distinct lazy-created clients. Closing one must not
+        # evict a still-live sibling adapter's stable selection.
+        adapter = getattr(client, "providers", {}).get("openai")
+        if adapter is not None:
+            self._default_models.pop(id(adapter), None)
 
     async def _emit(self, event_name: str, data: dict[str, Any]) -> Any:
         if self._hooks is not None:
@@ -301,9 +311,16 @@ class DirectWorker:
         stable_only = (
             True if node.llm_model else _default_model_stable_only(provider_name)
         )
-        model = await _resolve_concrete_model(
-            provider_name, model_token, emit=self._emit, stable_only=stable_only
-        )
+        if provider_name == "openai" and not node.llm_model:
+            client = self._get_or_create_unified_client()
+            async with self._default_model_lock:
+                model = await _resolve_openai_default_model(
+                    client, self._default_models, emit=self._emit
+                )
+        else:
+            model = await _resolve_concrete_model(
+                provider_name, model_token, emit=self._emit, stable_only=stable_only
+            )
         reasoning_effort = node.attrs.get("reasoning_effort")
         max_agent_turns_raw = node.attrs.get("max_agent_turns")
         max_agent_turns = (

@@ -91,7 +91,7 @@ def test_resolve_model_returns_default_token_for_anthropic_provider_without_mode
 
 def test_resolve_model_returns_default_token_for_openai_provider_without_model():
     """LANE-D: llm_provider=openai alone must resolve to the documented
-    default family glob, not raise, and not a literal hardcoded 'gpt-4o'.
+    candidate preference; DirectWorker must check available membership.
     """
     from amplifier_module_loop_pipeline.backend import (
         _PROVIDER_DEFAULT_MODEL_PATTERN,
@@ -103,7 +103,7 @@ def test_resolve_model_returns_default_token_for_openai_provider_without_model()
 
     result = _resolve_model(node)
 
-    assert result == _PROVIDER_DEFAULT_MODEL_PATTERN["openai"][0] == "gpt-5.*[0-9]"
+    assert result == _PROVIDER_DEFAULT_MODEL_PATTERN["openai"][0] == "gpt-6.2-sol"
     assert result != "gpt-4o"
 
 

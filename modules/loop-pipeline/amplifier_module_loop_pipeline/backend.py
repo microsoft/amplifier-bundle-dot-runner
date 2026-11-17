@@ -1108,13 +1108,13 @@ def _resolve_model(node: Node) -> str:
          node has no ``llm_model`` but DOES have an explicit ``llm_provider``
          (again, either a raw DOT attribute or one set by the model
          stylesheet -- both promote onto ``node.llm_provider``), resolve a
-         per-provider default MODEL FAMILY TOKEN so `llm_provider`-alone
+         per-provider default model preference so `llm_provider`-alone
          works on the direct path instead of failing loud (maintainer
          ruling: llm_provider is a spec-level node property, honor it
          spec-first). The returned token is resolved live by
-         ``_resolve_concrete_model`` -- same machinery as an author writing
-         ``llm_model=sonnet`` today -- so this table never pins a rotting
-         concrete model id (see ``_PROVIDER_DEFAULT_MODEL_PATTERN`` below).
+         ``_resolve_concrete_model`` for family patterns; the candidate
+         OpenAI default uses ``_resolve_openai_default_model`` against the
+         generation adapter's live list. No default invents availability.
       3. Otherwise (no llm_model AND no llm_provider at all on the node):
          unchanged fail-loud. This is deliberately NOT widened by the new
          rung 4 -- the ruling's surprise-case is an author who wrote
@@ -1125,7 +1125,7 @@ def _resolve_model(node: Node) -> str:
 
     Returns:
         The explicit model identifier from ``node.llm_model``, or (rung 4)
-        a per-provider default model-family token to be resolved live.
+        a per-provider default preference to be resolved against live availability.
 
     Raises:
         ValueError: If ``node.llm_model`` is unset AND either (a) no
@@ -1142,7 +1142,7 @@ def _resolve_model(node: Node) -> str:
             token, _stable_only = default
             logger.info(
                 "Node %r set llm_provider=%r with no llm_model -- using "
-                "per-provider default model family token %r (spec §8.5 rung "
+                "per-provider default model preference %r (spec §8.5 rung "
                 "4; see specs/EXTENSIONS.md).",
                 node.id,
                 provider,
@@ -1201,32 +1201,29 @@ _FAMILY_TOKENS: frozenset[str] = frozenset({"opus", "sonnet", "haiku"})
 # ``get_latest_model()``/live-resolution as the mechanism for that. Rather
 # than pin a literal model id here (the old, removed ``_DEFAULT_MODELS``
 # table -- see test_profile_no_default_model.py -- rotted exactly this way),
-# each entry names a FAMILY TOKEN/GLOB resolved live via the SAME
-# ``_resolve_concrete_model``/``unified_llm.resolve_latest_for`` machinery
-# already used for an author-written ``llm_model=sonnet``.
+# each entry names a live-resolved preference. Anthropic/Gemini use the
+# existing family/glob machinery; the candidate OpenAI default checks an
+# ordered known-model preference against the generation adapter's live list.
+# Frozen owned C5.5 is unchanged: this candidate requires the amendment in
+# contracts/engine-surface.v2-gpt62-default-candidate.md before integration.
 #
 #   "anthropic" -> "sonnet": an EXISTING family token (_FAMILY_TOKENS above).
 #       Matches the spec's OWN model_stylesheet example (§8.6:
 #       `* { llm_model: claude-sonnet-4-5; llm_provider: anthropic; }`).
-#   "openai"    -> "gpt-5.*[0-9]": current flagship generation (unified-llm
-#       spec §2.9: "GPT-5+ series"). Anchored to END in a digit so
-#       tier-suffixed siblings (e.g. "-mini", "-codex") do not outrank the
-#       bare release under the resolver's version-sort -- verified
-#       empirically: a bare "gpt-5*" glob against
-#       ["gpt-5.2", "gpt-5.2-mini", "gpt-5.2-codex"] picks "gpt-5.2-mini"
-#       (a longer, non-numeric suffix compares *greater* once the shared
-#       prefix ties), which is the wrong default. stable_only=True is safe
-#       here (no provider-side "-preview" marker on this family today).
+#   "openai"    -> "gpt-6.2-sol": preferred available general-purpose model.
+#       Unlike an explicit pin, this preference MUST be checked against the
+#       generation adapter's list by _resolve_openai_default_model. Ordered
+#       known-family fallbacks avoid lexical selection of specialized siblings.
 #   "gemini"    -> "gemini-3*pro*", stable_only=False: current flagship
 #       generation is the Pro tier (unified-llm spec §2.9: "Gemini 3.1 Pro
 #       Preview"). The provider's own current top model is itself
 #       "-preview"-named, so stable_only=True (the resolver's default)
 #       would filter out every candidate and always raise.
 #
-# Value: (family_token_or_glob, stable_only).
+# Value: (live-resolved preference, stable_only).
 _PROVIDER_DEFAULT_MODEL_PATTERN: dict[str, tuple[str, bool]] = {
     "anthropic": ("sonnet", True),
-    "openai": ("gpt-5.*[0-9]", True),
+    "openai": ("gpt-6.2-sol", True),
     "gemini": ("gemini-3*pro*", False),
 }
 
@@ -1234,6 +1231,54 @@ _PROVIDER_DEFAULT_MODEL_PATTERN: dict[str, tuple[str, bool]] = {
 # pattern resolves at most once per run, so a run is deterministic and the
 # resolved id is stable across every node/loop iteration that uses it.
 _MODEL_RESOLUTION_CACHE: dict[tuple[str, str, bool], str] = {}
+
+
+async def _resolve_openai_default_model(
+    client: Any, cache: dict[int, tuple[Any, str]], *, emit: Any = None
+) -> str:
+    """Candidate implicit SDK-direct default (canonical §8.5 rung 4).
+
+    Explicit IDs and author-written globs retain their existing resolution.
+    This default uses the generation adapter, not the advisory catalog or
+    separately mounted Amplifier provider. Cache belongs to one worker and
+    its clones, never another fresh worker/account.
+    """
+    from unified_llm import select_latest
+
+    adapter = client.providers.get("openai")
+    if adapter is None:
+        raise ValueError("OpenAI default model requires an openai SDK adapter")
+    cache_key = id(adapter)
+    cached = cache.get(cache_key)
+    # Retain/check the actual adapter, not just its recyclable Python id.
+    if cached is not None and cached[0] is adapter:
+        return cached[1]
+    available = await adapter.list_models()  # errors propagate; never fake availability
+    preferred = _PROVIDER_DEFAULT_MODEL_PATTERN["openai"][0]
+    concrete = next(
+        (
+            model
+            for model in (preferred, "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra")
+            if model in available
+        ),
+        None,
+    )
+    if concrete is None:
+        # Preserve the old fallback semantics against the SAME list. This is
+        # not a future-family parser or a retry after failed model generation.
+        concrete = select_latest(available, "gpt-5.*[0-9]", stable_only=True)
+    cache[cache_key] = (adapter, concrete)
+    if emit is not None:
+        await emit(
+            MODEL_RESOLVED,
+            {
+                "raw": preferred,
+                "resolved": concrete,
+                "provider": "openai",
+                "pattern": "<provider-default>",
+            },
+        )
+    return concrete
 
 
 def _is_model_pattern(model: str) -> bool:

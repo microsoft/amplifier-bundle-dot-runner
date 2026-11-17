@@ -4496,6 +4496,25 @@ for the mechanism, the exact bound of the tolerance, and what it costs.
 
 ## 42. Per-Provider Default Model for `llm_provider`-Alone Nodes (Direct Path, Spec §8.5 Rung 4)
 
+### 2026-11-17 — Unratified SDK-direct default amendment candidate
+
+The review branch now contains a candidate implicit OpenAI preference for
+listed `gpt-6.2-sol`, then `gpt-6.2-astra`, then `gpt-6.1-sol`, then
+`gpt-6-astra`, then the existing stable GPT-5 selector. Its exact proposed
+C5.5 wording, compatibility cost, migration and verification boundaries are
+in [the separate proposal](../contracts/engine-surface.v2-gpt62-default-candidate.md).
+The frozen v1 and the already ratified, unrelated completion-identity proposal
+remain byte-identical. The preparation request is not maintainer ratification.
+**Do not integrate this candidate as conformance to current frozen C5.5.**
+Passing unchanged existence-indexed ledger probes is not such a disposition.
+
+The live list is obtained from the actual generation SDK adapter; the selected
+default is cached per worker/adapter, with same-adapter branch clones sharing
+the cache. Fresh workers and distinct lazy-created clone adapters discover their
+own availability. Empty/error listings never invent a model and generation
+failures never trigger model substitution. This does not change explicit IDs,
+opt-in globs, other providers, spawned-worker defaults or checkpoint fields.
+
 ### 2026-11-17 — Exact GPT-6.2 SDK request compatibility, default unchanged
 
 Explicit `gpt-6.2-sol` and `gpt-6.2-astra` IDs already pass through unchanged.
@@ -4520,10 +4539,11 @@ stream dispatch, tool-call/result continuation and unchanged history input.
 They do not establish account availability, live model success or reasoning
 item reuse. Explicit/stylesheet precedence remains canonical attractor §8.5.
 
-**The implicit OpenAI default remains `gpt-5.*[0-9]`, as frozen C5.5 specifies.**
-The separately preserved automatic-default candidate is not part of this
-delivery. Changing that default requires its own owner decision; neither this
-entry nor passing ledger probes ratifies a frozen contract amendment.
+**In the separate exact-support checkpoint `a72d50c2`, the implicit OpenAI
+default remains `gpt-5.*[0-9]`, as frozen C5.5 specifies.** The amendment
+candidate above is not part of that checkpoint's delivery. Changing the
+production default still requires its own owner decision; neither this entry
+nor passing ledger probes ratifies a frozen contract amendment.
 
 **Classification: implementor-level, NOT a spec divergence.** Canonical spec §8.5 /
 Appendix A already name this exact rung — "4. Handler/system default" — as reserved for
