@@ -144,7 +144,7 @@ async def test_canonical_text_only_content_survives_real_tool_round():
         tools={"capture": SimpleNamespace(name="capture", description="fixture", input_schema={}, execute=execute)},
         hooks=HookRegistry())
     await session.process_input("read")
-    assert [block.text for block in provider.requests[-1].messages[-1].content] == ["before", "after"]
+    assert provider.requests[-1].messages[-1].content == "beforeafter"
 
 
 async def test_history_does_not_bypass_refusal_and_retention_still_elides():
@@ -155,8 +155,61 @@ async def test_history_does_not_bypass_refusal_and_retention_still_elides():
     direct = convert_history_to_messages(history)
     assert "no pixels sent" in direct[1].content
     assert "before" in direct[1].content and "after" in direct[1].content
-    assert [block.text for block in direct[-1].content] == ["before", "after"]
+    assert "".join(block.text for block in direct[-1].content) == "beforeafter"
     retained = convert_history_to_messages(history, tool_result_retention_turns=1)
     assert retained[1].content.startswith("[tool result elided:")
     assert retained[1].tool_call_id == "a"
     assert SECRET not in repr(retained)
+
+
+@pytest.mark.parametrize("unified", [False, True])
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("failure", [False, True])
+async def test_actual_lines_and_failure_reach_shipped_truncator(unified, streaming, failure):
+    from amplifier_module_hooks_tool_truncation import mount
+    text = "\n".join(f"line {i}" for i in range(300))
+    hooks = HookRegistry()
+    cleanup = await mount(SimpleNamespace(get=lambda key: hooks if key == "hooks" else None),
+                          config={"char_limits": {"capture": 30000},
+                                  "line_limits": {"capture": 200}, "modes": {}})
+    async def execute(args):
+        return ToolResult(success=not failure, output="FATAL_SENTINEL" if failure else text,
+                          error={"message": "FATAL_SENTINEL"} if failure else None,
+                          content=[TextBlock(text=text)])
+    recorder = UnifiedClient() if unified else Provider()
+    provider = UnifiedProviderAdapter(provider_name="anthropic", model="fake", client=recorder) if unified else recorder
+    if not streaming:
+        provider.stream = None
+    session = AgentSession(config=SessionConfig(system_prompt="fixture"), provider=provider,
+        tools={"capture": SimpleNamespace(name="capture", description="fixture", input_schema={}, execute=execute)},
+        hooks=hooks)
+    try:
+        await session.process_input("inspect")
+        content = recorder.requests[-1].messages[-1].content
+        if unified:
+            content = content[0].tool_result.content
+        assert "lines omitted" in content
+        assert "line 150\n" not in content
+        if failure:
+            assert "FATAL_SENTINEL" in content and "[Tool failed]" in content
+    finally:
+        cleanup()
+
+
+async def test_failed_rich_error_is_effective_text_not_restored_after_redaction():
+    hooks = HookRegistry()
+    async def redact(event, data):
+        assert "FATAL_SENTINEL" in data["result"]
+        return HookResult(action="modify", data={**data, "result": "safe error explanation"})
+    hooks.register("tool:post", redact)
+    async def execute(args):
+        return ToolResult(success=False, output="FATAL_SENTINEL", error={"message": "FATAL_SENTINEL"},
+                          content=[TextBlock(text="partial text")])
+    provider = Provider()
+    provider.stream = None
+    session = AgentSession(config=SessionConfig(system_prompt="fixture"), provider=provider,
+        tools={"capture": SimpleNamespace(name="capture", description="fixture", input_schema={}, execute=execute)},
+        hooks=hooks)
+    await session.process_input("inspect")
+    assert provider.requests[-1].messages[-1].content == "safe error explanation"
+    assert not session._history[-2].results[0].success

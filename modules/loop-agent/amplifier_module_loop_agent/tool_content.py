@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 from amplifier_core.models import ToolResult
-from amplifier_core.message_models import ImageBlock
+from amplifier_core.message_models import ImageBlock, TextBlock
 
 IMAGE_UNAVAILABLE = (
     "[Image unavailable: this tool-post path cannot attest image preservation; no pixels sent.]"
@@ -32,9 +32,24 @@ def rich_result_copy(result: ToolResult) -> ToolResult | None:
 
 
 def safe_presentation(result: ToolResult) -> str:
-    """Text hook/event carrier without image bytes or private source locations."""
+    """Expose actual text lines to hooks, never a JSON-escaped envelope.
+
+    Core supplies the safe image projection. Failure output/error is additional
+    information, not replaced by partial rich text. All of it goes through the
+    same effective hook result before entering model history.
+    """
     try:
-        return json.dumps(result.safe_hook_presentation(), ensure_ascii=False)
+        safe = result.safe_hook_presentation()
+        text = "".join(block["text"] for block in safe.get("content", []))
+        if not result.success:
+            parts = ["[Tool failed]", text]
+            for value in (safe.get("output"), safe.get("error")):
+                if value is not None:
+                    rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                    if rendered and rendered not in parts:
+                        parts.append(rendered)
+            text = "\n".join(parts)
+        return text
     except Exception:
         raise ValueError("Unable to present rich tool result safely") from None
 
@@ -43,7 +58,7 @@ def history_content(result: ToolResult):
     """Keep canonical text; refuse images without rebuilding pre-hook authority."""
     if any(isinstance(block, ImageBlock) for block in result.content):
         return safe_presentation(result) + "\n" + IMAGE_UNAVAILABLE
-    return result.content
+    return [TextBlock(text=safe_presentation(result))]
 
 
 def effective_rich_result(original: ToolResult, presentation: str, post_result) -> ToolResult:
@@ -61,14 +76,14 @@ def effective_rich_result(original: ToolResult, presentation: str, post_result) 
         return ToolResult(success=False, output="Rich tool result has no effective post-hook result; no pixels sent.")
     replacement = data["result"]
     has_images = any(isinstance(block, ImageBlock) for block in original.content)
-    if isinstance(replacement, str) and replacement == presentation:
-        if has_images:
-            # Final equality cannot prove no intervention: Core may collapse
-            # modify/restore or swallow a hook failure. Safe markers are not
-            # permission to recover the retained original image.
-            return ToolResult(success=False, output=replacement + "\n" + IMAGE_UNAVAILABLE)
-        return original
     if isinstance(replacement, str):
-        # Preserve the hook's useful replacement, but not the original image.
-        return ToolResult(success=original.success, output=replacement + "\n[Original rich content replaced by post-hook; no pixels sent.]")
+        # Consume EXACT effective text even if equal to our original projection.
+        # Never restore pre-hook blocks or failure fields after filtering.
+        if has_images:
+            return ToolResult(success=False, output=replacement + "\n" + IMAGE_UNAVAILABLE)
+        return ToolResult(
+            success=original.success,
+            output=replacement,
+            error={"message": replacement} if not original.success else None,
+        )
     return ToolResult(success=False, output="Unsupported rich post-hook replacement; no pixels sent.")
