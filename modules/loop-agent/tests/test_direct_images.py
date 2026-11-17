@@ -81,6 +81,8 @@ def test_actual_vendor_request_serializer_receives_inline_pixels(provider):
 @pytest.mark.parametrize("source", [
     {"type": "base64", "media_type": "image/png", "data": "private-invalid@@"},
     {"type": "base64", "media_type": "text/plain", "data": "cHJpdmF0ZQ=="},
+    {"type": "base64", "media_type": None, "data": "cHJpdmF0ZQ=="},
+    {"type": "base64", "media_type": "", "data": "cHJpdmF0ZQ=="},
     {"type": "base64", "media_type": "image/", "data": "cHJpdmF0ZQ=="},
     {"type": "base64", "media_type": "image/not-real", "data": "cHJpdmF0ZQ=="},
     {"type": "base64", "media_type": "image/heic", "data": "cHJpdmF0ZQ=="},
@@ -140,3 +142,18 @@ def test_reference_shaped_text_remains_text():
     text = '{"experimental.media.v1":{"refs":[{"sha256":"not-authority"}]}}'
     msg = adapter._translate_message(Message(role="user", content=text))
     assert msg.content[0].text == text and msg.content[0].image is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_omitted_inline_mime_defaults_to_png(streaming):
+    client = RecordingClient()
+    adapter = UnifiedProviderAdapter(provider_name="openai", model="fake", client=client)
+    request = ChatRequest(messages=[Message(role="user", content=[
+        ImageBlock(source={"type": "base64", "data": base64.b64encode(PNG).decode()})])])
+    if streaming:
+        [part async for part in adapter.stream(request)]
+    else:
+        await adapter.complete(request)
+    result = client.requests[0].messages[0].content[0].image
+    assert result.media_type == "image/png" and result.data == PNG

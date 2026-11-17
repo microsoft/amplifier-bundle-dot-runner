@@ -249,7 +249,9 @@ class UnifiedProviderAdapter:
             raise ulm_errors.ConfigurationError("Invalid image detail")
         kind = source.get("type")
         if kind == "base64" and not set(source) - {"type", "media_type", "data", "detail"}:
-            mime, data = source.get("media_type"), source.get("data")
+            # Unified spec §3.5: omission defaults inline data to PNG.
+            # Explicit null/empty/malformed MIME remains a refusal.
+            mime, data = source.get("media_type", "image/png"), source.get("data")
             if not isinstance(mime, str) or not mime.startswith("image/") or not isinstance(data, str) or not data:
                 raise ulm_errors.ConfigurationError("Invalid inline image source")
             try:
