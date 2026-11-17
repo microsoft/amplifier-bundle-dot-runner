@@ -452,6 +452,38 @@ class OpenAIAdapter:
             for k, v in opts.items():
                 kwargs[k] = v
 
+        # GPT-6.2 migration guide, "Update API and model parameters":
+        # https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6.2-astra
+        # Validate the FINAL wire request, including provider_options. Do not
+        # silently discard explicit settings or rewrite effort/history. Exact
+        # known IDs only: unknown/future models remain provider pass-through
+        # (unified-llm spec §2.9); Responses is already our native API (§2.7).
+        # extra_body is an SDK escape hatch whose keys override normal body
+        # fields. Check that effective body too, without mutating either input.
+        omit_type = getattr(openai, "Omit", ())
+        body = {
+            key: value
+            for key, value in {**kwargs, **(kwargs.get("extra_body") or {})}.items()
+            if not isinstance(value, omit_type)
+        }
+        if body.get("model") in ("gpt-6.2-sol", "gpt-6.2-astra"):
+            for field in ("temperature", "top_p", "logprobs", "top_logprobs"):
+                if body.get(field) is not None:
+                    raise errors.ConfigurationError(
+                        f"{body['model']} does not support {field}; omit it."
+                    )
+            if "message.output_text.logprobs" in (body.get("include") or []):
+                raise errors.ConfigurationError(
+                    f"{body['model']} does not support message.output_text.logprobs; "
+                    "remove it from include."
+                )
+            reasoning = body.get("reasoning") or {}
+            if reasoning.get("effort") in ("none", "minimal"):
+                raise errors.ConfigurationError(
+                    f"{body['model']} reasoning effort must not be none/minimal; "
+                    "use low or medium, or omit reasoning for the provider default."
+                )
+
         return kwargs
 
     def _translate_user_content(self, parts: list[ContentPart]) -> list[dict[str, Any]]:

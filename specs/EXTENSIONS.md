@@ -4496,6 +4496,35 @@ for the mechanism, the exact bound of the tolerance, and what it costs.
 
 ## 42. Per-Provider Default Model for `llm_provider`-Alone Nodes (Direct Path, Spec §8.5 Rung 4)
 
+### 2026-11-17 — Exact GPT-6.2 SDK request compatibility, default unchanged
+
+Explicit `gpt-6.2-sol` and `gpt-6.2-astra` IDs already pass through unchanged.
+The SDK OpenAI adapter already uses Responses for complete/stream, as required
+by unified-llm canonical §2.7; §5.6/§5.10 tool-call/result continuation remains
+unchanged. No new transport, model catalog, guessed prices, worker outcome,
+checkpoint or attempt-accounting surface is introduced.
+
+The exact two GPT-6.2 IDs now diagnose explicit unsupported sampling/logprobs
+and `none`/`minimal` reasoning settings before dispatch, including settings
+supplied via provider options or SDK `extra_body`. SDK omission overrides
+remain omissions, not invalid sampling settings. Unspecified settings stay
+omitted. Other effort values remain provider-validated; this is not a claim
+about the full supported effort enum. Unknown IDs and old explicit pins
+remain pass-through per unified-llm §2.9.
+
+Basis: [GPT-6.2 migration guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6.2-astra),
+[Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol),
+[Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra).
+Offline tests exercise real worker/generate/SDK requests with HTTP fixtures,
+stream dispatch, tool-call/result continuation and unchanged history input.
+They do not establish account availability, live model success or reasoning
+item reuse. Explicit/stylesheet precedence remains canonical attractor §8.5.
+
+**The implicit OpenAI default remains `gpt-5.*[0-9]`, as frozen C5.5 specifies.**
+The separately preserved automatic-default candidate is not part of this
+delivery. Changing that default requires its own owner decision; neither this
+entry nor passing ledger probes ratifies a frozen contract amendment.
+
 **Classification: implementor-level, NOT a spec divergence.** Canonical spec §8.5 /
 Appendix A already name this exact rung — "4. Handler/system default" — as reserved for
 the implementor; the spec text names no concrete default models. This entry documents
