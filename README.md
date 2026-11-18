@@ -5,14 +5,19 @@
 The mandatory root adapter now uses `amplifier_agent` public handles, not the
 private Engine/CLI integration described in historical sections below.
 Binding `main#subdirectory=packages/python` deliberately floats, with the
-`github-copilot` extra. Binding 0.22.0 pins engine v0.22.0, Core 2.0.1 and
-Foundation `21ad50fa40f7acff913cbf6615228ac359f7dedd`.
+`github-copilot` extra. Current binding 0.30.1 selects its published engine
+v0.30.1; that graph and routing require Foundation main. Runner's published
+Foundation requirement, local source mapping and root-install prerequisite
+therefore use the same `@main` URL. The old 0.22-era Foundation SHA exception
+is retired; no external Foundation override hides a consumer solve.
 
-The former Foundation-main policy conflicts with that engine SHA in an
-unoverridden consumer solve. Runner's published Foundation requirement/source
-now align to the engine SHA as a narrow consumer exception; the root override
-is removed. The historical shape-only fix below no longer governs this install.
-Consumers requiring Foundation main still need independent qualification.
+The original PR #145 root-install failure remains recorded: unchanged runner
+metadata met the advanced Agent graph and conflicted on Foundation sources.
+The root/adapter development engine correction now selects the same published
+v0.30.1 tag, with affected locks updated separately from the fresh
+`uv --no-config pip install --no-sources` consumer boundary. A moving source
+can change again: qualification records actual revisions rather than promising
+that this alignment proves every future dependency graph.
 
 Canonical §§1.4/4.5 allow this backend replacement without altering graph
 traversal, String|Outcome or the worker-written status-file channel.

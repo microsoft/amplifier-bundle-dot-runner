@@ -38,7 +38,7 @@ package = true
 # Lock-only correction for upstream workspace=true source leakage. This is
 # exactly the binding's published engine tag, never a Foundation override.
 override-dependencies = [
-    "amplifier-agent-engine[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@v0.22.0#subdirectory=packages/engine",
+    "amplifier-agent-engine[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@v0.30.1#subdirectory=packages/engine",
 ]
 
 [tool.uv.sources]
@@ -76,7 +76,8 @@ dev = [
     "amplifier-worker-parity-kit",
     "amplifier-module-hooks-pipeline-observability",
     # Real inherited-history discriminator, not a context dictionary double.
-    "amplifier-module-context-simple @ git+https://github.com/microsoft/amplifier-module-context-simple@c7ec55db96888200ba619adedc857278daf787c5",
+    # Match the public engine's source; the module lock records the tested SHA.
+    "amplifier-module-context-simple @ git+https://github.com/microsoft/amplifier-module-context-simple",
 ]
 
 [tool.pytest.ini_options]

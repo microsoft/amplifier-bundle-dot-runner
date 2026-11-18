@@ -1,11 +1,11 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
     "python_full_version >= '3.14' and sys_platform != 'emscripten'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
+    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
 ]
 
 [[package]]
@@ -31,7 +31,7 @@ wheels = [
 [[package]]
 name = "amplifier-foundation"
 version = "1.0.0"
-source = { git = "https://github.com/microsoft/amplifier-foundation?rev=21ad50fa40f7acff913cbf6615228ac359f7dedd#21ad50fa40f7acff913cbf6615228ac359f7dedd" }
+source = { git = "https://github.com/microsoft/amplifier-foundation?rev=main#896f0380fc71d75f08a6ae0fac4f5e8686cd2ad9" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "filelock" },
@@ -88,7 +88,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "amplifier-core", specifier = ">=2.0.1" },
-    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=21ad50fa40f7acff913cbf6615228ac359f7dedd" },
+    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=main" },
     { name = "amplifier-module-loop-pipeline", extras = ["remote"], directory = "../loop-pipeline" },
 ]
 
