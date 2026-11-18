@@ -31,6 +31,143 @@ def _make_adapter() -> OpenAIAdapter:
         return OpenAIAdapter(api_key="test-key")
 
 
+@pytest.mark.parametrize("model", ["gpt-6.2-sol", "gpt-6.2-astra"])
+class TestGPT62Requests:
+    """Published 6.2 restrictions, not a guessed future-model policy."""
+
+    def test_default_request_omits_sampling_and_reasoning(self, model):
+        kwargs = _make_adapter()._translate_request(
+            Request(model=model, messages=[Message.user("hello")])
+        )
+        assert kwargs["model"] == model
+        assert not {"temperature", "top_p", "top_logprobs", "reasoning"} & kwargs.keys()
+
+    @pytest.mark.parametrize("field,value", [("temperature", 0.7), ("top_p", 0.9)])
+    def test_explicit_sampling_fails_loud(self, model, field, value):
+        request = Request(model=model, messages=[], **{field: value})
+        with pytest.raises(E.ConfigurationError, match=field):
+            _make_adapter()._translate_request(request)
+
+    @pytest.mark.parametrize(
+        "options,field",
+        [
+            ({"temperature": 0.7}, "temperature"),
+            ({"top_p": 0.9}, "top_p"),
+            ({"top_logprobs": 1}, "top_logprobs"),
+            ({"logprobs": True}, "logprobs"),
+            ({"include": ["message.output_text.logprobs"]}, "logprobs"),
+            ({"reasoning": {"effort": "none"}}, "reasoning"),
+            ({"extra_body": {"temperature": 0.2}}, "temperature"),
+            ({"extra_body": {"reasoning": {"effort": "none"}}}, "reasoning"),
+        ],
+    )
+    def test_escape_hatch_cannot_reintroduce_unsupported_options(
+        self, model, options, field
+    ):
+        request = Request(
+            model=model, messages=[], provider_options={"openai": options}
+        )
+        with pytest.raises(E.ConfigurationError, match=field):
+            _make_adapter()._translate_request(request)
+
+    @pytest.mark.parametrize("effort", ["none", "minimal"])
+    def test_unsupported_effort_fails_without_silent_rewrite(self, model, effort):
+        with pytest.raises(E.ConfigurationError, match="reasoning"):
+            _make_adapter()._translate_request(
+                Request(model=model, messages=[], reasoning_effort=effort)
+            )
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
+    def test_explicit_effort_passes_through(self, model, effort):
+        kwargs = _make_adapter()._translate_request(
+            Request(model=model, messages=[], reasoning_effort=effort)
+        )
+        assert kwargs["reasoning"] == {"effort": effort}
+
+    def test_model_omit_escape_hatch_does_not_raise_key_error(self, model):
+        request = Request(
+            model=model,
+            messages=[],
+            provider_options={"openai": {"extra_body": {"model": openai.omit}}},
+        )
+        # The SDK/provider owns diagnosing a missing required model. Translation
+        # must not crash while trying to apply a model-specific policy.
+        _make_adapter()._translate_request(request)
+
+    @pytest.mark.asyncio
+    async def test_invalid_settings_never_dispatch_complete_or_stream(self, model):
+        adapter = _make_adapter()
+        request = Request(model=model, messages=[], temperature=1)
+        with pytest.raises(E.ConfigurationError):
+            await adapter.complete(request)
+        with pytest.raises(E.ConfigurationError):
+            async for _ in adapter.stream(request):
+                pass
+        adapter._client.responses.with_raw_response.create.assert_not_called()
+        adapter._client.responses.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tool_stream_uses_responses_and_exact_model(self, model):
+        adapter = _make_adapter()
+        adapter._client.responses.create = AsyncMock(
+            return_value=_MockAsyncStream(_make_stream_events_tool_use())
+        )
+        request = Request(
+            model=model,
+            messages=[Message.user("work")],
+            tools=[Tool(name="get_weather", description="weather", parameters={})],
+        )
+        events = [event async for event in adapter.stream(request)]
+        kwargs = adapter._client.responses.create.call_args.kwargs
+        assert kwargs["stream"] is True
+        assert kwargs["model"] == model
+        assert kwargs["tools"][0]["name"] == "get_weather"
+        assert any(event.type == StreamEventType.TOOL_CALL_END for event in events)
+        adapter._client.chat.completions.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sdk_omit_override_really_omits_sampling_on_wire(self, model):
+        import json
+
+        import httpx
+
+        wire = []
+
+        def handle(request):
+            wire.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={"id": "r", "model": model, "status": "completed", "output": []},
+            )
+
+        adapter = OpenAIAdapter(api_key="offline-test-key")
+        await adapter.close()
+        adapter._client = openai.AsyncOpenAI(
+            api_key="offline-test-key",
+            base_url="https://offline.invalid/v1",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+        )
+        request = Request(
+            model=model,
+            messages=[],
+            temperature=0.7,
+            top_p=0.9,
+            provider_options={
+                "openai": {
+                    "extra_body": {"temperature": openai.omit, "top_p": openai.omit}
+                }
+            },
+        )
+        try:
+            await adapter.complete(request)
+        finally:
+            await adapter.close()
+        assert wire[0]["model"] == model
+        assert "temperature" not in wire[0]
+        assert "top_p" not in wire[0]
+        assert request.temperature == 0.7
+
+
 # ---------------------------------------------------------------------------
 # Task 28: OpenAI Request Translation (Responses API)
 # ---------------------------------------------------------------------------

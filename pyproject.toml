@@ -30,7 +30,7 @@ dot-runner = "amplifier_dot_runner:main"
 # Fresh --no-config --no-sources installations qualify the real metadata
 # independently; Foundation is deliberately NOT overridden.
 override-dependencies = [
-    "amplifier-agent-engine[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@v0.22.0#subdirectory=packages/engine",
+    "amplifier-agent-engine[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@v0.30.1#subdirectory=packages/engine",
 ]
 
 [tool.uv.sources]

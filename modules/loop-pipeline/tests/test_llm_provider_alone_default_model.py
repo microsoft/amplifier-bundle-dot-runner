@@ -123,26 +123,20 @@ async def test_provider_alone_anthropic_resolves_default():
 
 @pytest.mark.asyncio
 async def test_provider_alone_openai_resolves_default():
-    """A node that sets ONLY llm_provider=openai (no llm_model) must
-    resolve -- not raise -- via the documented default family glob, and
-    must NOT be silently handed the OLD hardcoded 'gpt-4o'."""
-    seen = {}
+    """Candidate default is an available member, not an invented pinned ID."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
 
-    async def _stub(provider, pattern, *, stable_only):
-        seen["provider"], seen["pattern"], seen["stable_only"] = (
-            provider,
-            pattern,
-            stable_only,
-        )
-        return "gpt-5.2"
-
-    node = Node(id="n", shape="box", prompt="do work", attrs={"llm_provider": "openai"})
-    model, _outcome = await _run(node, resolver_stub=_stub)
-
-    assert model == "gpt-5.2"
-    assert seen["provider"] == "openai"
-    assert seen["pattern"] == "gpt-5.*[0-9]"
-    assert seen["stable_only"] is True
+    client = _RecordingClient()
+    lister = AsyncMock(return_value=["gpt-6.2-sol"])
+    client.providers = {"openai": SimpleNamespace(list_models=lister)}
+    node = Node(id="n", attrs={"llm_provider": "openai"})
+    _, outcome = await DirectWorker(unified_client=client).run(
+        node, "work", PipelineContext(), []
+    )
+    assert outcome.status == StageStatus.SUCCESS
+    assert client.requests[-1].model == "gpt-6.2-sol"
+    lister.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -191,6 +185,308 @@ async def test_explicit_node_model_wins_over_everything():
     )
     model, _outcome = await _run(node, resolver_stub=_boom)
     assert model == "gpt-4.1-mini"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_id", ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra"]
+)
+async def test_explicit_new_and_old_pins_do_not_resolve(model_id):
+    async def _boom(*a, **k):
+        raise AssertionError("explicit pins must not list or resolve models")
+
+    node = Node(id="n", attrs={"llm_provider": "openai", "llm_model": model_id})
+    model, _ = await _run(node, resolver_stub=_boom)
+    assert model == model_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pin",
+    [None, "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra", "gpt-5.2"],
+)
+async def test_direct_worker_responses_wire_tool_continuation(pin):
+    """Real worker/generate/adapter/SDK; only HTTP is an offline fixture."""
+    import copy
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import httpx
+    import openai
+    import unified_llm
+    from unified_llm.adapters.openai import OpenAIAdapter
+
+    wire = []
+    listings = []
+    selected = pin or "gpt-6.2-sol"
+
+    def handle(request):
+        if request.method == "GET":
+            assert pin is None  # explicit IDs never list
+            listings.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [
+                        {"id": model, "object": "model"}
+                        for model in ["gpt-5.2", "gpt-6.2-astra", "gpt-6.2-sol"]
+                    ],
+                },
+            )
+        assert request.method == "POST"
+        assert request.url.path == "/v1/responses"
+        wire.append(json.loads(request.content))
+        output = (
+            [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "lookup",
+                    "arguments": '{"key":"value"}',
+                }
+            ]
+            if len(wire) == 1
+            else [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": '{"outcome":"success"}'}
+                    ],
+                }
+            ]
+        )
+        return httpx.Response(
+            200,
+            json={
+                "id": f"resp_{len(wire)}",
+                "model": selected,
+                "status": "completed",
+                "output": output,
+                "usage": {"input_tokens": 11, "output_tokens": 3, "total_tokens": 14},
+            },
+        )
+
+    adapter = OpenAIAdapter(api_key="offline-test-key")
+    await adapter.close()
+    adapter._client = openai.AsyncOpenAI(
+        api_key="offline-test-key",
+        base_url="https://offline.invalid/v1",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    client = unified_llm.Client(providers={"openai": adapter})
+    execute = AsyncMock(return_value=SimpleNamespace(output="tool-result"))
+    tool = SimpleNamespace(
+        name="lookup",
+        description="Look up a key",
+        parameters={"type": "object", "properties": {"key": {"type": "string"}}},
+        execute=execute,
+    )
+    attrs = {"llm_provider": "openai", "reasoning_effort": "medium"}
+    if pin is not None:
+        attrs["llm_model"] = pin
+    node = Node(id="n", attrs=attrs)
+    before = copy.deepcopy(node)
+    try:
+        _, outcome = await DirectWorker(
+            unified_client=client, tools={"lookup": tool}
+        ).run(node, "work", PipelineContext(), [])
+    finally:
+        await client.close()
+    assert outcome.status == StageStatus.SUCCESS
+    assert node == before
+    execute.assert_awaited_once_with({"key": "value"})
+    assert len(wire) == 2
+    for body in wire:
+        assert body["model"] == selected
+        assert body["tools"][0]["name"] == "lookup"
+        assert body["reasoning"] == {"effort": "medium"}
+        assert not {"temperature", "top_p", "top_logprobs"} & body.keys()
+    assert wire[1]["input"][: len(wire[0]["input"])] == wire[0]["input"]
+    assert wire[1]["input"][-2]["type"] == "function_call"
+    assert wire[1]["input"][-2]["call_id"] == "call_1"
+    assert wire[1]["input"][-1] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": "tool-result",
+    }
+    assert len(listings) == (1 if pin is None else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "available,expected",
+    [
+        (["gpt-5.2", "gpt-6.2-astra", "gpt-6.2-sol"], "gpt-6.2-sol"),
+        (["gpt-6.1-sol", "gpt-6.2-astra"], "gpt-6.2-astra"),
+        (["gpt-6-astra", "gpt-6.1-sol"], "gpt-6.1-sol"),
+        (["gpt-6-astra"], "gpt-6-astra"),
+        (["gpt-5.2-mini", "gpt-5.2"], "gpt-5.2"),
+    ],
+)
+async def test_default_preference_is_membership_only_and_cached(available, expected):
+    import asyncio
+    import copy
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    client = _RecordingClient()
+    lister = AsyncMock(return_value=available + ["gpt-6.2-law", "gpt-6.2-cyber"])
+    client.providers = {"openai": SimpleNamespace(list_models=lister)}
+    hooks = SimpleNamespace(emit=AsyncMock())
+    worker = DirectWorker(unified_client=client, hooks=hooks)
+    node = Node(id="n", attrs={"llm_provider": "openai"})
+    original = copy.deepcopy(node)
+    await asyncio.gather(
+        worker.run(node, "work", PipelineContext(), []),
+        worker.clone().run(node, "work", PipelineContext(), []),
+    )
+    assert [r.model for r in client.requests] == [expected, expected]
+    assert node == original
+    lister.assert_awaited_once()
+    resolutions = [
+        call.args[1]
+        for call in hooks.emit.await_args_list
+        if call.args[0] == backend.MODEL_RESOLVED
+    ]
+    assert len(resolutions) == 1
+    assert resolutions[0]["resolved"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listing", [[], ["gpt-6.2-law"], RuntimeError("list failed")])
+async def test_default_listing_failure_never_generates_or_caches(listing):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    client = _RecordingClient()
+    lister = (
+        AsyncMock(side_effect=listing)
+        if isinstance(listing, Exception)
+        else AsyncMock(return_value=listing)
+    )
+    client.providers = {"openai": SimpleNamespace(list_models=lister)}
+    worker = DirectWorker(unified_client=client)
+    with pytest.raises((ValueError, RuntimeError)):
+        await worker.run(
+            Node(id="n", attrs={"llm_provider": "openai"}),
+            "work",
+            PipelineContext(),
+            [],
+        )
+    assert client.requests == []
+    assert not worker._default_models
+    assert not backend._MODEL_RESOLUTION_CACHE
+
+
+@pytest.mark.asyncio
+async def test_fresh_workers_and_lazy_clone_adapters_discover_their_own_models():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    worker = DirectWorker()
+    for current, available in (
+        (worker, ["gpt-6.2-sol"]),
+        (worker.clone(), ["gpt-6.1-sol"]),
+        (DirectWorker(), ["gpt-6-astra"]),
+    ):
+        client = _RecordingClient()
+        lister = AsyncMock(return_value=available)
+        client.providers = {"openai": SimpleNamespace(list_models=lister)}
+        current._unified_client = client
+        await current.run(
+            Node(id="n", attrs={"llm_provider": "openai"}),
+            "work",
+            PipelineContext(),
+            [],
+        )
+        assert client.requests[-1].model == available[0]
+        lister.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_closing_distinct_lazy_clone_does_not_evict_sibling_default():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    worker = DirectWorker()
+    clone = worker.clone()
+    clients = []
+    for current, model in ((worker, "gpt-6.2-sol"), (clone, "gpt-6.1-sol")):
+        client = _RecordingClient()
+        client.providers = {
+            "openai": SimpleNamespace(list_models=AsyncMock(return_value=[model]))
+        }
+        current._unified_client = client
+        clients.append(client)
+        await current.run(
+            Node(id="n", attrs={"llm_provider": "openai"}),
+            "work",
+            PipelineContext(),
+            [],
+        )
+    await clone.close()
+    await worker.run(
+        Node(id="n", attrs={"llm_provider": "openai"}), "work", PipelineContext(), []
+    )
+    assert [r.model for r in clients[0].requests] == ["gpt-6.2-sol"] * 2
+    clients[0].providers["openai"].list_models.assert_awaited_once()
+    assert len(worker._default_models) == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_retains_and_checks_actual_adapter_identity():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    adapter = SimpleNamespace(list_models=AsyncMock(return_value=["gpt-6.1-sol"]))
+    old_adapter = SimpleNamespace()
+    # Deterministic stand-in for an integer-identity collision.
+    cache = {id(adapter): (old_adapter, "gpt-6.2-sol")}
+    client = SimpleNamespace(providers={"openai": adapter})
+    model = await backend._resolve_openai_default_model(client, cache)
+    assert model == "gpt-6.1-sol"
+    assert cache[id(adapter)][0] is adapter
+    adapter.list_models.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_default_generation_failure_never_substitutes_another_model():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import unified_llm
+
+    client = _RecordingClient()
+    lister = AsyncMock(return_value=["gpt-6.2-sol", "gpt-6.2-astra", "gpt-5.2"])
+    client.providers = {"openai": SimpleNamespace(list_models=lister)}
+    client.complete = AsyncMock(
+        side_effect=unified_llm.ConfigurationError("no generation")
+    )
+    worker = DirectWorker(unified_client=client)
+    _, outcome = await worker.run(
+        Node(id="n", attrs={"llm_provider": "openai"}), "work", PipelineContext(), []
+    )
+    assert outcome.status == StageStatus.FAIL
+    client.complete.assert_awaited_once()
+    assert client.complete.call_args.args[0].model == "gpt-6.2-sol"
+    lister.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["gpt-*", "gpt-5.*[0-9]"])
+async def test_explicit_openai_patterns_keep_existing_opt_in_resolution(pattern):
+    from unittest.mock import AsyncMock
+
+    resolver = AsyncMock(return_value="gpt-5.2")
+    model, _ = await _run(
+        Node(id="n", attrs={"llm_provider": "openai", "llm_model": pattern}),
+        resolver_stub=resolver,
+    )
+    assert model == "gpt-5.2"
+    resolver.assert_awaited_once_with("openai", pattern, stable_only=True)
 
 
 @pytest.mark.asyncio

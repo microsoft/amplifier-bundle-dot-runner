@@ -142,17 +142,18 @@ The binding deliberately floats:
 amplifier-agent[github-copilot] @ git+https://github.com/microsoft/amplifier-agent@main#subdirectory=packages/python
 ```
 
-Binding 0.22.0 pins engine v0.22.0; that engine pins Foundation
-`21ad50fa40f7acff913cbf6615228ac359f7dedd`. Runner `main` Foundation conflicts in
-an unoverridden consumer solve. The runner now aligns its published requirement
-and source to that exact pin as a narrow consumer exception. There is no root
-Foundation override hiding qualification failures. Other ecosystem consumers
-still naming Foundation main may conflict and need independent qualification.
+The current binding 0.30.1 selects its published engine v0.30.1. That graph
+and routing require Foundation main, so runner's published Foundation
+requirement/source and CI prerequisite now align to `@main`. The earlier
+0.22-era Foundation SHA exception caused the original PR #145 root-install
+failure when binding main advanced; that failure is preserved. No external
+Foundation override is added to hide the consumer-install conflict.
 
 Upstream's `workspace=true` engine source can leak the binding-main revision
 into a consumer uv lock despite the binding's published engine tag. Root and
-adapter lock roots therefore carry a narrow engine-only override to the exact
-published v0.22.0 tag. This corrects development locks, not runtime authority.
+adapter lock roots now carry an engine-only v0.30.1 correction, matching the
+current binding's published tag. The affected locks retain unrelated versions
+unless the new transitive metadata requires a change.
 Fresh `uv --no-config pip install --no-sources` checks run independently of
 that override. When binding main changes its engine requirement, requalify and
 update this correction rather than silently holding an obsolete tag.

@@ -141,7 +141,7 @@ jobs:
         run: |
           uv venv .venv-root-install
           uv pip install --python .venv-root-install \
-            "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@21ad50fa40f7acff913cbf6615228ac359f7dedd"
+            "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main"
 
       - name: Install root package without uv source mappings
         run: |

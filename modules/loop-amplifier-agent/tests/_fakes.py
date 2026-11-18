@@ -1,6 +1,7 @@
 """Handle doubles only; all records come from the real public binding."""
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from amplifier_agent import (
@@ -61,7 +62,13 @@ class Handles:
         self.session_options = self.options = self.input = None
         self.session = SimpleNamespace(
             info=SessionRecord(
-                "actual-session", "ephemeral", "actual-provider", "actual-model"
+                "actual-session",
+                "ephemeral",
+                "actual-provider",
+                "actual-model",
+                working_directory=".",
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             ),
             start_turn=self.start_turn,
             close=lambda: self.close("session"),
