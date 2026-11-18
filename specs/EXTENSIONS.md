@@ -4496,6 +4496,46 @@ for the mechanism, the exact bound of the tolerance, and what it costs.
 
 ## 42. Per-Provider Default Model for `llm_provider`-Alone Nodes (Direct Path, Spec §8.5 Rung 4)
 
+### 2026-11-18 — Ratified SDK-direct OpenAI default disposition
+
+The contract owner/maintainer ratified the exact C5.5 replacement in
+[the preserved proposal](../contracts/engine-surface.v2-gpt62-default-candidate.md)
+at reviewed commit `53d61d9d0b092448a2073cef9f68554d1c93bcaf`, SHA-256
+`1250faf79e28fba990835f6584b655f1f096cddfd5aed1d078ef0e9c05e29c0e`.
+[The separate dated receipt](../contracts/engine-surface.ratification-gpt62-20261118.md)
+records the exact owner response, answer provenance and scope. This subsequent
+decision supersedes the pending-ratification status in the historical entry and
+proposal below without rewriting their bytes or claiming frozen v1 contains
+the amended wording.
+
+**Governing disposition:** on the SDK-direct implicit OpenAI path, prefer listed
+`gpt-6.2-sol`, then `gpt-6.2-astra`, then `gpt-6.1-sol`, then `gpt-6-astra`,
+then the existing stable GPT-5 selector. The actual generation adapter supplies
+availability; worker/adapter-local caching never becomes a durable checkpoint
+pin. Empty/error/no-match listing fails before generation, and generation
+failure does not substitute another model. Explicit IDs/globs, stylesheet
+precedence, other providers, spawned defaults and durable records are unchanged.
+
+**Intentional compatibility cost:** unchanged unpinned DOT, including an unpinned
+resumed run, can rediscover a different model with different output, latency
+and cost. In particular 6.2 Astra precedes 6.1 Sol, not a cheapest-model rule.
+Pin `llm_model` for model reproducibility; do not claim reasoning-item reuse
+across model changes or rewrite history to force it.
+
+Canonical attractor §8.3–§8.5 preserves explicit/stylesheet priority and leaves
+this default rung to the implementor. Unified-LLM §2.9 prefers newer available
+models while keeping its catalog advisory and old/unknown explicit IDs valid.
+Neither spec selects this exact order: this is an owner-ratified implementor
+policy, not a canonical-spec divergence. Frozen v1, prior completion-identity
+proposal/ratification, this proposal and ledger bytes remain unchanged.
+Passing mixed static/runtime, existence-indexed ledger probes is not
+ratification. Protected review, CI, manager-owned merge, release and live
+adoption remain separate; this entry supplies none of those effects.
+
+The 2026-11-17 entries and original shipped-default table below are historical
+baselines; their GPT-5-only and pending-decision wording is not the disposition
+of this ratified amendment.
+
 ### 2026-11-17 — Unratified SDK-direct default amendment candidate
 
 The review branch now contains a candidate implicit OpenAI preference for
