@@ -12,6 +12,7 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from amplifier_core import HookResult
 from amplifier_core.hooks import HookRegistry
 
 from amplifier_module_hooks_pipeline_observability import mount
@@ -47,7 +48,7 @@ async def test_persists_tool_events_with_real_tool_names(tmp_path):
             "tool_input": {"command": "pytest -q"},
         },
     )
-    await post(
+    result = await post(
         "tool:post",
         {
             "session_id": "sid-123",
@@ -58,6 +59,7 @@ async def test_persists_tool_events_with_real_tool_names(tmp_path):
         },
     )
 
+    assert result == HookResult()
     records = _read_events(sessions / "sid-123" / "events.jsonl")
     assert [r["event"] for r in records] == ["tool:pre", "tool:post"]
     assert records[0]["data"]["tool_name"] == "bash"
@@ -89,7 +91,8 @@ async def test_noop_when_destination_unset(tmp_path):
     """No ContextVar destination -> nothing written anywhere."""
     persister = SessionEventPersister(lambda: None)
     handler = persister.make_handler("tool:pre")
-    await handler("tool:pre", {"session_id": "sid-123", "tool_name": "bash"})
+    result = await handler("tool:pre", {"session_id": "sid-123", "tool_name": "bash"})
+    assert result == HookResult()
     assert list(tmp_path.rglob("events.jsonl")) == []
 
 
@@ -113,7 +116,7 @@ async def test_handler_never_raises(tmp_path):
 
     persister = SessionEventPersister(_boom)
     handler = persister.make_handler("tool:pre")
-    await handler("tool:pre", {"session_id": "sid-123"})  # must not raise
+    assert await handler("tool:pre", {"session_id": "sid-123"}) is None
 
 
 @pytest.mark.asyncio
