@@ -67,6 +67,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from amplifier_core import HookResult
+
 from .redaction import redact_text
 
 logger = logging.getLogger(__name__)
@@ -150,13 +152,15 @@ class SessionEventPersister:
 
         async def handler(
             event: str | None = None, data: dict[str, Any] | None = None
-        ) -> None:
+        ) -> HookResult | None:
             try:
                 self._persist(event_name, data or {})
             except Exception:  # never break the session for observability
                 logger.debug(
                     "session-event persistence failed for %s", event_name, exc_info=True
                 )
+                return None
+            return HookResult()
 
         return handler
 
