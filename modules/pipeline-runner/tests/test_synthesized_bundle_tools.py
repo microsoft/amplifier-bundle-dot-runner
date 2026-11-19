@@ -1,6 +1,4 @@
-"""Live-gate regression proof: the synthesized ``--worker coding-agent`` /
-``--worker amplifier-agent`` bundle must actually MOUNT a tool surface, not
-only providers.
+"""Coding-agent mounts legacy tools; the native agent owns its built-ins.
 
 THE GAP THIS CLOSES: ``test_synthesized_bundle_providers.py`` (issue #338)
 asks ``Bundle.to_mount_plan()`` what the synthesis mounts -- but only ever
@@ -62,7 +60,7 @@ async def _load_synthesized_bundle(worker_name: str):
     return await amplifier_foundation.load_bundle(str(bundle_path))
 
 
-@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent"])
 def test_synthesized_bundle_mounts_a_real_tool_surface(monkeypatch, worker_name):
     """The core proof: the synthesized bundle's own mount plan must carry
     real ``tools`` entries, so a spawned box-node worker can read, write, and
@@ -90,7 +88,7 @@ def test_synthesized_bundle_mounts_a_real_tool_surface(monkeypatch, worker_name)
     )
 
 
-@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent"])
 def test_every_mounted_tool_entry_carries_a_resolvable_source(monkeypatch, worker_name):
     """Module activation only activates providers/tools/hooks entries that
     carry a ``source`` (``amplifier_foundation.bundle.Bundle.prepare``). A
@@ -105,7 +103,7 @@ def test_every_mounted_tool_entry_carries_a_resolvable_source(monkeypatch, worke
         assert entry.get("source"), f"tool entry missing 'source': {entry!r}"
 
 
-@pytest.mark.parametrize("worker_name", ["coding-agent", "amplifier-agent"])
+@pytest.mark.parametrize("worker_name", ["coding-agent"])
 def test_tool_mount_is_unconditional_not_keyed_off_provider_choice(
     monkeypatch, worker_name
 ):
@@ -132,3 +130,14 @@ def test_tool_mount_is_unconditional_not_keyed_off_provider_choice(
     }
 
     assert anthropic_tools == openai_tools == _REQUIRED_TOOL_MODULES
+
+
+@pytest.mark.parametrize("provider_key", ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"])
+def test_native_worker_does_not_activate_legacy_tool_sources(monkeypatch, provider_key):
+    """Native built-ins must retain their installed dependency closure."""
+    _clear_all_provider_keys(monkeypatch)
+    monkeypatch.setenv(provider_key, "test-key-not-real")
+
+    loaded = asyncio.run(_load_synthesized_bundle("amplifier-agent"))
+
+    assert not loaded.to_mount_plan().get("tools")

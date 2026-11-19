@@ -683,16 +683,14 @@ def _synthesize_agent_bundle_yaml(
         ]
     )
 
-    # Live-gate fix (see _TOOL_MODULE_SOURCES): mount a REAL tool surface.
-    # #338 restored the providers half of this synthesis; without this half a
-    # box-node worker reaches the model with only the spawn tools and cannot
-    # read, write, or run anything -- so every `must_write=` contract is
-    # unsatisfiable by construction. Unconditional (unlike providers, which
-    # are keyed off configured API keys): there is no environment in which a
-    # pipeline worker is better off unable to touch the tree it was pointed at.
-    tool_lines = "\n".join(
-        f"  - module: {name}\n    source: {source}"
-        for name, source in _TOOL_MODULE_SOURCES.items()
+    tool_lines = (
+        "tools: []"
+        if worker_name == AMPLIFIER_AGENT_NAME
+        else "tools:\n"
+        + "\n".join(
+            f"  - module: {name}\n    source: {source}"
+            for name, source in _TOOL_MODULE_SOURCES.items()
+        )
     )
 
     # See _HOOK_MODULE_SOURCES: without this section the Sec 26 worker-session
@@ -716,7 +714,6 @@ bundle:
     Purely internal machinery -- never exposed as a user-facing concept.
 providers:
 {provider_lines}
-tools:
 {tool_lines}
 hooks:
 {hook_lines}

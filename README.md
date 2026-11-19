@@ -26,6 +26,12 @@ Set a matching provider **and** model. Positive `max_turns`, named roster
 injection, legacy workspace/host_config and caller tools are unsupported; use
 `coding-agent` for those controls.
 
+The synthesized `amplifier-agent` bundle does not activate legacy Amplifier tool
+modules: the native engine supplies its own built-in tools and installed
+dependency closure. Fetching an unused legacy tool at `@main` can shadow that
+closure with incompatible cached source. The `coding-agent` bundle still mounts
+its filesystem, Bash and search modules; provider and hook composition is unchanged.
+
 Curated `turn-events/1` telemetry has actual selections and cumulative snapshots,
 not internal call boundaries. Unknown remains unknown; terminal usage does not
 double-count. The timing table shows `-` for unavailable LLM-call counts.
