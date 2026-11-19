@@ -12,9 +12,12 @@ results back, and maps errors from SDKError to LLMError.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 from amplifier_core.llm_errors import (
     AuthenticationError as CoreAuthError,
@@ -29,6 +32,7 @@ from amplifier_core.llm_errors import (
 from amplifier_core.message_models import (
     ChatRequest,
     ChatResponse,
+    ImageBlock,
     Message as CoreMessage,
     TextBlock,
     ThinkingBlock,
@@ -41,6 +45,7 @@ from unified_llm.errors import SDKError
 from unified_llm.types import (
     ContentKind,
     ContentPart,
+    ImageData,
     Message as ULMMessage,
     Request as ULMRequest,
     Response as ULMResponse,
@@ -89,6 +94,20 @@ class UnifiedProviderAdapter:
             for m in request.messages
             if (translated := self._translate_message(m)) is not None
         ]
+        # Canonical unified spec §3.5 lists these provider format capabilities.
+        # This is format validation, not a resource quota or model-readiness claim.
+        common_mimes = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+        for message in messages:
+            for part in message.content:
+                if part.kind != ContentKind.IMAGE:
+                    continue
+                if self._provider_name not in ("openai", "anthropic", "gemini"):
+                    raise ulm_errors.ConfigurationError("Image provider support is unknown")
+                supported = common_mimes | (
+                    {"image/heic", "image/heif"} if self._provider_name == "gemini" else set()
+                )
+                if part.image.data is not None and part.image.media_type not in supported:
+                    raise ulm_errors.ConfigurationError("Unsupported image MIME for selected provider")
         return ULMRequest(
             model=self._model,
             messages=messages,
@@ -115,9 +134,16 @@ class UnifiedProviderAdapter:
         # This slot is required and is never dropped, even when the tool
         # produced no output.
         if msg.role == "tool" and msg.tool_call_id:
-            content_str = (
-                msg.content if isinstance(msg.content, str) else str(msg.content)
-            )
+            if isinstance(msg.content, str):
+                content_str = msg.content
+            else:
+                # The current unified tool-result wire adapters accept text/JSON,
+                # not ordered rich blocks. Never stringify pixels into a receipt.
+                if any(not isinstance(block, TextBlock) for block in msg.content):
+                    raise ulm_errors.ConfigurationError(
+                        "Unified tool-result rich content is unsupported; no pixels sent"
+                    )
+                content_str = "".join(block.text for block in msg.content)
             if not content_str or not content_str.strip():
                 content_str = "(no output)"
             content = [
@@ -132,6 +158,10 @@ class UnifiedProviderAdapter:
             return ULMMessage(role=role, content=content, tool_call_id=msg.tool_call_id)
 
         content = self._translate_content(msg.content)
+        if any(part.kind == ContentKind.IMAGE for part in content) and msg.role != "user":
+            raise ulm_errors.ConfigurationError(
+                "Unified image input requires a user message; no pixels sent"
+            )
         if not content:
             # Zero content blocks after filtering empty/whitespace text --
             # drop the message. Sending an empty content array is rejected
@@ -190,9 +220,58 @@ class UnifiedProviderAdapter:
                         ),
                     )
                 )
-            # Other block types fall through gracefully.
+            elif isinstance(block, ImageBlock):
+                parts.append(ContentPart(
+                    kind=ContentKind.IMAGE,
+                    image=UnifiedProviderAdapter._translate_image(block),
+                ))
+            else:
+                # Never include repr(block): it can contain private bytes or URLs.
+                raise ulm_errors.ConfigurationError(
+                    "Unsupported Core content block in unified request"
+                )
 
         return parts
+
+    @staticmethod
+    def _translate_image(block: ImageBlock) -> ImageData:
+        """Map direct typed image input only; no path reads or media-ref resolution.
+
+        See unified-llm spec §§3.3–3.5. Provider serializers retain ownership of
+        wire encoding and supported MIME/model policy. Validation errors never
+        echo payloads. This is not experimental.media.v1 publication/authority.
+        """
+        source = block.source
+        if not isinstance(source, dict):
+            raise ulm_errors.ConfigurationError("Invalid image source")
+        detail = source.get("detail")
+        if detail not in (None, "auto", "low", "high"):
+            raise ulm_errors.ConfigurationError("Invalid image detail")
+        kind = source.get("type")
+        if kind == "base64" and not set(source) - {"type", "media_type", "data", "detail"}:
+            # Unified spec §3.5: omission defaults inline data to PNG.
+            # Explicit null/empty/malformed MIME remains a refusal.
+            mime, data = source.get("media_type", "image/png"), source.get("data")
+            if not isinstance(mime, str) or not mime.startswith("image/") or not isinstance(data, str) or not data:
+                raise ulm_errors.ConfigurationError("Invalid inline image source")
+            try:
+                decoded = base64.b64decode(data, validate=True)
+            except (ValueError, binascii.Error):
+                raise ulm_errors.ConfigurationError("Invalid inline image encoding") from None
+            if not decoded:
+                raise ulm_errors.ConfigurationError("Empty inline image source")
+            return ImageData(data=decoded, media_type=mime, detail=detail)
+        if kind == "url" and not set(source) - {"type", "url", "detail"}:
+            url = source.get("url")
+            try:
+                parsed = urlsplit(url) if isinstance(url, str) else None
+            except ValueError:
+                parsed = None
+            if parsed and parsed.scheme in ("https", "http") and parsed.netloc:
+                return ImageData(url=url, detail=detail)
+        raise ulm_errors.ConfigurationError(
+            "Unsupported image source; expected inline base64 or HTTP(S) URL"
+        )
 
     # ------------------------------------------------------------------
     # Response translation (non-streaming)
@@ -370,9 +449,12 @@ class UnifiedProviderAdapter:
                     if tc:
                         # Use complete tool_call from END event
                         arguments = tc.arguments
-                        if not arguments and tc.raw_arguments:
+                        # Canonical ToolCallData has arguments only. Some SDK
+                        # adapters additionally expose a raw partial buffer.
+                        raw_arguments = getattr(tc, "raw_arguments", None)
+                        if not arguments and raw_arguments:
                             try:
-                                arguments = json.loads(tc.raw_arguments)
+                                arguments = json.loads(raw_arguments)
                             except (json.JSONDecodeError, TypeError):
                                 arguments = {}
                         yield {

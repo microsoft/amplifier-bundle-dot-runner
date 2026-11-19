@@ -34,6 +34,7 @@ from .turns import (
     Turn,
     UserTurn,
 )
+from .tool_content import history_content, rich_result_copy, safe_presentation
 
 
 #: Marker every elided tool result carries. Public so tests, log scanners,
@@ -118,11 +119,15 @@ def convert_history_to_messages(
             for i, result in enumerate(turn.results):
                 call = pending_tool_calls[i] if i < len(pending_tool_calls) else None
                 call_id = call["id"] if call else None
-                serialized = result.get_serialized_output()
+                rich = rich_result_copy(result)
+                serialized = (
+                    safe_presentation(rich)
+                    if rich is not None else result.get_serialized_output()
+                )
                 content = (
                     _elision_stub((call or {}).get("name") or "tool", len(serialized))
                     if elide
-                    else serialized
+                    else history_content(rich) if rich is not None else serialized
                 )
                 other_messages.append(
                     Message(

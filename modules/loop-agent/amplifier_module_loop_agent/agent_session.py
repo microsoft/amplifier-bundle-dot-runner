@@ -64,6 +64,7 @@ from .state import SessionState, SessionStateMachine
 from .steering import FollowUpQueue, SteeringQueue
 from .system_prompt import build_system_prompt, discover_project_docs
 from .tool_registry import ToolRegistry
+from .tool_content import effective_rich_result, rich_result_copy, safe_presentation
 from .turns import (
     AssistantTurn,
     SessionHistory,
@@ -1212,12 +1213,18 @@ class AgentSession:
             )
             return ToolResult(success=False, output=validation_error)
 
+        rich_result = None
         try:
             result = await tool.execute(tool_call.arguments)
             duration_ms = (time.monotonic() - start_time) * 1000
 
-            # Serialize result for the tool:post hook
-            raw_output = result.get_serialized_output()
+            # Core canonical content is separate from ordinary output. Snapshot
+            # privately; hooks/events receive Core's image-safe presentation only.
+            rich_result = rich_result_copy(result)
+            raw_output = (
+                safe_presentation(rich_result)
+                if rich_result is not None else result.get_serialized_output()
+            )
 
             # Emit tool:post for hooks (truncation, logging, etc.)
             post_result = await self._hooks.emit(
@@ -1292,10 +1299,16 @@ class AgentSession:
             )
 
             # Return result with potentially truncated output for LLM
+            if rich_result is not None:
+                return effective_rich_result(rich_result, raw_output, post_result)
             return ToolResult(success=result.success, output=llm_output)
         except Exception as e:
             duration_ms = (time.monotonic() - start_time) * 1000
-            error_msg = f"Tool error ({tool_call.name}): {e}"
+            error_msg = (
+                "Rich tool result processing failed; no pixels sent."
+                if rich_result is not None
+                else f"Tool error ({tool_call.name}): {e}"
+            )
             logger.error(error_msg)
             # Emit tool output delta even on errors
             await self._hooks.emit(
