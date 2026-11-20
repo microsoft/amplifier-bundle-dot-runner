@@ -172,8 +172,9 @@ class CodergenHandler:
                 # C). If it diverges from the Outcome the backend returned
                 # through the Python interface, the file wins -- checked
                 # here, BEFORE the write below would otherwise clobber it.
-                _override = read_status_override(
-                    node, logs_root, _node_start_wall, result
+                _override = (
+                    read_status_override(node, logs_root, _node_start_wall, result)
+                    if result.execution_complete else None
                 )
                 _final = _override if _override is not None else result
                 _write_status(stage_dir, _final)
